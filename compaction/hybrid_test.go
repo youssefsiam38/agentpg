@@ -110,8 +110,8 @@ func TestHybridStrategy_calculateMessageTokens(t *testing.T) {
 	h := &HybridStrategy{}
 
 	tests := []struct {
-		name     string
-		message  *types.Message
+		name      string
+		message   *types.Message
 		minTokens int // Minimum expected tokens
 	}{
 		{

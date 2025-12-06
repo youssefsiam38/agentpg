@@ -88,7 +88,6 @@ func NewToolResultBlock(toolUseID string, content string, isError bool) ContentB
 	}
 }
 
-
 // UnmarshalJSON is a helper for unmarshaling content blocks
 func UnmarshalJSON(data []byte, v any) error {
 	return json.Unmarshal(data, v)

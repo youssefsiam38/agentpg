@@ -167,8 +167,8 @@ func (a *Agent[TTx]) Run(ctx context.Context, prompt string) (*Response, error) 
 	committed := false
 	defer func() {
 		if !committed {
-			if err := execTx.Rollback(ctx); err != nil {
-				log.Printf("agentpg: failed to rollback transaction: %v", err)
+			if rollbackErr := execTx.Rollback(ctx); rollbackErr != nil {
+				log.Printf("agentpg: failed to rollback transaction: %v", rollbackErr)
 			}
 		}
 	}()
@@ -261,8 +261,8 @@ func (a *Agent[TTx]) checkAndCompact(ctx context.Context, sessionID string) erro
 	}
 
 	// Trigger compaction hook before compaction
-	if err := a.config.hooks.TriggerBeforeCompaction(ctx, sessionID); err != nil {
-		return fmt.Errorf("before-compaction hook failed: %w", err)
+	if hookErr := a.config.hooks.TriggerBeforeCompaction(ctx, sessionID); hookErr != nil {
+		return fmt.Errorf("before-compaction hook failed: %w", hookErr)
 	}
 
 	// Perform compaction
@@ -293,8 +293,8 @@ func (a *Agent[TTx]) Compact(ctx context.Context) (*compaction.CompactionResult,
 	committed := false
 	defer func() {
 		if !committed {
-			if err := execTx.Rollback(ctx); err != nil {
-				log.Printf("agentpg: failed to rollback transaction: %v", err)
+			if rollbackErr := execTx.Rollback(ctx); rollbackErr != nil {
+				log.Printf("agentpg: failed to rollback transaction: %v", rollbackErr)
 			}
 		}
 	}()
@@ -430,8 +430,8 @@ func (a *Agent[TTx]) runWithToolLoopInternal(ctx context.Context, sessionID stri
 		}
 
 		// Trigger before-message hook
-		if err := a.config.hooks.TriggerBeforeMessage(ctx, messages); err != nil {
-			return nil, fmt.Errorf("before-message hook failed: %w", err)
+		if hookErr := a.config.hooks.TriggerBeforeMessage(ctx, messages); hookErr != nil {
+			return nil, fmt.Errorf("before-message hook failed: %w", hookErr)
 		}
 
 		// Build Anthropic messages
@@ -636,7 +636,6 @@ func (a *Agent[TTx]) getMessageHistory(ctx context.Context, sessionID string) ([
 
 	return messages, nil
 }
-
 
 // RegisterTool adds a new tool to the agent
 func (a *Agent[TTx]) RegisterTool(t tool.Tool) error {
