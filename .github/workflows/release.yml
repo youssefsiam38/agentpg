@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Verify build
+        run: go build ./...
+
+      - name: Run tests
+        run: go test -short ./...
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "notes<<EOF" >> $GITHUB_OUTPUT
+            echo "Initial release of AgentPG - Production-grade stateful AI agents for Go." >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+            echo "## Features" >> $GITHUB_OUTPUT
+            echo "- PostgreSQL-backed conversation persistence" >> $GITHUB_OUTPUT
+            echo "- Automatic context compaction (hybrid strategy)" >> $GITHUB_OUTPUT
+            echo "- Composable tool system with JSON Schema validation" >> $GITHUB_OUTPUT
+            echo "- Multi-tenant session isolation" >> $GITHUB_OUTPUT
+            echo "- Streaming-first architecture" >> $GITHUB_OUTPUT
+            echo "- Hook system for observability" >> $GITHUB_OUTPUT
+            echo "- Driver pattern supporting pgx/v5 and database/sql" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "notes<<EOF" >> $GITHUB_OUTPUT
+            git log ${PREV_TAG}..HEAD --pretty=format:"- %s" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body: ${{ steps.notes.outputs.notes }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
