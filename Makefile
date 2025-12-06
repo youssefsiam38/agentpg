@@ -1,6 +1,7 @@
 .PHONY: all test test-unit test-integration lint build docker-up docker-down migrate clean help update-mod-go
 
-GO_VERSION := 1.25.4
+GO_VERSION := 1.24
+GO_TOOLCHAIN := go1.25.4
 GO_MOD_DIRS := . driver/pgxv5 driver/databasesql
 
 all: lint test build
@@ -61,9 +62,10 @@ fmt:
 update-mod-go:
 	@for dir in $(GO_MOD_DIRS); do \
 		if [ "$(CHECK)" = "true" ]; then \
-			grep -q "go $(GO_VERSION)" $$dir/go.mod || (echo "go.mod in $$dir has wrong go version" && exit 1); \
+			grep -q "^go $(GO_VERSION)$$" $$dir/go.mod || (echo "go.mod in $$dir has wrong go version (expected $(GO_VERSION))" && exit 1); \
+			grep -q "^toolchain $(GO_TOOLCHAIN)$$" $$dir/go.mod || (echo "go.mod in $$dir has wrong toolchain (expected $(GO_TOOLCHAIN))" && exit 1); \
 		else \
-			cd $$dir && go mod edit -go=$(GO_VERSION) && cd - > /dev/null; \
+			cd $$dir && go mod edit -go=$(GO_VERSION) -toolchain=$(GO_TOOLCHAIN) && cd - > /dev/null; \
 		fi \
 	done
-	@if [ "$(CHECK)" = "true" ]; then echo "All go.mod files have correct go version"; fi
+	@if [ "$(CHECK)" = "true" ]; then echo "All go.mod files have correct go/toolchain directives"; fi

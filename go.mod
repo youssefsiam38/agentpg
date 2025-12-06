@@ -1,6 +1,8 @@
 module github.com/youssefsiam38/agentpg
 
-go 1.25.4
+go 1.24
+
+toolchain go1.25.4
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.19.0
