@@ -1,0 +1,277 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/youssefsiam38/agentpg"
+	"github.com/youssefsiam38/agentpg/tool"
+)
+
+// Timezone offset data (simplified)
+var timezoneOffsets = map[string]int{
+	"UTC":       0,
+	"EST":       -5,
+	"PST":       -8,
+	"CET":       1,
+	"JST":       9,
+	"AEST":      10,
+	"GMT":       0,
+	"IST":       5, // India
+	"CST":       -6,
+	"MST":       -7,
+	"HST":       -10,
+	"AKST":      -9,
+	"AST":       -4,
+	"NST":       -3,
+	"BRT":       -3,
+	"ART":       -3,
+	"SAST":      2,
+	"EAT":       3,
+	"GST":       4,
+	"PKT":       5,
+	"BST":       6,
+	"ICT":       7,
+	"CST_CHINA": 8,
+	"KST":       9,
+	"NZST":      12,
+}
+
+func main() {
+	ctx := context.Background()
+
+	// Get environment variables
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		log.Fatal("ANTHROPIC_API_KEY environment variable is required")
+	}
+
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		log.Fatal("DATABASE_URL environment variable is required")
+	}
+
+	// Create PostgreSQL connection pool
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer pool.Close()
+
+	// Create Anthropic client
+	client := anthropic.NewClient(option.WithAPIKey(apiKey))
+
+	// Create agent
+	agent, err := agentpg.New(
+		agentpg.Config{
+			DB:           pool,
+			Client:       &client,
+			Model:        "claude-sonnet-4-5-20250929",
+			SystemPrompt: "You are a helpful time assistant. Use the available tools to provide time information.",
+		},
+		agentpg.WithMaxTokens(1024),
+	)
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
+	}
+
+	// Create a time tool using NewFuncTool
+	// This approach is simpler than implementing the full interface
+	timeTool := tool.NewFuncTool(
+		"get_time",
+		"Get the current time in a specified timezone. Returns formatted time and date.",
+		tool.ToolSchema{
+			Type: "object",
+			Properties: map[string]tool.PropertyDef{
+				"timezone": {
+					Type:        "string",
+					Description: "Timezone abbreviation (e.g., 'UTC', 'EST', 'PST', 'JST', 'CET')",
+				},
+				"format": {
+					Type:        "string",
+					Description: "Output format: '12h' for 12-hour clock, '24h' for 24-hour clock",
+					Enum:        []string{"12h", "24h"},
+				},
+			},
+			Required: []string{"timezone"},
+		},
+		func(ctx context.Context, input json.RawMessage) (string, error) {
+			var params struct {
+				Timezone string `json:"timezone"`
+				Format   string `json:"format"`
+			}
+
+			if err := json.Unmarshal(input, &params); err != nil {
+				return "", fmt.Errorf("invalid input: %w", err)
+			}
+
+			// Get timezone offset
+			offset, found := timezoneOffsets[params.Timezone]
+			if !found {
+				return "", fmt.Errorf("unknown timezone: %s. Valid options: UTC, EST, PST, CET, JST, AEST, GMT, IST, CST, MST", params.Timezone)
+			}
+
+			// Calculate time in timezone
+			now := time.Now().UTC().Add(time.Duration(offset) * time.Hour)
+
+			// Format based on preference
+			var timeStr string
+			if params.Format == "12h" {
+				timeStr = now.Format("3:04:05 PM")
+			} else {
+				timeStr = now.Format("15:04:05")
+			}
+
+			dateStr := now.Format("Monday, January 2, 2006")
+
+			return fmt.Sprintf("Current time in %s:\nTime: %s\nDate: %s\nUTC Offset: %+d hours",
+				params.Timezone, timeStr, dateStr, offset), nil
+		},
+	)
+
+	// Create a date difference calculator tool
+	dateDiffTool := tool.NewFuncTool(
+		"calculate_date_diff",
+		"Calculate the difference between two dates in days, weeks, or months.",
+		tool.ToolSchema{
+			Type: "object",
+			Properties: map[string]tool.PropertyDef{
+				"start_date": {
+					Type:        "string",
+					Description: "Start date in YYYY-MM-DD format",
+				},
+				"end_date": {
+					Type:        "string",
+					Description: "End date in YYYY-MM-DD format",
+				},
+				"unit": {
+					Type:        "string",
+					Description: "Unit for the result: 'days', 'weeks', or 'months'",
+					Enum:        []string{"days", "weeks", "months"},
+				},
+			},
+			Required: []string{"start_date", "end_date"},
+		},
+		func(ctx context.Context, input json.RawMessage) (string, error) {
+			var params struct {
+				StartDate string `json:"start_date"`
+				EndDate   string `json:"end_date"`
+				Unit      string `json:"unit"`
+			}
+
+			if err := json.Unmarshal(input, &params); err != nil {
+				return "", fmt.Errorf("invalid input: %w", err)
+			}
+
+			// Parse dates
+			start, err := time.Parse("2006-01-02", params.StartDate)
+			if err != nil {
+				return "", fmt.Errorf("invalid start_date format (use YYYY-MM-DD): %w", err)
+			}
+
+			end, err := time.Parse("2006-01-02", params.EndDate)
+			if err != nil {
+				return "", fmt.Errorf("invalid end_date format (use YYYY-MM-DD): %w", err)
+			}
+
+			// Calculate difference
+			diff := end.Sub(start)
+			days := int(diff.Hours() / 24)
+
+			// Default to days if unit not specified
+			unit := params.Unit
+			if unit == "" {
+				unit = "days"
+			}
+
+			var result string
+			switch unit {
+			case "days":
+				result = fmt.Sprintf("%d days", days)
+			case "weeks":
+				weeks := float64(days) / 7.0
+				result = fmt.Sprintf("%.1f weeks (%d days)", weeks, days)
+			case "months":
+				months := float64(days) / 30.44 // Average days per month
+				result = fmt.Sprintf("%.1f months (%d days)", months, days)
+			default:
+				result = fmt.Sprintf("%d days", days)
+			}
+
+			return fmt.Sprintf("Date difference from %s to %s:\n%s",
+				params.StartDate, params.EndDate, result), nil
+		},
+	)
+
+	// Register tools
+	if err := agent.RegisterTool(timeTool); err != nil {
+		log.Fatalf("Failed to register time tool: %v", err)
+	}
+	if err := agent.RegisterTool(dateDiffTool); err != nil {
+		log.Fatalf("Failed to register date diff tool: %v", err)
+	}
+
+	// Create session
+	sessionID, err := agent.NewSession(ctx, "1", "func-tool-demo", nil, map[string]any{
+		"description": "Function-based tool demonstration",
+	})
+	if err != nil {
+		log.Fatalf("Failed to create session: %v", err)
+	}
+
+	fmt.Printf("Created session: %s\n\n", sessionID)
+
+	// Example 1: Get time in different timezone
+	fmt.Println("=== Example 1: Get Time in Tokyo ===")
+	response1, err := agent.Run(ctx, "What time is it in Tokyo right now?")
+	if err != nil {
+		log.Fatalf("Failed to run agent: %v", err)
+	}
+
+	for _, block := range response1.Message.Content {
+		if block.Type == agentpg.ContentTypeText {
+			fmt.Println(block.Text)
+		}
+	}
+
+	// Example 2: Get time with specific format
+	fmt.Println("\n=== Example 2: Time in 12-hour Format ===")
+	response2, err := agent.Run(ctx, "What's the current time in New York (EST) in 12-hour format?")
+	if err != nil {
+		log.Fatalf("Failed to run agent: %v", err)
+	}
+
+	for _, block := range response2.Message.Content {
+		if block.Type == agentpg.ContentTypeText {
+			fmt.Println(block.Text)
+		}
+	}
+
+	// Example 3: Calculate date difference
+	fmt.Println("\n=== Example 3: Date Difference ===")
+	response3, err := agent.Run(ctx, "How many weeks are between 2024-01-01 and 2024-12-31?")
+	if err != nil {
+		log.Fatalf("Failed to run agent: %v", err)
+	}
+
+	for _, block := range response3.Message.Content {
+		if block.Type == agentpg.ContentTypeText {
+			fmt.Println(block.Text)
+		}
+	}
+
+	// Show registered tools
+	fmt.Println("\n=== Registered Tools ===")
+	for _, name := range agent.GetTools() {
+		fmt.Printf("- %s\n", name)
+	}
+
+	fmt.Println("\n=== Demo Complete ===")
+}

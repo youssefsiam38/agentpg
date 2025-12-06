@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: agentpg
+      POSTGRES_PASSWORD: agentpg
+      POSTGRES_DB: agentpg
+    ports:
+      - "5432:5432"
+    volumes:
+      - agentpg_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentpg"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  agentpg_data:

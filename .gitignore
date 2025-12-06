@@ -1,0 +1,181 @@
+# ==================================
+# AgentPG .gitignore
+# ==================================
+
+# ------------------------------
+# Go Build Artifacts
+# ------------------------------
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Build output directories
+/bin/
+/dist/
+/build/
+
+# ------------------------------
+# Go Module & Vendor
+# ------------------------------
+# Uncomment if you vendor dependencies
+# /vendor/
+
+# Go workspace files
+go.work
+go.work.sum
+
+# ------------------------------
+# IDE & Editor Files
+# ------------------------------
+# VSCode
+.vscode/
+*.code-workspace
+
+# GoLand / JetBrains
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+.#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ------------------------------
+# OS Generated Files
+# ------------------------------
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+.directory
+
+# ------------------------------
+# Environment & Secrets
+# ------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+credentials.json
+service-account*.json
+
+# Anthropic API keys
+.anthropic
+
+# ------------------------------
+# Database Files
+# ------------------------------
+*.db
+*.sqlite
+*.sqlite3
+pgdata/
+postgres-data/
+
+# ------------------------------
+# Testing & Coverage
+# ------------------------------
+coverage.out
+coverage.html
+coverage.txt
+*.coverprofile
+.coverage/
+coverage/
+c.out
+
+# Test binaries
+*.test
+
+# Benchmarks
+*.bench
+benchmarks/results/
+
+# ------------------------------
+# Logs & Debug
+# ------------------------------
+*.log
+logs/
+debug/
+*.debug
+
+# ------------------------------
+# Documentation Build
+# ------------------------------
+/docs/_site/
+/docs/.hugo_build.lock
+/site/
+
+# ------------------------------
+# Project-Specific
+# ------------------------------
+# Internal references, guides, and planning documents
+/references/
+
+# Example outputs
+/examples/output/
+/examples/*.log
+
+# Temporary files
+/tmp/
+/temp/
+*.tmp
+*.temp
+
+# Binary outputs from examples
+/examples/*/bin/
+
+# ------------------------------
+# CI/CD
+# ------------------------------
+.github/actions-runner/
+
+# ------------------------------
+# Profiling
+# ------------------------------
+*.prof
+*.pprof
+cpu.out
+mem.out
+trace.out
+
+# ------------------------------
+# Air (hot reload)
+# ------------------------------
+/tmp/air/
+air.toml
+
+# ------------------------------
+# Task runner
+# ------------------------------
+.task/
+
+# ------------------------------
+# Docker (local dev)
+# ------------------------------
+docker-compose.override.yml
+.docker/
