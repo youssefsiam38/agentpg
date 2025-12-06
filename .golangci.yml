@@ -1,50 +1,61 @@
+version: "2"
+
 run:
   timeout: 5m
 
 linters:
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
     - unused
-    - gofmt
-    - goimports
     - gosec
     - misspell
-    - unconvert
     - gocritic
     - prealloc
 
-linters-settings:
-  govet:
-    enable-all: true
-    disable:
-      - fieldalignment # Struct field ordering for memory optimization hurts readability
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - style
-      - performance
-    disabled-checks:
-      - hugeParam        # Passing large structs by value is often fine and clearer
-      - rangeValCopy     # Range value copy warnings hurt readability
-      - paramTypeCombine # Combining param types like (a, b string) hurts clarity
-      - unnamedResult    # Named returns are not always better
-      - ifElseChain      # if-else chains are often clearer than switch
-      - commentedOutCode # False positives on math explanations in comments
-      - emptyStringTest  # len(s) == 0 vs s == "" is a style preference
-  gosec:
-    excludes:
-      - G104 # Unhandled errors (we handle them contextually)
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # Struct field ordering for memory optimization hurts readability
+    staticcheck:
+      checks:
+        - "all"
+        - "-QF*"   # Disable quickfix suggestions - style preferences
+        - "-ST*"   # Disable style suggestions - comment formatting preferences
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - hugeParam        # Passing large structs by value is often fine and clearer
+        - rangeValCopy     # Range value copy warnings hurt readability
+        - paramTypeCombine # Combining param types like (a, b string) hurts clarity
+        - unnamedResult    # Named returns are not always better
+        - ifElseChain      # if-else chains are often clearer than switch
+        - commentedOutCode # False positives on math explanations in comments
+        - emptyStringTest  # len(s) == 0 vs s == "" is a style preference
+    gosec:
+      excludes:
+        - G104 # Unhandled errors (we handle them contextually)
 
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
-    - path: examples/
-      linters:
-        - errcheck
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+      - path: examples/
+        linters:
+          - errcheck
+          - gosec
+          - govet
+          - gocritic
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

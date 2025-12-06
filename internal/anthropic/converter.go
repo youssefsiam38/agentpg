@@ -261,16 +261,16 @@ func ExtractTextContent(content []types.ContentBlock) string {
 }
 
 // CreateToolResultBlocks creates tool result content blocks
-func CreateToolResultBlocks(toolCalls []ToolCall, results []string, errors []error) []types.ContentBlock {
+func CreateToolResultBlocks(toolCalls []ToolCall, results []string, errs []error) []types.ContentBlock {
 	blocks := make([]types.ContentBlock, 0, len(toolCalls))
 
 	for i, call := range toolCalls {
 		isError := false
 		content := ""
 
-		if i < len(errors) && errors[i] != nil {
+		if i < len(errs) && errs[i] != nil {
 			isError = true
-			content = fmt.Sprintf("Error executing tool: %v", errors[i])
+			content = fmt.Sprintf("Error executing tool: %v", errs[i])
 		} else if i < len(results) {
 			content = results[i]
 		}
