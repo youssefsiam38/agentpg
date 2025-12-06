@@ -1,6 +1,6 @@
 # AgentPG
 
-**Production-grade, stateful AI agent toolkit for Go. PostgreSQL-backed, transaction-safe.**
+**Stateful AI agent toolkit for Go. PostgreSQL-backed, transaction-safe.**
 
 AgentPG is an opinionated, batteries-included package for building AI agents powered by Anthropic's Claude with PostgreSQL persistence. Built for long-context operations, tool use, and agent composition.
 
@@ -14,7 +14,6 @@ AgentPG is an opinionated, batteries-included package for building AI agents pow
 - ✅ **Nested Agents** - Agents can use other agents as tools automatically
 - ✅ **Extended Context** - Automatic 1M token context with beta header support
 - ✅ **Hooks & Observability** - Before/after message, tool call, and compaction hooks
-- ✅ **Production-Ready** - Error handling, retries, timeouts, audit trails, reversibility
 
 ## Installation
 
@@ -279,7 +278,7 @@ agent.OnAfterCompaction(func(ctx context.Context, result any) error {
 
 ### Context Management
 
-AgentPG includes production-grade context compaction based on patterns from Claude Code, Aider, and OpenCode:
+AgentPG includes context compaction based on patterns from Claude Code, Aider, and OpenCode:
 
 ```go
 agent, _ := agentpg.New(
@@ -407,7 +406,6 @@ AgentPG follows these design principles:
 - **Stateful** - Full conversation history persisted in PostgreSQL
 - **Composable** - Agents can use other agents as tools
 - **Observable** - Hooks provide visibility into all operations
-- **Production-ready** - Error handling, retries, audit trails, reversibility
 
 ## Package Structure
 
