@@ -75,35 +75,36 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    strategy:
+      matrix:
+        # All Go modules in the project
+        working-directory:
+          - .
+          - driver/pgxv5
+          - driver/databasesql
     env:
-      # Use golangci-lint v2.7.1+ which is built with Go 1.25
-      GOLANGCI_LINT_VERSION: v2.7.1
       GOTOOLCHAIN: local
     permissions:
       contents: read
       pull-requests: read
 
     steps:
-      - uses: actions/setup-go@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
           # Must match project's toolchain (go1.25.4)
           go-version: "1.25"
 
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Lint
         uses: golangci/golangci-lint-action@v7
         with:
-          # golangci-lint needs to be run separately for every Go module, and
-          # its GitHub Action doesn't provide any way to do that. Have it fetch
-          # the golangci-lint binary, trick it into not running by sending only
-          # `--help`, then run the full set of lints below.
-          args: --help
-          version: ${{ env.GOLANGCI_LINT_VERSION }}
-
-      - name: Run lint
-        run: make lint
+          version: v2.7.1
+          working-directory: ${{ matrix.working-directory }}
+          # Show only new issues on PRs
+          only-new-issues: true
 
   submodule_check:
     runs-on: ubuntu-latest
