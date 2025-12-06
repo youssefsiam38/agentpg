@@ -109,20 +109,24 @@ func (e *Executor) QueryRow(ctx context.Context, sql string, args ...any) driver
 
 // SendBatch sends multiple queries as a batch.
 // This is a pgx-specific optimization that executes all queries in a single round trip.
-func (e *Executor) SendBatch(ctx context.Context, items []driver.BatchItem) ([]int64, error) {
+func (e *Executor) SendBatch(ctx context.Context, items []driver.BatchItem) (affected []int64, err error) {
 	batch := &pgx.Batch{}
 	for _, item := range items {
 		batch.Queue(item.Query, item.Args...)
 	}
 
 	results := e.pool.SendBatch(ctx, batch)
-	defer results.Close()
+	defer func() {
+		if closeErr := results.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
-	affected := make([]int64, len(items))
+	affected = make([]int64, len(items))
 	for i := range items {
-		result, err := results.Exec()
-		if err != nil {
-			return nil, err
+		result, execErr := results.Exec()
+		if execErr != nil {
+			return nil, execErr
 		}
 		affected[i] = result.RowsAffected()
 	}
@@ -178,20 +182,24 @@ func (e *ExecutorTx) Rollback(ctx context.Context) error {
 }
 
 // SendBatch sends multiple queries as a batch within the transaction.
-func (e *ExecutorTx) SendBatch(ctx context.Context, items []driver.BatchItem) ([]int64, error) {
+func (e *ExecutorTx) SendBatch(ctx context.Context, items []driver.BatchItem) (affected []int64, err error) {
 	batch := &pgx.Batch{}
 	for _, item := range items {
 		batch.Queue(item.Query, item.Args...)
 	}
 
 	results := e.tx.SendBatch(ctx, batch)
-	defer results.Close()
+	defer func() {
+		if closeErr := results.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
-	affected := make([]int64, len(items))
+	affected = make([]int64, len(items))
 	for i := range items {
-		result, err := results.Exec()
-		if err != nil {
-			return nil, err
+		result, execErr := results.Exec()
+		if execErr != nil {
+			return nil, execErr
 		}
 		affected[i] = result.RowsAffected()
 	}
