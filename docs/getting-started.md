@@ -48,11 +48,11 @@ import (
     "context"
     "fmt"
     "log"
-    "os"
 
+    "github.com/anthropics/anthropic-sdk-go"
     "github.com/jackc/pgx/v5/pgxpool"
     "github.com/youssefsiam38/agentpg"
-    "github.com/youssefsiam38/agentpg/storage"
+    "github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
 
 func main() {
@@ -65,31 +65,41 @@ func main() {
     }
     defer pool.Close()
 
-    // Create storage and agent
-    store := storage.NewPostgresStore(pool)
-    agent := agentpg.New(
-        os.Getenv("ANTHROPIC_API_KEY"),
-        store,
-        agentpg.WithModel("claude-sonnet-4-5-20250929"),
-        agentpg.WithSystemPrompt("You are a helpful assistant."),
-    )
+    // Create driver and agent
+    drv := pgxv5.New(pool)
+    client := anthropic.NewClient() // Uses ANTHROPIC_API_KEY env var
 
-    // Create a new session
-    session, err := agent.NewSession(ctx, "my-tenant", "user-123", nil)
+    agent, err := agentpg.New(drv, agentpg.Config{
+        Client:       &client,
+        Model:        "claude-sonnet-4-5-20250929",
+        SystemPrompt: "You are a helpful assistant.",
+    })
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("Created session: %s\n", session.ID)
+
+    // Create a new session
+    sessionID, err := agent.NewSession(ctx, "my-tenant", "user-123", nil, nil)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Created session: %s\n", sessionID)
 
     // Send a message and get a response
     response, err := agent.Run(ctx, "Hello! What can you help me with?")
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("Assistant: %s\n", response)
+
+    // Access the response content
+    for _, block := range response.Message.Content {
+        if block.Type == agentpg.ContentTypeText {
+            fmt.Printf("Assistant: %s\n", block.Text)
+        }
+    }
 
     // The conversation is automatically persisted
-    // You can resume it later with agent.LoadSession(ctx, session.ID)
+    // You can resume it later with agent.LoadSession(ctx, sessionID)
 }
 ```
 
@@ -146,61 +156,51 @@ func main() {
     )
     registry.Register(weatherTool)
 
-    // Create agent with tools
-    agent := agentpg.New(
-        apiKey,
-        store,
-        agentpg.WithTools(registry),
-        agentpg.WithSystemPrompt("You are a weather assistant. Use the get_weather tool to help users."),
-    )
+    // Create agent with tools (assuming drv and client are already set up)
+    agent, _ := agentpg.New(drv, agentpg.Config{
+        Client:       &client,
+        Model:        "claude-sonnet-4-5-20250929",
+        SystemPrompt: "You are a weather assistant. Use the get_weather tool to help users.",
+    }, agentpg.WithTools(weatherTool))
+
+    // Create session and run
+    agent.NewSession(ctx, "tenant", "user", nil, nil)
 
     // The agent will automatically use tools when appropriate
     response, _ := agent.Run(ctx, "What's the weather in Tokyo?")
-    fmt.Println(response)
+    for _, block := range response.Message.Content {
+        if block.Type == agentpg.ContentTypeText {
+            fmt.Println(block.Text)
+        }
+    }
 }
 ```
 
-## Streaming Responses
+## Response Processing
 
-For real-time output, use streaming:
+AgentPG uses streaming internally for all API calls but returns complete responses. Process the response content blocks:
 
 ```go
-package main
+response, err := agent.Run(ctx, "Tell me a story")
+if err != nil {
+    log.Fatal(err)
+}
 
-import (
-    "context"
-    "fmt"
-
-    "github.com/youssefsiam38/agentpg"
-    "github.com/youssefsiam38/agentpg/streaming"
-)
-
-func main() {
-    agent := agentpg.New(apiKey, store)
-    agent.NewSession(ctx, "tenant", "user", nil)
-
-    // Create a streaming handler
-    handler := &streaming.PrintHandler{} // Prints tokens as they arrive
-
-    // Or create a custom handler
-    customHandler := &streaming.CallbackHandler{
-        OnToken: func(token string) {
-            fmt.Print(token) // Handle each token
-        },
-        OnComplete: func(fullText string) {
-            fmt.Println("\n--- Complete ---")
-        },
-        OnError: func(err error) {
-            fmt.Printf("Error: %v\n", err)
-        },
-    }
-
-    // Run with streaming
-    response, err := agent.RunStream(ctx, "Tell me a story", customHandler)
-    if err != nil {
-        log.Fatal(err)
+// Process content blocks
+for _, block := range response.Message.Content {
+    switch block.Type {
+    case agentpg.ContentTypeText:
+        fmt.Printf("Text: %s\n", block.Text)
+    case agentpg.ContentTypeToolUse:
+        fmt.Printf("Tool call: %s with input %v\n", block.ToolName, block.ToolInput)
+    case agentpg.ContentTypeToolResult:
+        fmt.Printf("Tool result: %s\n", block.ToolContent)
     }
 }
+
+// Access usage statistics
+fmt.Printf("Tokens used: %d input, %d output\n",
+    response.Usage.InputTokens, response.Usage.OutputTokens)
 ```
 
 ## Session Management
@@ -209,13 +209,10 @@ func main() {
 
 ```go
 // Load an existing session by ID
-session, err := agent.LoadSession(ctx, "session-uuid-here")
+err := agent.LoadSession(ctx, "session-uuid-here")
 if err != nil {
     log.Fatal(err)
 }
-
-// Or find by tenant and identifier
-session, err = agent.LoadSessionByIdentifier(ctx, "my-tenant", "user-123")
 
 // Continue the conversation
 response, _ := agent.Run(ctx, "What were we talking about?")
@@ -240,11 +237,11 @@ metadata := map[string]any{
     "plan":      "premium",
     "tags":      []string{"support", "billing"},
 }
-session, _ := agent.NewSession(ctx, "tenant", "user", metadata)
+sessionID, _ := agent.NewSession(ctx, "tenant", "user", nil, metadata)
 
 // Access metadata later
-session, _ := agent.LoadSession(ctx, sessionID)
-userName := session.Metadata["user_name"].(string)
+sessionInfo, _ := agent.GetSession(ctx, sessionID)
+userName := sessionInfo.Metadata["user_name"].(string)
 ```
 
 ## Multi-Tenancy
@@ -253,19 +250,15 @@ AgentPG is designed for multi-tenant applications:
 
 ```go
 // Each tenant's sessions are isolated
-agent.NewSession(ctx, "company-a", "user-1", nil) // Company A's user
-agent.NewSession(ctx, "company-b", "user-1", nil) // Company B's user (different session)
-
-// Query sessions by tenant
-companyASessions, _ := store.GetSessionsByTenant(ctx, "company-a")
-companyBSessions, _ := store.GetSessionsByTenant(ctx, "company-b")
+agent.NewSession(ctx, "company-a", "user-1", nil, nil) // Company A's user
+agent.NewSession(ctx, "company-b", "user-1", nil, nil) // Company B's user (different session)
 ```
 
 For single-tenant applications, use a constant tenant ID:
 
 ```go
 const TenantID = "default"
-agent.NewSession(ctx, TenantID, "user-123", nil)
+agent.NewSession(ctx, TenantID, "user-123", nil, nil)
 ```
 
 ## Error Handling

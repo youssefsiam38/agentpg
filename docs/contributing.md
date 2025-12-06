@@ -65,8 +65,18 @@ agentpg/
 │
 ├── storage/           # Persistence layer
 │   ├── store.go       # Store interface
-│   ├── postgres.go    # PostgreSQL implementation
 │   └── migrations/    # SQL migrations
+│
+├── driver/            # Database drivers
+│   ├── driver.go      # Driver interface
+│   ├── executor.go    # Executor interface
+│   ├── context.go     # Context utilities
+│   ├── pgxv5/         # pgx/v5 driver (recommended)
+│   │   ├── driver.go
+│   │   └── store.go
+│   └── databasesql/   # database/sql driver
+│       ├── driver.go
+│       └── store.go
 │
 ├── tool/              # Tool system
 │   ├── tool.go        # Tool interface
@@ -278,7 +288,7 @@ func TestValidator_ValidateInput(t *testing.T) {
 ### Integration Tests
 
 ```go
-func TestIntegration_PostgresStore_SessionLifecycle(t *testing.T) {
+func TestIntegration_Store_SessionLifecycle(t *testing.T) {
     testutil.RequireIntegration(t)
 
     db := testutil.NewTestDB(t)
@@ -292,10 +302,11 @@ func TestIntegration_PostgresStore_SessionLifecycle(t *testing.T) {
         t.Fatalf("Failed to clean tables: %v", err)
     }
 
-    store := storage.NewPostgresStore(db.Pool)
+    drv := pgxv5.New(db.Pool)
+    store := drv.GetStore()
 
     // Test session creation
-    sessionID, err := store.CreateSession(ctx, "tenant1", "user1", nil)
+    sessionID, err := store.CreateSession(ctx, "tenant1", "user1", nil, nil)
     if err != nil {
         t.Fatalf("CreateSession failed: %v", err)
     }

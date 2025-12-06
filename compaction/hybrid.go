@@ -9,16 +9,18 @@ import (
 )
 
 const (
-	// PruneProtect is recent tokens always protected (OpenCode pattern)
-	PruneProtect = 40000
+	// DefaultPruneProtect is default recent tokens protected (OpenCode pattern)
+	// Used when config.ProtectedTokens is 0
+	DefaultPruneProtect = 40000
 
-	// PruneMinimum only prunes if tool outputs exceed this threshold
-	PruneMinimum = 20000
+	// DefaultPruneMinimum only prunes if tool outputs exceed this threshold
+	// Used as a floor to avoid unnecessary pruning of small outputs
+	DefaultPruneMinimum = 1000
 )
 
 // HybridStrategy implements prune-then-summarize (OpenCode pattern)
 // Step 1: Prune tool outputs (free, no API call)
-// Step 2: If still over threshold, summarize
+// Step 2: If still over target, summarize
 type HybridStrategy struct {
 	client      *anthropic.Client
 	summarizer  *SummarizationStrategy
@@ -51,28 +53,44 @@ func (h *HybridStrategy) Compact(
 	messages []*types.Message,
 	config CompactionConfig,
 ) (*CompactionResult, error) {
+	originalTokens := SumTokens(messages)
+	originalCount := len(messages)
+
 	// Step 1: Prune tool outputs first (cheaper, no API call)
-	pruned, _ := h.pruneToolOutputs(messages, config)
+	pruned, prunedCount := h.pruneToolOutputs(messages, config)
+	prunedTokens := SumTokens(pruned)
 
-	// Step 2: Check if pruning was sufficient
-	totalTokens := SumTokens(pruned)
-	threshold := int(float64(config.MaxContextTokens) * config.TriggerThreshold)
-
-	if totalTokens < threshold {
+	// Step 2: Check if pruning was sufficient to reach target
+	// Use TargetTokens as the goal, not the trigger threshold
+	if prunedTokens <= config.TargetTokens {
 		// Pruning was sufficient, no summarization needed
 		result := &CompactionResult{
 			Summary:           "[Tool outputs pruned]",
 			PreservedMessages: pruned,
-			OriginalTokens:    SumTokens(messages),
-			CompactedTokens:   totalTokens,
+			OriginalTokens:    originalTokens,
+			CompactedTokens:   prunedTokens,
 			MessagesRemoved:   0,
 			Strategy:          h.Name(),
 		}
-		return result, nil
+		// Only return this if we actually pruned something
+		if prunedCount > 0 {
+			return result, nil
+		}
 	}
 
-	// Step 3: Still over threshold, need summarization
-	return h.summarizer.Compact(ctx, pruned, config)
+	// Step 3: Still over target or nothing was pruned, need summarization
+	result, err := h.summarizer.Compact(ctx, pruned, config)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fix the token counts to reflect original -> final (not pruned -> final)
+	if result != nil {
+		result.OriginalTokens = originalTokens
+		result.MessagesRemoved = originalCount - len(result.PreservedMessages)
+	}
+
+	return result, nil
 }
 
 // pruneToolOutputs removes verbose tool outputs outside protected zone
@@ -89,8 +107,14 @@ func (h *HybridStrategy) pruneToolOutputs(
 	totalPruned := 0
 	toolOutputTokens := 0
 
+	// Use config.ProtectedTokens, fallback to default if not set
+	protectedTokens := config.ProtectedTokens
+	if protectedTokens == 0 {
+		protectedTokens = DefaultPruneProtect
+	}
+
 	// Calculate protected zone from end
-	protectedIdx := h.partitioner.findProtectedIndex(messages, PruneProtect)
+	protectedIdx := h.partitioner.findProtectedIndex(messages, protectedTokens)
 
 	// First pass: count tool output tokens outside protected zone
 	for i := 0; i < protectedIdx; i++ {
@@ -104,7 +128,7 @@ func (h *HybridStrategy) pruneToolOutputs(
 	}
 
 	// Only prune if tool outputs exceed minimum threshold
-	if toolOutputTokens < PruneMinimum {
+	if toolOutputTokens < DefaultPruneMinimum {
 		return result, 0
 	}
 
@@ -141,8 +165,12 @@ func (h *HybridStrategy) copyMessage(msg *types.Message) *types.Message {
 
 	// Deep copy content blocks
 	msgCopy.Content = make([]types.ContentBlock, len(msg.Content))
-	for i := range msg.Content {
-		msgCopy.Content[i] = msg.Content[i]
+	copy(msgCopy.Content, msg.Content)
+
+	// Deep copy usage if present
+	if msg.Usage != nil {
+		usageCopy := *msg.Usage
+		msgCopy.Usage = &usageCopy
 	}
 
 	// Deep copy metadata if present

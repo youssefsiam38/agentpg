@@ -12,6 +12,8 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
+	"github.com/youssefsiam38/agentpg/compaction"
+	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 	"github.com/youssefsiam38/agentpg/tool"
 )
 
@@ -81,34 +83,52 @@ func main() {
 	// Create Anthropic client
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 
+	// Create driver
+	drv := pgxv5.New(pool)
+
+	// Track compaction events
+	var lastCompaction *compaction.CompactionResult
+
 	// ==========================================================
-	// Create agent with MANUAL compaction control
+	// Create agent with LOW thresholds to demonstrate compaction
 	// ==========================================================
 
 	agent, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:           pool,
 			Client:       &client,
 			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a research assistant. Use the search tool to find information.",
+			SystemPrompt: "You are a research assistant. Use the search tool to find information. Keep responses brief.",
 		},
 		// DISABLE auto-compaction for manual control
 		agentpg.WithAutoCompaction(false),
 
-		// These settings are still configured but only used when manually triggered
-		agentpg.WithCompactionTrigger(0.80),          // 80% threshold
-		agentpg.WithCompactionTarget(40000),          // Target 40K tokens
-		agentpg.WithCompactionPreserveN(5),           // Keep last 5 messages
-		agentpg.WithCompactionProtectedTokens(20000), // Protect last 20K tokens
+		// LOW thresholds to trigger SUMMARIZATION (not just pruning)
+		agentpg.WithCompactionTarget(500),           // Target only 500 tokens - forces summarization
+		agentpg.WithCompactionPreserveN(2),          // Keep only last 2 messages
+		agentpg.WithCompactionProtectedTokens(1000), // Protect only last 1K tokens
 
 		// Use Haiku for cost-effective summarization
 		agentpg.WithSummarizerModel("claude-3-5-haiku-20241022"),
 
-		agentpg.WithMaxTokens(2048),
+		agentpg.WithMaxTokens(1024),
 	)
 	if err != nil {
 		log.Fatalf("Failed to create agent: %v", err)
 	}
+
+	// Register compaction hooks for monitoring
+	agent.OnBeforeCompaction(func(ctx context.Context, sessionID string) error {
+		fmt.Println("\n" + strings.Repeat("=", 60))
+		fmt.Println("COMPACTION STARTING...")
+		fmt.Println(strings.Repeat("=", 60))
+		return nil
+	})
+
+	agent.OnAfterCompaction(func(ctx context.Context, result *compaction.CompactionResult) error {
+		lastCompaction = result
+		return nil
+	})
 
 	// Register verbose search tool
 	if err := agent.RegisterTool(&VerboseSearchTool{}); err != nil {
@@ -123,14 +143,15 @@ func main() {
 		log.Fatalf("Failed to create session: %v", err)
 	}
 
-	fmt.Printf("Created session: %s\n\n", sessionID)
-	fmt.Println("=== Configuration ===")
-	fmt.Println("- Auto-compaction: DISABLED")
-	fmt.Println("- Compaction trigger: 80%")
-	fmt.Println("- Target after compaction: 40,000 tokens")
-	fmt.Println("- Preserve last N messages: 5")
-	fmt.Println("- Protected tokens: 20,000")
-	fmt.Println("- Summarizer model: claude-3-5-haiku-20241022")
+	fmt.Println(strings.Repeat("=", 60))
+	fmt.Println("MANUAL COMPACTION DEMO")
+	fmt.Println(strings.Repeat("=", 60))
+	fmt.Printf("\nSession ID: %s\n", sessionID)
+	fmt.Println("\nConfiguration (LOW thresholds to trigger SUMMARIZATION):")
+	fmt.Println("  - Auto-compaction: DISABLED")
+	fmt.Println("  - Target tokens: 500 (forces summarization after pruning)")
+	fmt.Println("  - Preserve last N: 2 messages")
+	fmt.Println("  - Protected tokens: 1,000")
 	fmt.Println()
 
 	// ==========================================================
@@ -138,110 +159,195 @@ func main() {
 	// ==========================================================
 
 	queries := []string{
-		"Search for information about microservices architecture",
-		"Search for best practices in API design",
-		"Search for database optimization techniques",
-		"Search for containerization with Docker and Kubernetes",
+		"Search for microservices architecture",
+		"Search for API design patterns",
+		"Search for database optimization",
+		"Search for Docker containerization",
 	}
 
 	for i, query := range queries {
-		fmt.Printf("=== Query %d: %s ===\n", i+1, query)
+		fmt.Printf("Query %d: %s\n", i+1, query)
 
 		response, err := agent.Run(ctx, query)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}
 
-		// Print truncated response
+		// Print brief response
 		for _, block := range response.Message.Content {
 			if block.Type == agentpg.ContentTypeText {
 				text := block.Text
-				if len(text) > 150 {
-					text = text[:150] + "..."
+				if len(text) > 80 {
+					text = text[:80] + "..."
 				}
-				fmt.Println(text)
+				fmt.Printf("  -> %s\n", text)
 			}
 		}
-
-		fmt.Printf("Tokens used - Input: %d, Output: %d\n\n",
-			response.Usage.InputTokens,
-			response.Usage.OutputTokens)
 	}
 
 	// ==========================================================
-	// Get session info before compaction
+	// Show messages BEFORE compaction
 	// ==========================================================
 
-	fmt.Println("=== Session Status Before Compaction ===")
-	session, err := agent.GetSession(ctx, sessionID)
-	if err != nil {
-		log.Fatalf("Failed to get session: %v", err)
-	}
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	fmt.Println("BEFORE COMPACTION")
+	fmt.Println(strings.Repeat("=", 60))
 
-	messages, err := agent.GetMessages(ctx)
+	messagesBefore, err := agent.GetMessages(ctx)
 	if err != nil {
 		log.Fatalf("Failed to get messages: %v", err)
 	}
 
-	// Calculate total tokens
-	totalTokens := 0
-	for _, msg := range messages {
-		totalTokens += msg.TokenCount()
+	statsBefore, err := agent.GetCompactionStats(ctx)
+	if err != nil {
+		log.Fatalf("Failed to get stats: %v", err)
 	}
 
-	fmt.Printf("Session ID: %s\n", session.ID)
-	fmt.Printf("Total messages: %d\n", len(messages))
-	fmt.Printf("Estimated total tokens: %d\n", totalTokens)
-	fmt.Printf("Compaction count: %d\n", session.CompactionCount)
+	fmt.Printf("\nTotal Messages: %d\n", len(messagesBefore))
+	fmt.Printf("Total Tokens: %d\n", statsBefore.CurrentTokens)
+	fmt.Printf("Context Utilization: %.1f%%\n", statsBefore.UtilizationPct)
+
+	fmt.Println("\nMessage List:")
+	for i, msg := range messagesBefore {
+		content := getMessagePreview(msg)
+		tokens := msg.TokenCount()
+		fmt.Printf("  [%d] %s (%d tokens): %s\n", i+1, msg.Role, tokens, content)
+	}
 
 	// ==========================================================
-	// Note: Manual compaction would require direct access to
-	// the compaction manager, which is internal. In practice,
-	// you would trigger compaction by:
-	// 1. Re-enabling auto-compaction temporarily
-	// 2. Using hooks to detect when compaction is needed
-	// 3. Implementing custom compaction logic
+	// Trigger manual compaction
 	// ==========================================================
 
-	fmt.Println("\n=== Manual Compaction Control ===")
-	fmt.Println("With auto-compaction disabled, you have full control over when")
-	fmt.Println("context is compacted. This is useful for:")
-	fmt.Println("1. Batch processing - compact at logical breakpoints")
-	fmt.Println("2. Critical conversations - preserve everything during important exchanges")
-	fmt.Println("3. Testing - observe context growth without automatic intervention")
-	fmt.Println("4. Cost optimization - compact only when truly necessary")
+	result, err := agent.Compact(ctx)
+	if err != nil {
+		log.Fatalf("Failed to compact: %v", err)
+	}
 
 	// ==========================================================
-	// Continue conversation to show context accumulation
+	// Show messages AFTER compaction
 	// ==========================================================
 
-	fmt.Println("\n=== Additional Conversation ===")
-	response, err := agent.Run(ctx, "Summarize what we've learned about microservices and API design.")
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	fmt.Println("AFTER COMPACTION")
+	fmt.Println(strings.Repeat("=", 60))
+
+	messagesAfter, err := agent.GetMessages(ctx)
+	if err != nil {
+		log.Fatalf("Failed to get messages: %v", err)
+	}
+
+	statsAfter, err := agent.GetCompactionStats(ctx)
+	if err != nil {
+		log.Fatalf("Failed to get stats: %v", err)
+	}
+
+	fmt.Printf("\nTotal Messages: %d\n", len(messagesAfter))
+	fmt.Printf("Total Tokens: %d\n", statsAfter.CurrentTokens)
+	fmt.Printf("Context Utilization: %.1f%%\n", statsAfter.UtilizationPct)
+
+	fmt.Println("\nMessage List:")
+	for i, msg := range messagesAfter {
+		content := getMessagePreview(msg)
+		tokens := msg.TokenCount()
+		label := ""
+		if msg.IsSummary {
+			label = " [SUMMARY]"
+		}
+		fmt.Printf("  [%d] %s%s (%d tokens): %s\n", i+1, msg.Role, label, tokens, content)
+	}
+
+	// ==========================================================
+	// Show the DIFF
+	// ==========================================================
+
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	fmt.Println("COMPACTION DIFF")
+	fmt.Println(strings.Repeat("=", 60))
+
+	if result != nil && lastCompaction != nil {
+		fmt.Printf("\nStrategy Used: %s\n", result.Strategy)
+		fmt.Println()
+
+		// Token diff
+		tokensSaved := result.OriginalTokens - result.CompactedTokens
+		reductionPct := 100.0 * (1.0 - float64(result.CompactedTokens)/float64(result.OriginalTokens))
+		fmt.Println("Tokens:")
+		fmt.Printf("  Before: %d\n", result.OriginalTokens)
+		fmt.Printf("  After:  %d\n", result.CompactedTokens)
+		fmt.Printf("  Saved:  %d (%.1f%% reduction)\n", tokensSaved, reductionPct)
+		fmt.Println()
+
+		// Message diff
+		fmt.Println("Messages:")
+		fmt.Printf("  Before: %d\n", len(messagesBefore))
+		fmt.Printf("  After:  %d\n", len(messagesAfter))
+		fmt.Printf("  Removed: %d\n", result.MessagesRemoved)
+		fmt.Printf("  Preserved: %d\n", len(result.PreservedMessages))
+		fmt.Println()
+
+		// Summary info
+		if result.Summary != "" {
+			fmt.Println("Generated Summary:")
+			fmt.Println(strings.Repeat("-", 40))
+			summary := result.Summary
+			if len(summary) > 500 {
+				summary = summary[:500] + "..."
+			}
+			fmt.Println(summary)
+			fmt.Println(strings.Repeat("-", 40))
+		}
+	} else {
+		fmt.Println("\nNo compaction was performed (context within limits)")
+	}
+
+	// ==========================================================
+	// Verify conversation still works
+	// ==========================================================
+
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	fmt.Println("VERIFICATION: Conversation continues with context")
+	fmt.Println(strings.Repeat("=", 60))
+
+	response, err := agent.Run(ctx, "Based on our previous discussion, what were the main topics we covered?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
 
+	fmt.Println("\nAgent response:")
 	for _, block := range response.Message.Content {
 		if block.Type == agentpg.ContentTypeText {
 			text := block.Text
-			if len(text) > 300 {
-				text = text[:300] + "..."
+			if len(text) > 400 {
+				text = text[:400] + "..."
 			}
 			fmt.Println(text)
 		}
 	}
 
-	// Final status
-	messages, _ = agent.GetMessages(ctx)
-	totalTokens = 0
-	for _, msg := range messages {
-		totalTokens += msg.TokenCount()
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	fmt.Println("DEMO COMPLETE")
+	fmt.Println(strings.Repeat("=", 60))
+}
+
+// getMessagePreview returns a short preview of message content
+func getMessagePreview(msg *agentpg.Message) string {
+	for _, block := range msg.Content {
+		switch block.Type {
+		case agentpg.ContentTypeText:
+			text := block.Text
+			if len(text) > 50 {
+				text = text[:50] + "..."
+			}
+			return text
+		case agentpg.ContentTypeToolUse:
+			return fmt.Sprintf("[tool_use: %s]", block.ToolName)
+		case agentpg.ContentTypeToolResult:
+			content := block.ToolContent
+			if len(content) > 30 {
+				content = content[:30] + "..."
+			}
+			return fmt.Sprintf("[tool_result: %s]", content)
+		}
 	}
-
-	fmt.Println("\n=== Final Session Status ===")
-	fmt.Printf("Total messages: %d\n", len(messages))
-	fmt.Printf("Estimated total tokens: %d\n", totalTokens)
-	fmt.Println("(No automatic compaction occurred because it was disabled)")
-
-	fmt.Println("\n=== Demo Complete ===")
+	return "[empty]"
 }

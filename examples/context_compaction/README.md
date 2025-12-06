@@ -11,6 +11,26 @@ Claude has a finite context window (200K tokens for most models). As conversatio
 
 AgentPG provides automatic and manual compaction strategies.
 
+## Manual Compaction API
+
+```go
+// Check context usage
+stats, _ := agent.GetCompactionStats(ctx)
+fmt.Printf("Utilization: %.1f%%\n", stats.UtilizationPct)
+
+// Manually trigger compaction
+result, err := agent.Compact(ctx)
+if result != nil {
+    fmt.Printf("Reduced: %d -> %d tokens\n",
+        result.OriginalTokens, result.CompactedTokens)
+}
+
+// Or within a transaction
+tx, _ := pool.Begin(ctx)
+result, err := agent.CompactTx(ctx, tx)
+tx.Commit(ctx)
+```
+
 ## Examples
 
 | Example | Description |

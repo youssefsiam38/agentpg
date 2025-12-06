@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg/hooks"
 	"github.com/youssefsiam38/agentpg/tool"
 )
@@ -39,11 +38,18 @@ func GetModelInfo(model string) ModelInfo {
 	return ModelInfo{MaxContextTokens: 200000, DefaultMaxTokens: 8192}
 }
 
-// Config holds the required configuration for an agent
+// Config holds the required configuration for an agent.
+// The database driver is passed separately to New() to enable type inference.
+//
+// Example:
+//
+//	drv := pgxv5.New(pool)
+//	agent, _ := agentpg.New(drv, agentpg.Config{
+//	    Client:       &client,
+//	    Model:        "claude-sonnet-4-5-20250929",
+//	    SystemPrompt: "You are a helpful assistant",
+//	})
 type Config struct {
-	// DB is the PostgreSQL connection pool (required)
-	DB *pgxpool.Pool
-
 	// Client is the Anthropic API client (required)
 	Client *anthropic.Client
 
@@ -57,10 +63,6 @@ type Config struct {
 
 // Validate validates the configuration
 func (c *Config) Validate() error {
-	if c.DB == nil {
-		return fmt.Errorf("%w: DB connection pool is required", ErrInvalidConfig)
-	}
-
 	if c.Client == nil {
 		return fmt.Errorf("%w: Anthropic client is required", ErrInvalidConfig)
 	}
@@ -79,7 +81,6 @@ func (c *Config) Validate() error {
 // internalConfig holds the full agent configuration including optional parameters
 type internalConfig struct {
 	// Required from Config
-	db           *pgxpool.Pool
 	client       *anthropic.Client
 	model        string
 	systemPrompt string
@@ -111,7 +112,7 @@ type internalConfig struct {
 	// Internal state
 	tools             []tool.Tool
 	hooks             *hooks.Registry
-	compactionManager interface{} // Will be set to *context.Manager after initialization
+	compactionManager interface{} // Will be set to *compaction.Manager after initialization
 }
 
 // newInternalConfig creates a new internal config from the public Config
@@ -119,7 +120,6 @@ func newInternalConfig(cfg Config) *internalConfig {
 	modelInfo := GetModelInfo(cfg.Model)
 
 	return &internalConfig{
-		db:           cfg.DB,
 		client:       cfg.Client,
 		model:        cfg.Model,
 		systemPrompt: cfg.SystemPrompt,

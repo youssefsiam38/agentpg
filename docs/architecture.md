@@ -319,20 +319,28 @@ Each package has a single responsibility:
 - `tool/`: Tool execution
 - `compaction/`: Context management
 
-### 2. Interface-Based Design
-Core functionality depends on interfaces, not concrete implementations:
+### 2. Driver-Based Design
+Database access is abstracted via drivers with type-safe transactions:
 ```go
-// Storage can be PostgreSQL, SQLite, or mock
-agent := agentpg.New(apiKey, anyStoreImplementation)
+// pgxv5 driver for pgx/v5 users
+drv := pgxv5.New(pool)
+agent, _ := agentpg.New(drv, agentpg.Config{...})
+
+// database/sql driver for standard library users
+drv := databasesql.New(db)
+agent, _ := agentpg.New(drv, agentpg.Config{...})
 ```
 
 ### 3. Functional Options
 Configuration is composable and type-safe:
 ```go
-agent := agentpg.New(apiKey, store,
-    WithModel("claude-sonnet-4-5-20250929"),
-    WithMaxTokens(4096),
-    WithCompactionTrigger(0.8),
+agent, _ := agentpg.New(drv, agentpg.Config{
+    Client:       &client,
+    Model:        "claude-sonnet-4-5-20250929",
+    SystemPrompt: "You are helpful.",
+},
+    agentpg.WithMaxTokens(4096),
+    agentpg.WithCompactionTrigger(0.8),
 )
 ```
 

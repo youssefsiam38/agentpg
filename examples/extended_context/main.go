@@ -11,6 +11,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
+	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
 
 // generateLongDocument creates a simulated long document for testing
@@ -106,6 +107,9 @@ func main() {
 	// Create Anthropic client
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 
+	// Create driver
+	drv := pgxv5.New(pool)
+
 	// ==========================================================
 	// Create agent WITH extended context support
 	// ==========================================================
@@ -114,8 +118,8 @@ func main() {
 	fmt.Println()
 
 	agent, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:           pool,
 			Client:       &client,
 			Model:        "claude-sonnet-4-5-20250929",
 			SystemPrompt: "You are a document analysis assistant. You can process very long documents and answer questions about them accurately.",

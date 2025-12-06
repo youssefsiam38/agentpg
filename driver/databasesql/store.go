@@ -1,80 +1,38 @@
-package storage
+package databasesql
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lib/pq"
+	"github.com/youssefsiam38/agentpg/driver"
+	"github.com/youssefsiam38/agentpg/storage"
 )
 
-// txContextKey is the context key for storing pgx.Tx
-type txContextKey struct{}
-
-// WithTx returns a new context with the given transaction
-func WithTx(ctx context.Context, tx pgx.Tx) context.Context {
-	return context.WithValue(ctx, txContextKey{}, tx)
+// Store implements storage.Store using the databasesql driver.
+type Store struct {
+	driver *Driver
 }
 
-// TxFromContext retrieves the transaction from context, or nil if not present
-func TxFromContext(ctx context.Context) pgx.Tx {
-	if tx, ok := ctx.Value(txContextKey{}).(pgx.Tx); ok {
-		return tx
+// NewStore creates a new databasesql Store.
+func NewStore(d *Driver) *Store {
+	return &Store{driver: d}
+}
+
+// getExecutor returns the executor from context if present, otherwise the default pool executor.
+func (s *Store) getExecutor(ctx context.Context) driver.Executor {
+	if exec := driver.ExecutorFromContext(ctx); exec != nil {
+		return exec
 	}
-	return nil
+	return s.driver.GetExecutor()
 }
 
-// txStrippedContext is a context wrapper that hides the transaction from nested contexts
-type txStrippedContext struct {
-	context.Context
-}
-
-func (c *txStrippedContext) Value(key any) any {
-	if _, ok := key.(txContextKey); ok {
-		return nil
-	}
-	return c.Context.Value(key)
-}
-
-// StripTx creates a new context without the transaction value
-// but preserving deadline, cancellation, and other values.
-// Used when nested agents should have their own independent transaction.
-func StripTx(ctx context.Context) context.Context {
-	return &txStrippedContext{ctx}
-}
-
-// querier is a common interface for pgxpool.Pool and pgx.Tx
-type querier interface {
-	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
-}
-
-// PostgresStore implements Store using PostgreSQL with pgx
-type PostgresStore struct {
-	pool *pgxpool.Pool
-}
-
-// NewPostgresStore creates a new PostgreSQL store
-func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
-	return &PostgresStore{pool: pool}
-}
-
-// getQuerier returns the transaction from context if present, otherwise the pool
-func (s *PostgresStore) getQuerier(ctx context.Context) querier {
-	if tx := TxFromContext(ctx); tx != nil {
-		return tx
-	}
-	return s.pool
-}
-
-// CreateSession creates a new conversation session
-func (s *PostgresStore) CreateSession(ctx context.Context, tenantID, identifier string, parentSessionID *string, metadata map[string]any) (string, error) {
+// CreateSession creates a new conversation session.
+func (s *Store) CreateSession(ctx context.Context, tenantID, identifier string, parentSessionID *string, metadata map[string]any) (string, error) {
 	if tenantID == "" {
 		return "", fmt.Errorf("tenant_id is required")
 	}
@@ -94,7 +52,7 @@ func (s *PostgresStore) CreateSession(ctx context.Context, tenantID, identifier 
 		VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
 	`
 
-	_, err = s.getQuerier(ctx).Exec(ctx, query, sessionID, tenantID, identifier, parentSessionID, metadataJSON)
+	_, err = s.getExecutor(ctx).Exec(ctx, query, sessionID, tenantID, identifier, parentSessionID, metadataJSON)
 	if err != nil {
 		return "", fmt.Errorf("failed to create session: %w", err)
 	}
@@ -102,8 +60,8 @@ func (s *PostgresStore) CreateSession(ctx context.Context, tenantID, identifier 
 	return sessionID, nil
 }
 
-// GetSession retrieves a session by ID
-func (s *PostgresStore) GetSession(ctx context.Context, sessionID string) (*Session, error) {
+// GetSession retrieves a session by ID.
+func (s *Store) GetSession(ctx context.Context, sessionID string) (*storage.Session, error) {
 	query := `
 		SELECT id, tenant_id, identifier, parent_session_id, metadata, compaction_count,
 		       created_at, updated_at
@@ -111,10 +69,11 @@ func (s *PostgresStore) GetSession(ctx context.Context, sessionID string) (*Sess
 		WHERE id = $1
 	`
 
-	var session Session
+	var session storage.Session
 	var metadataJSON []byte
 
-	err := s.getQuerier(ctx).QueryRow(ctx, query, sessionID).Scan(
+	row := s.getExecutor(ctx).QueryRow(ctx, query, sessionID)
+	err := row.Scan(
 		&session.ID,
 		&session.TenantID,
 		&session.Identifier,
@@ -125,7 +84,7 @@ func (s *PostgresStore) GetSession(ctx context.Context, sessionID string) (*Sess
 		&session.UpdatedAt,
 	)
 
-	if err == pgx.ErrNoRows {
+	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("session not found: %s", sessionID)
 	}
 	if err != nil {
@@ -139,8 +98,8 @@ func (s *PostgresStore) GetSession(ctx context.Context, sessionID string) (*Sess
 	return &session, nil
 }
 
-// GetSessionsByTenant retrieves all sessions for a tenant
-func (s *PostgresStore) GetSessionsByTenant(ctx context.Context, tenantID string) ([]*Session, error) {
+// GetSessionsByTenant retrieves all sessions for a tenant.
+func (s *Store) GetSessionsByTenant(ctx context.Context, tenantID string) ([]*storage.Session, error) {
 	query := `
 		SELECT id, tenant_id, identifier, parent_session_id, metadata, compaction_count,
 		       created_at, updated_at
@@ -149,15 +108,15 @@ func (s *PostgresStore) GetSessionsByTenant(ctx context.Context, tenantID string
 		ORDER BY updated_at DESC
 	`
 
-	rows, err := s.getQuerier(ctx).Query(ctx, query, tenantID)
+	rows, err := s.getExecutor(ctx).Query(ctx, query, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query sessions: %w", err)
 	}
 	defer rows.Close()
 
-	var sessions []*Session
+	var sessions []*storage.Session
 	for rows.Next() {
-		var session Session
+		var session storage.Session
 		var metadataJSON []byte
 
 		err := rows.Scan(
@@ -188,8 +147,8 @@ func (s *PostgresStore) GetSessionsByTenant(ctx context.Context, tenantID string
 	return sessions, nil
 }
 
-// GetSessionByTenantAndIdentifier retrieves a session by tenant and identifier
-func (s *PostgresStore) GetSessionByTenantAndIdentifier(ctx context.Context, tenantID, identifier string) (*Session, error) {
+// GetSessionByTenantAndIdentifier retrieves a session by tenant and identifier.
+func (s *Store) GetSessionByTenantAndIdentifier(ctx context.Context, tenantID, identifier string) (*storage.Session, error) {
 	query := `
 		SELECT id, tenant_id, identifier, parent_session_id, metadata, compaction_count,
 		       created_at, updated_at
@@ -197,10 +156,11 @@ func (s *PostgresStore) GetSessionByTenantAndIdentifier(ctx context.Context, ten
 		WHERE tenant_id = $1 AND identifier = $2
 	`
 
-	var session Session
+	var session storage.Session
 	var metadataJSON []byte
 
-	err := s.getQuerier(ctx).QueryRow(ctx, query, tenantID, identifier).Scan(
+	row := s.getExecutor(ctx).QueryRow(ctx, query, tenantID, identifier)
+	err := row.Scan(
 		&session.ID,
 		&session.TenantID,
 		&session.Identifier,
@@ -211,7 +171,7 @@ func (s *PostgresStore) GetSessionByTenantAndIdentifier(ctx context.Context, ten
 		&session.UpdatedAt,
 	)
 
-	if err == pgx.ErrNoRows {
+	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("session not found for tenant %s and identifier %s", tenantID, identifier)
 	}
 	if err != nil {
@@ -225,8 +185,8 @@ func (s *PostgresStore) GetSessionByTenantAndIdentifier(ctx context.Context, ten
 	return &session, nil
 }
 
-// GetSessionTokenCount calculates total tokens for a session from messages
-func (s *PostgresStore) GetSessionTokenCount(ctx context.Context, sessionID string) (int, error) {
+// GetSessionTokenCount calculates total tokens for a session from messages.
+func (s *Store) GetSessionTokenCount(ctx context.Context, sessionID string) (int, error) {
 	query := `
 		SELECT COALESCE(
 			SUM(
@@ -239,7 +199,7 @@ func (s *PostgresStore) GetSessionTokenCount(ctx context.Context, sessionID stri
 	`
 
 	var totalTokens int
-	err := s.getQuerier(ctx).QueryRow(ctx, query, sessionID).Scan(&totalTokens)
+	err := s.getExecutor(ctx).QueryRow(ctx, query, sessionID).Scan(&totalTokens)
 	if err != nil {
 		return 0, fmt.Errorf("failed to calculate session tokens: %w", err)
 	}
@@ -247,15 +207,15 @@ func (s *PostgresStore) GetSessionTokenCount(ctx context.Context, sessionID stri
 	return totalTokens, nil
 }
 
-// UpdateSessionCompactionCount increments the compaction count
-func (s *PostgresStore) UpdateSessionCompactionCount(ctx context.Context, sessionID string) error {
+// UpdateSessionCompactionCount increments the compaction count.
+func (s *Store) UpdateSessionCompactionCount(ctx context.Context, sessionID string) error {
 	query := `
 		UPDATE agentpg_sessions
 		SET compaction_count = compaction_count + 1, updated_at = NOW()
 		WHERE id = $1
 	`
 
-	_, err := s.getQuerier(ctx).Exec(ctx, query, sessionID)
+	_, err := s.getExecutor(ctx).Exec(ctx, query, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to update compaction count: %w", err)
 	}
@@ -263,18 +223,16 @@ func (s *PostgresStore) UpdateSessionCompactionCount(ctx context.Context, sessio
 	return nil
 }
 
-// SaveMessage saves a single message
-func (s *PostgresStore) SaveMessage(ctx context.Context, msg *Message) error {
-	return s.SaveMessages(ctx, []*Message{msg})
+// SaveMessage saves a single message.
+func (s *Store) SaveMessage(ctx context.Context, msg *storage.Message) error {
+	return s.SaveMessages(ctx, []*storage.Message{msg})
 }
 
-// SaveMessages saves multiple messages in a batch
-func (s *PostgresStore) SaveMessages(ctx context.Context, messages []*Message) error {
+// SaveMessages saves multiple messages.
+func (s *Store) SaveMessages(ctx context.Context, messages []*storage.Message) error {
 	if len(messages) == 0 {
 		return nil
 	}
-
-	batch := &pgx.Batch{}
 
 	query := `
 		INSERT INTO agentpg_messages (id, session_id, role, content, usage, metadata,
@@ -289,6 +247,9 @@ func (s *PostgresStore) SaveMessages(ctx context.Context, messages []*Message) e
 			updated_at = NOW()
 	`
 
+	exec := s.getExecutor(ctx)
+
+	// Execute messages sequentially (database/sql doesn't have native batching)
 	for _, msg := range messages {
 		contentJSON, err := json.Marshal(msg.Content)
 		if err != nil {
@@ -315,7 +276,7 @@ func (s *PostgresStore) SaveMessages(ctx context.Context, messages []*Message) e
 			updatedAt = time.Now()
 		}
 
-		batch.Queue(query,
+		_, err = exec.Exec(ctx, query,
 			msg.ID,
 			msg.SessionID,
 			msg.Role,
@@ -327,13 +288,7 @@ func (s *PostgresStore) SaveMessages(ctx context.Context, messages []*Message) e
 			createdAt,
 			updatedAt,
 		)
-	}
-
-	results := s.getQuerier(ctx).SendBatch(ctx, batch)
-	defer results.Close()
-
-	for range messages {
-		if _, err := results.Exec(); err != nil {
+		if err != nil {
 			return fmt.Errorf("failed to save message: %w", err)
 		}
 	}
@@ -341,8 +296,8 @@ func (s *PostgresStore) SaveMessages(ctx context.Context, messages []*Message) e
 	return nil
 }
 
-// GetMessages retrieves all messages for a session ordered by creation time
-func (s *PostgresStore) GetMessages(ctx context.Context, sessionID string) ([]*Message, error) {
+// GetMessages retrieves all messages for a session ordered by creation time.
+func (s *Store) GetMessages(ctx context.Context, sessionID string) ([]*storage.Message, error) {
 	query := `
 		SELECT id, session_id, role, content, usage, metadata,
 		       is_preserved, is_summary, created_at, updated_at
@@ -351,7 +306,7 @@ func (s *PostgresStore) GetMessages(ctx context.Context, sessionID string) ([]*M
 		ORDER BY created_at ASC
 	`
 
-	rows, err := s.getQuerier(ctx).Query(ctx, query, sessionID)
+	rows, err := s.getExecutor(ctx).Query(ctx, query, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query messages: %w", err)
 	}
@@ -360,8 +315,8 @@ func (s *PostgresStore) GetMessages(ctx context.Context, sessionID string) ([]*M
 	return s.scanMessages(rows)
 }
 
-// GetMessagesSince retrieves messages created after a specific time
-func (s *PostgresStore) GetMessagesSince(ctx context.Context, sessionID string, since time.Time) ([]*Message, error) {
+// GetMessagesSince retrieves messages created after a specific time.
+func (s *Store) GetMessagesSince(ctx context.Context, sessionID string, since time.Time) ([]*storage.Message, error) {
 	query := `
 		SELECT id, session_id, role, content, usage, metadata,
 		       is_preserved, is_summary, created_at, updated_at
@@ -370,7 +325,7 @@ func (s *PostgresStore) GetMessagesSince(ctx context.Context, sessionID string, 
 		ORDER BY created_at ASC
 	`
 
-	rows, err := s.getQuerier(ctx).Query(ctx, query, sessionID, since)
+	rows, err := s.getExecutor(ctx).Query(ctx, query, sessionID, since)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query messages: %w", err)
 	}
@@ -379,15 +334,16 @@ func (s *PostgresStore) GetMessagesSince(ctx context.Context, sessionID string, 
 	return s.scanMessages(rows)
 }
 
-// DeleteMessages deletes messages by their IDs
-func (s *PostgresStore) DeleteMessages(ctx context.Context, messageIDs []string) error {
+// DeleteMessages deletes messages by their IDs.
+func (s *Store) DeleteMessages(ctx context.Context, messageIDs []string) error {
 	if len(messageIDs) == 0 {
 		return nil
 	}
 
+	// Use pq.Array for PostgreSQL array parameter
 	query := `DELETE FROM agentpg_messages WHERE id = ANY($1)`
 
-	_, err := s.getQuerier(ctx).Exec(ctx, query, messageIDs)
+	_, err := s.getExecutor(ctx).Exec(ctx, query, pq.Array(messageIDs))
 	if err != nil {
 		return fmt.Errorf("failed to delete messages: %w", err)
 	}
@@ -395,12 +351,12 @@ func (s *PostgresStore) DeleteMessages(ctx context.Context, messageIDs []string)
 	return nil
 }
 
-// scanMessages is a helper to scan message rows
-func (s *PostgresStore) scanMessages(rows pgx.Rows) ([]*Message, error) {
-	var messages []*Message
+// scanMessages is a helper to scan message rows.
+func (s *Store) scanMessages(rows driver.Rows) ([]*storage.Message, error) {
+	var messages []*storage.Message
 
 	for rows.Next() {
-		var msg Message
+		var msg storage.Message
 		var contentJSON []byte
 		var usageJSON []byte
 		var metadataJSON []byte
@@ -426,7 +382,7 @@ func (s *PostgresStore) scanMessages(rows pgx.Rows) ([]*Message, error) {
 		}
 
 		if len(usageJSON) > 0 {
-			msg.Usage = &MessageUsage{}
+			msg.Usage = &storage.MessageUsage{}
 			if err := json.Unmarshal(usageJSON, msg.Usage); err != nil {
 				return nil, fmt.Errorf("failed to unmarshal usage: %w", err)
 			}
@@ -446,8 +402,8 @@ func (s *PostgresStore) scanMessages(rows pgx.Rows) ([]*Message, error) {
 	return messages, nil
 }
 
-// SaveCompactionEvent saves a compaction event
-func (s *PostgresStore) SaveCompactionEvent(ctx context.Context, event *CompactionEvent) error {
+// SaveCompactionEvent saves a compaction event.
+func (s *Store) SaveCompactionEvent(ctx context.Context, event *storage.CompactionEvent) error {
 	if event.ID == "" {
 		event.ID = uuid.New().String()
 	}
@@ -465,7 +421,7 @@ func (s *PostgresStore) SaveCompactionEvent(ctx context.Context, event *Compacti
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
 	`
 
-	_, err = s.getQuerier(ctx).Exec(ctx, query,
+	_, err = s.getExecutor(ctx).Exec(ctx, query,
 		event.ID,
 		event.SessionID,
 		event.Strategy,
@@ -484,8 +440,8 @@ func (s *PostgresStore) SaveCompactionEvent(ctx context.Context, event *Compacti
 	return nil
 }
 
-// GetCompactionHistory retrieves compaction history for a session
-func (s *PostgresStore) GetCompactionHistory(ctx context.Context, sessionID string) ([]*CompactionEvent, error) {
+// GetCompactionHistory retrieves compaction history for a session.
+func (s *Store) GetCompactionHistory(ctx context.Context, sessionID string) ([]*storage.CompactionEvent, error) {
 	query := `
 		SELECT id, session_id, strategy, original_tokens, compacted_tokens,
 		       messages_removed, summary_content, preserved_message_ids,
@@ -495,16 +451,16 @@ func (s *PostgresStore) GetCompactionHistory(ctx context.Context, sessionID stri
 		ORDER BY created_at DESC
 	`
 
-	rows, err := s.getQuerier(ctx).Query(ctx, query, sessionID)
+	rows, err := s.getExecutor(ctx).Query(ctx, query, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query compaction history: %w", err)
 	}
 	defer rows.Close()
 
-	var events []*CompactionEvent
+	var events []*storage.CompactionEvent
 
 	for rows.Next() {
-		var event CompactionEvent
+		var event storage.CompactionEvent
 		var preservedIDsJSON []byte
 		var summaryContent *string
 		var modelUsed *string
@@ -548,37 +504,31 @@ func (s *PostgresStore) GetCompactionHistory(ctx context.Context, sessionID stri
 	return events, nil
 }
 
-// ArchiveMessages archives messages that were removed during compaction
-func (s *PostgresStore) ArchiveMessages(ctx context.Context, compactionEventID string, messages []*Message) error {
+// ArchiveMessages archives messages that were removed during compaction.
+func (s *Store) ArchiveMessages(ctx context.Context, compactionEventID string, messages []*storage.Message) error {
 	if len(messages) == 0 {
 		return nil
 	}
-
-	batch := &pgx.Batch{}
 
 	query := `
 		INSERT INTO agentpg_message_archive (id, compaction_event_id, session_id, original_message, archived_at)
 		VALUES ($1, $2, $3, $4, NOW())
 	`
 
+	exec := s.getExecutor(ctx)
+
+	// Execute sequentially (database/sql doesn't have native batching)
 	for _, msg := range messages {
 		msgJSON, err := json.Marshal(msg)
 		if err != nil {
 			return fmt.Errorf("failed to marshal message: %w", err)
 		}
 
-		batch.Queue(query, msg.ID, compactionEventID, msg.SessionID, msgJSON)
-	}
-
-	results := s.getQuerier(ctx).SendBatch(ctx, batch)
-	defer results.Close()
-
-	for range messages {
-		if _, err := results.Exec(); err != nil {
+		_, err = exec.Exec(ctx, query, msg.ID, compactionEventID, msg.SessionID, msgJSON)
+		if err != nil {
 			return fmt.Errorf("failed to archive message: %w", err)
 		}
 	}
 
 	return nil
 }
-

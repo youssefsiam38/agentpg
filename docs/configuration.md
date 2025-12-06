@@ -4,16 +4,31 @@ This guide covers all configuration options for AgentPG, including recommended s
 
 ## Required Configuration
 
-Every agent requires four essential components:
+Every agent requires a driver and configuration:
 
 ```go
-agent, err := agentpg.New(agentpg.Config{
-    DB:           pool,           // PostgreSQL connection pool
-    Client:       client,         // Anthropic API client
+import (
+    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/youssefsiam38/agentpg"
+    "github.com/youssefsiam38/agentpg/driver/pgxv5"
+)
+
+pool, _ := pgxpool.New(ctx, dbURL)
+drv := pgxv5.New(pool)
+
+agent, err := agentpg.New(drv, agentpg.Config{
+    Client:       &client,        // Anthropic API client
     Model:        "claude-sonnet-4-5-20250929",  // Model ID
     SystemPrompt: "You are a helpful assistant.",
 })
 ```
+
+### Available Drivers
+
+| Driver | Import | Transaction Type |
+|--------|--------|------------------|
+| pgxv5 | `github.com/youssefsiam38/agentpg/driver/pgxv5` | `pgx.Tx` |
+| databasesql | `github.com/youssefsiam38/agentpg/driver/databasesql` | `*sql.Tx` |
 
 ### Database Connection
 
@@ -347,11 +362,10 @@ client := anthropic.NewClient()  // Reads ANTHROPIC_API_KEY automatically
 Configuration is validated at agent creation:
 
 ```go
-agent, err := agentpg.New(cfg, opts...)
+agent, err := agentpg.New(drv, cfg, opts...)
 if err != nil {
     // Handle invalid configuration
     // Common errors:
-    // - "DB connection pool is required"
     // - "Anthropic client is required"
     // - "Model is required"
     // - "SystemPrompt is required"

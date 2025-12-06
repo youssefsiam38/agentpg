@@ -11,8 +11,10 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
+	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
 
 // TenantManager manages agents and sessions per tenant
@@ -20,6 +22,7 @@ type TenantManager struct {
 	mu       sync.RWMutex
 	pool     *pgxpool.Pool
 	client   *anthropic.Client
+	drv      *pgxv5.Driver
 	sessions map[string]string // tenantID:userID -> sessionID
 }
 
@@ -27,11 +30,12 @@ func NewTenantManager(pool *pgxpool.Pool, client *anthropic.Client) *TenantManag
 	return &TenantManager{
 		pool:     pool,
 		client:   client,
+		drv:      pgxv5.New(pool),
 		sessions: make(map[string]string),
 	}
 }
 
-func (tm *TenantManager) GetOrCreateSession(ctx context.Context, tenantID, userID string) (string, *agentpg.Agent, error) {
+func (tm *TenantManager) GetOrCreateSession(ctx context.Context, tenantID, userID string) (string, *agentpg.Agent[pgx.Tx], error) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -39,8 +43,8 @@ func (tm *TenantManager) GetOrCreateSession(ctx context.Context, tenantID, userI
 
 	// Create a new agent for this request
 	agent, err := agentpg.New(
+		tm.drv,
 		agentpg.Config{
-			DB:           tm.pool,
 			Client:       tm.client,
 			Model:        "claude-sonnet-4-5-20250929",
 			SystemPrompt: fmt.Sprintf("You are a helpful assistant for tenant %s. Be concise and helpful.", tenantID),

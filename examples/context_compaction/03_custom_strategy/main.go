@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/compaction"
+	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 	"github.com/youssefsiam38/agentpg/types"
 )
 
@@ -360,10 +361,13 @@ func main() {
 	fmt.Println("Note: Currently, strategies are registered internally.")
 	fmt.Println("Custom strategies can be added by extending the compaction package.")
 
+	// Create driver
+	drv := pgxv5.New(pool)
+
 	// Create a simple agent to show it works
 	_, err = agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:           pool,
 			Client:       &client,
 			Model:        "claude-sonnet-4-5-20250929",
 			SystemPrompt: "You are a helpful assistant.",

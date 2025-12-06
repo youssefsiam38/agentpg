@@ -1,6 +1,6 @@
 # Storage Guide
 
-This guide covers AgentPG's storage layer, including the PostgreSQL schema, migrations, and data model.
+This guide covers AgentPG's storage layer, including the driver pattern, PostgreSQL schema, migrations, and data model.
 
 ## Overview
 
@@ -9,6 +9,80 @@ AgentPG uses PostgreSQL for persistent storage of:
 - **Messages** - Individual messages with content blocks
 - **Compaction Events** - Audit trail for context management
 - **Message Archive** - Archived messages for potential rollback
+
+## Driver Pattern
+
+AgentPG uses a driver-based architecture (inspired by [River](https://github.com/riverqueue/river)) to support multiple database backends. This provides type-safe transaction handling and flexibility in database connectivity.
+
+### Available Drivers
+
+| Driver | Import | Description |
+|--------|--------|-------------|
+| pgxv5 | `github.com/youssefsiam38/agentpg/driver/pgxv5` | For pgx/v5 users (recommended) |
+| databasesql | `github.com/youssefsiam38/agentpg/driver/databasesql` | For database/sql users |
+
+### Using pgxv5 Driver
+
+```go
+import (
+    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/youssefsiam38/agentpg"
+    "github.com/youssefsiam38/agentpg/driver/pgxv5"
+)
+
+pool, _ := pgxpool.New(ctx, dbURL)
+drv := pgxv5.New(pool)
+
+agent, _ := agentpg.New(drv, agentpg.Config{
+    Client:       &client,
+    Model:        "claude-sonnet-4-5-20250929",
+    SystemPrompt: "You are helpful",
+})
+
+// Manual transaction with native pgx.Tx
+tx, _ := pool.Begin(ctx)
+response, _ := agent.RunTx(ctx, tx, "Hello")
+tx.Commit(ctx)
+```
+
+### Using database/sql Driver
+
+```go
+import (
+    "database/sql"
+    _ "github.com/lib/pq"
+    "github.com/youssefsiam38/agentpg"
+    "github.com/youssefsiam38/agentpg/driver/databasesql"
+)
+
+db, _ := sql.Open("postgres", dbURL)
+drv := databasesql.New(db)
+
+agent, _ := agentpg.New(drv, agentpg.Config{
+    Client:       &client,
+    Model:        "claude-sonnet-4-5-20250929",
+    SystemPrompt: "You are helpful",
+})
+
+// Manual transaction with native *sql.Tx
+tx, _ := db.BeginTx(ctx, nil)
+response, _ := agent.RunTx(ctx, tx, "Hello")
+tx.Commit()
+```
+
+### Type Inference
+
+The agent type is automatically inferred from the driver - no explicit generic parameter needed:
+
+```go
+// Type is inferred as Agent[pgx.Tx]
+agent, _ := agentpg.New(pgxv5.New(pool), config)
+
+// Type is inferred as Agent[*sql.Tx]
+agent, _ := agentpg.New(databasesql.New(db), config)
+```
+
+---
 
 ## Database Schema
 
@@ -212,6 +286,8 @@ psql "$DATABASE_URL" -f storage/migrations/001_initial_schema.down.sql
 
 ## Store Interface
 
+Each driver provides a Store implementation. The Store interface defines database operations:
+
 ### Basic Operations
 
 ```go
@@ -239,35 +315,45 @@ type Store interface {
 }
 ```
 
-### Transaction Support
+### Driver Interface
+
+The Driver interface wraps Store with transaction support:
 
 ```go
-type TxStore interface {
-    Store
-    BeginTx(ctx context.Context) (Tx, error)
-}
-
-type Tx interface {
-    Store
-    Commit(ctx context.Context) error
-    Rollback(ctx context.Context) error
+type Driver[TTx any] interface {
+    GetExecutor() Executor
+    UnwrapExecutor(tx TTx) ExecutorTx
+    UnwrapTx(execTx ExecutorTx) TTx
+    Begin(ctx context.Context) (ExecutorTx, error)
+    PoolIsSet() bool
+    GetStore() storage.Store
 }
 ```
 
-**Usage:**
+### Transaction Usage
+
+Transactions are handled through the agent's `RunTx` method with native transaction types:
+
 ```go
-tx, err := store.BeginTx(ctx)
-if err != nil {
-    return err
-}
-defer tx.Rollback(ctx)  // No-op if committed
+// With pgxv5 driver
+tx, _ := pool.Begin(ctx)
+defer tx.Rollback(ctx)
 
-// Perform operations
-tx.SaveMessage(ctx, msg1)
-tx.SaveMessage(ctx, msg2)
-tx.DeleteMessages(ctx, oldIDs)
+response, _ := agent.RunTx(ctx, tx, "Hello")
+// Your own database operations using the same tx
+_, _ = tx.Exec(ctx, "UPDATE users SET last_active = NOW() WHERE id = $1", userID)
 
-return tx.Commit(ctx)
+tx.Commit(ctx)
+
+// With database/sql driver
+tx, _ := db.BeginTx(ctx, nil)
+defer tx.Rollback()
+
+response, _ := agent.RunTx(ctx, tx, "Hello")
+// Your own database operations using the same tx
+_, _ = tx.ExecContext(ctx, "UPDATE users SET last_active = NOW() WHERE id = $1", userID)
+
+tx.Commit()
 ```
 
 ---

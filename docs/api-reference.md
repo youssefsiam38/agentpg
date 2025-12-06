@@ -20,13 +20,14 @@ Complete API documentation for AgentPG.
 ### Creating an Agent
 
 ```go
-func New(cfg Config, opts ...Option) (*Agent, error)
+func New[TTx any](drv driver.Driver[TTx], cfg Config, opts ...Option) (*Agent[TTx], error)
 ```
 
-Creates a new agent with the required configuration and optional settings.
+Creates a new agent with the required driver, configuration, and optional settings. The transaction type is automatically inferred from the driver.
 
 **Parameters:**
-- `cfg` - Required configuration (database, client, model, system prompt)
+- `drv` - Database driver (pgxv5 or databasesql)
+- `cfg` - Required configuration (client, model, system prompt)
 - `opts` - Zero or more functional options
 
 **Example:**
@@ -35,18 +36,18 @@ import (
     "github.com/anthropics/anthropic-sdk-go"
     "github.com/jackc/pgx/v5/pgxpool"
     "github.com/youssefsiam38/agentpg"
+    "github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
 
 pool, _ := pgxpool.New(ctx, databaseURL)
+drv := pgxv5.New(pool)
 client := anthropic.NewClient()
 
-agent, err := agentpg.New(
-    agentpg.Config{
-        DB:           pool,
-        Client:       client,
-        Model:        "claude-sonnet-4-5-20250929",
-        SystemPrompt: "You are a helpful assistant.",
-    },
+agent, err := agentpg.New(drv, agentpg.Config{
+    Client:       &client,
+    Model:        "claude-sonnet-4-5-20250929",
+    SystemPrompt: "You are a helpful assistant.",
+},
     agentpg.WithMaxTokens(4096),
     agentpg.WithTemperature(0.7),
 )
@@ -86,14 +87,14 @@ fmt.Println(response.Message.Content)
 #### RunTx
 
 ```go
-func (a *Agent) RunTx(ctx context.Context, tx pgx.Tx, prompt string) (*Response, error)
+func (a *Agent[TTx]) RunTx(ctx context.Context, tx TTx, prompt string) (*Response, error)
 ```
 
 Sends a message to the agent within a user-managed transaction. The caller is responsible for committing or rolling back the transaction. This allows you to combine your own database operations with agent operations in a single atomic transaction.
 
 **Parameters:**
 - `ctx` - Context for cancellation and timeouts
-- `tx` - Native pgx transaction from `pool.Begin(ctx)`
+- `tx` - Native transaction (`pgx.Tx` for pgxv5 driver, `*sql.Tx` for databasesql driver)
 - `prompt` - User message text
 
 **Returns:**
@@ -128,7 +129,7 @@ return tx.Commit(ctx)
 #### NewSession
 
 ```go
-func (a *Agent) NewSession(ctx context.Context, tenantID, identifier string, metadata map[string]any) (string, error)
+func (a *Agent[TTx]) NewSession(ctx context.Context, tenantID, identifier string, parentSessionID *string, metadata map[string]any) (string, error)
 ```
 
 Creates a new conversation session.
@@ -136,6 +137,7 @@ Creates a new conversation session.
 **Parameters:**
 - `tenantID` - Tenant identifier for multi-tenancy
 - `identifier` - Custom session identifier (e.g., user ID)
+- `parentSessionID` - Optional parent session ID (for nested agents)
 - `metadata` - Optional key-value metadata
 
 **Returns:**
@@ -144,7 +146,7 @@ Creates a new conversation session.
 
 **Example:**
 ```go
-sessionID, err := agent.NewSession(ctx, "company-abc", "user-123", map[string]any{
+sessionID, err := agent.NewSession(ctx, "company-abc", "user-123", nil, map[string]any{
     "user_name": "Alice",
     "plan": "premium",
 })
@@ -184,13 +186,43 @@ func (a *Agent) CurrentSession() string
 
 Returns the currently active session ID (thread-safe).
 
+#### GetModel
+
+```go
+func (a *Agent) GetModel() string
+```
+
+Returns the model being used by this agent.
+
+**Example:**
+```go
+model := agent.GetModel()
+fmt.Printf("Using model: %s\n", model)
+```
+
+#### GetSystemPrompt
+
+```go
+func (a *Agent) GetSystemPrompt() string
+```
+
+Returns the system prompt configured for this agent.
+
 #### GetSession
 
 ```go
-func (a *Agent) GetSession(ctx context.Context) (*storage.Session, error)
+func (a *Agent) GetSession(ctx context.Context, sessionID string) (*SessionInfo, error)
 ```
 
-Returns the full session object for the current session.
+Returns the full session object for the specified session ID.
+
+**Parameters:**
+- `ctx` - Context for cancellation and timeouts
+- `sessionID` - The UUID of the session to retrieve
+
+**Returns:**
+- `*SessionInfo` - Session details including ID, tenant, metadata, message count, etc.
+- `error` - Any error that occurred
 
 #### GetMessages
 
@@ -199,6 +231,107 @@ func (a *Agent) GetMessages(ctx context.Context) ([]*Message, error)
 ```
 
 Returns all messages in the current session.
+
+#### GetCompactionStats
+
+```go
+func (a *Agent) GetCompactionStats(ctx context.Context) (*compaction.CompactionStats, error)
+```
+
+Returns statistics about the current session's context usage and compaction state.
+
+**Returns:**
+- `*CompactionStats` - Contains current tokens, max tokens, utilization percentage, message count, etc.
+- `error` - Any error that occurred
+
+**Example:**
+```go
+stats, err := agent.GetCompactionStats(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Context utilization: %.1f%% (%d/%d tokens)\n",
+    stats.UtilizationPct, stats.CurrentTokens, stats.MaxTokens)
+fmt.Printf("Should compact: %v\n", stats.ShouldCompact)
+```
+
+#### Compact
+
+```go
+func (a *Agent) Compact(ctx context.Context) (*compaction.CompactionResult, error)
+```
+
+Manually triggers context compaction for the current session. Automatically wraps execution in a transaction for atomicity.
+
+**Returns:**
+- `*CompactionResult` - Contains compaction details (original/compacted tokens, messages removed, summary, etc.)
+- `error` - Any error that occurred
+
+**Example:**
+```go
+// Check if compaction would be beneficial
+stats, _ := agent.GetCompactionStats(ctx)
+fmt.Printf("Current utilization: %.1f%%\n", stats.UtilizationPct)
+
+// Manually trigger compaction
+result, err := agent.Compact(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+if result != nil {
+    fmt.Printf("Compacted: %d -> %d tokens (%.1f%% reduction)\n",
+        result.OriginalTokens,
+        result.CompactedTokens,
+        100.0*(1.0-float64(result.CompactedTokens)/float64(result.OriginalTokens)))
+    fmt.Printf("Messages removed: %d\n", result.MessagesRemoved)
+}
+```
+
+#### CompactTx
+
+```go
+func (a *Agent[TTx]) CompactTx(ctx context.Context, tx TTx) (*compaction.CompactionResult, error)
+```
+
+Manually triggers context compaction within an existing transaction. The caller is responsible for committing or rolling back the transaction. This allows combining compaction with other database operations atomically.
+
+**Parameters:**
+- `ctx` - Context for cancellation and timeouts
+- `tx` - Native transaction (`pgx.Tx` for pgxv5 driver, `*sql.Tx` for databasesql driver)
+
+**Returns:**
+- `*CompactionResult` - Contains compaction details
+- `error` - Any error that occurred
+
+**Example:**
+```go
+// Start transaction
+tx, err := pool.Begin(ctx)
+if err != nil {
+    return err
+}
+defer tx.Rollback(ctx)
+
+// Compact the session
+result, err := agent.CompactTx(ctx, tx)
+if err != nil {
+    return err
+}
+
+// Your business logic in the same transaction
+if result != nil {
+    _, err = tx.Exec(ctx,
+        "INSERT INTO compaction_log (session_id, tokens_saved) VALUES ($1, $2)",
+        sessionID, result.OriginalTokens - result.CompactedTokens)
+    if err != nil {
+        return err
+    }
+}
+
+// Commit all atomically
+return tx.Commit(ctx)
+```
 
 #### RegisterTool
 
@@ -251,12 +384,13 @@ Closes the agent and releases database connections.
 
 ```go
 type Config struct {
-    DB           *pgxpool.Pool      // PostgreSQL connection pool
     Client       *anthropic.Client  // Anthropic API client
     Model        string             // Model ID (e.g., "claude-sonnet-4-5-20250929")
     SystemPrompt string             // System prompt for the agent
 }
 ```
+
+**Note:** The database connection is provided via the driver, not in Config.
 
 ### Options (Functional)
 
@@ -522,15 +656,20 @@ results := executor.ExecuteBatch(ctx, calls, parallel)
 Register callbacks for agent lifecycle events:
 
 ```go
+import (
+    "github.com/youssefsiam38/agentpg/compaction"
+    "github.com/youssefsiam38/agentpg/types"
+)
+
 // Before sending messages to Claude
-agent.OnBeforeMessage(func(ctx context.Context, messages []any) error {
+agent.OnBeforeMessage(func(ctx context.Context, messages []*types.Message) error {
     log.Printf("Sending %d messages", len(messages))
     return nil
 })
 
 // After receiving response
-agent.OnAfterMessage(func(ctx context.Context, response any) error {
-    log.Printf("Received response")
+agent.OnAfterMessage(func(ctx context.Context, response *types.Response) error {
+    log.Printf("Received response with %d content blocks", len(response.Message.Content))
     return nil
 })
 
@@ -547,8 +686,8 @@ agent.OnBeforeCompaction(func(ctx context.Context, sessionID string) error {
 })
 
 // After compaction
-agent.OnAfterCompaction(func(ctx context.Context, result any) error {
-    log.Printf("Compaction complete")
+agent.OnAfterCompaction(func(ctx context.Context, result *compaction.CompactionResult) error {
+    log.Printf("Compaction complete: %d tokens -> %d tokens", result.OriginalTokens, result.CompactedTokens)
     return nil
 })
 ```
@@ -599,12 +738,20 @@ type Tx interface {
 }
 ```
 
-### PostgresStore
+### Drivers
+
+The storage layer is accessed through drivers:
 
 ```go
-import "github.com/youssefsiam38/agentpg/storage"
+// pgxv5 driver (recommended)
+import "github.com/youssefsiam38/agentpg/driver/pgxv5"
+drv := pgxv5.New(pool)  // pool is *pgxpool.Pool
+store := drv.GetStore()
 
-store := storage.NewPostgresStore(pool)
+// database/sql driver
+import "github.com/youssefsiam38/agentpg/driver/databasesql"
+drv := databasesql.New(db)  // db is *sql.DB
+store := drv.GetStore()
 ```
 
 ---
@@ -654,18 +801,22 @@ if errors.Is(err, ErrNoSession) {
 
 ```go
 pool, _ := pgxpool.New(ctx, "postgres://...")
+drv := pgxv5.New(pool)
 client := anthropic.NewClient()
 
-agent, _ := agentpg.New(agentpg.Config{
-    DB:           pool,
-    Client:       client,
+agent, _ := agentpg.New(drv, agentpg.Config{
+    Client:       &client,
     Model:        "claude-sonnet-4-5-20250929",
     SystemPrompt: "You are helpful.",
 })
 
-agent.NewSession(ctx, "tenant", "user", nil)
+agent.NewSession(ctx, "tenant", "user", nil, nil)
 response, _ := agent.Run(ctx, "Hello!")
-fmt.Println(response.Message.Content)
+for _, block := range response.Message.Content {
+    if block.Type == agentpg.ContentTypeText {
+        fmt.Println(block.Text)
+    }
+}
 ```
 
 ### With Tools

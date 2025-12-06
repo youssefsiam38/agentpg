@@ -95,6 +95,93 @@ agent, _ := agentpg.New(cfg,
 
 ---
 
+## Manual Compaction
+
+While auto-compaction handles most scenarios, you may want manual control for:
+- Compacting at logical breakpoints (end of task, topic change)
+- Preserving context during critical exchanges
+- Batch processing workflows
+- Cost optimization (compact only when necessary)
+
+### Using agent.Compact()
+
+```go
+// Disable auto-compaction for manual control
+agent, _ := agentpg.New(cfg,
+    agentpg.WithAutoCompaction(false),
+    agentpg.WithCompactionTarget(40000),
+)
+
+// ... run your conversation ...
+
+// Check current context usage
+stats, _ := agent.GetCompactionStats(ctx)
+fmt.Printf("Utilization: %.1f%% (%d tokens)\n",
+    stats.UtilizationPct, stats.CurrentTokens)
+
+// Manually trigger compaction when ready
+result, err := agent.Compact(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+if result != nil {
+    fmt.Printf("Compacted: %d -> %d tokens\n",
+        result.OriginalTokens, result.CompactedTokens)
+}
+```
+
+### Using agent.CompactTx() for Atomicity
+
+Combine compaction with other database operations in a single transaction:
+
+```go
+tx, _ := pool.Begin(ctx)
+defer tx.Rollback(ctx)
+
+// Compact within the transaction
+result, err := agent.CompactTx(ctx, tx)
+if err != nil {
+    return err
+}
+
+// Other operations in same transaction
+if result != nil {
+    tx.Exec(ctx, "UPDATE sessions SET last_compacted = NOW() WHERE id = $1", sessionID)
+}
+
+tx.Commit(ctx)
+```
+
+### Monitoring Context Usage
+
+Use `GetCompactionStats()` to monitor context growth:
+
+```go
+stats, _ := agent.GetCompactionStats(ctx)
+
+fmt.Printf("Current tokens: %d / %d (%.1f%%)\n",
+    stats.CurrentTokens, stats.MaxTokens, stats.UtilizationPct)
+fmt.Printf("Message count: %d\n", stats.MessageCount)
+fmt.Printf("Compaction count: %d\n", stats.CompactionCount)
+fmt.Printf("Should compact (by threshold): %v\n", stats.ShouldCompact)
+```
+
+### CompactionResult Structure
+
+```go
+type CompactionResult struct {
+    Strategy           string      // Strategy used ("hybrid", "summarization")
+    OriginalTokens     int         // Tokens before compaction
+    CompactedTokens    int         // Tokens after compaction
+    MessagesRemoved    int         // Number of messages removed
+    PreservedMessages  []*Message  // Messages that were kept
+    Summary            string      // Generated summary (if any)
+}
+```
+
+---
+
 ## Strategies
 
 ### Hybrid Strategy (Default)
@@ -274,14 +361,13 @@ agent.OnBeforeCompaction(func(ctx context.Context, sessionID string) error {
 })
 
 // After compaction completes
-agent.OnAfterCompaction(func(ctx context.Context, result any) error {
-    event := result.(*CompactionEvent)
+agent.OnAfterCompaction(func(ctx context.Context, result *compaction.CompactionResult) error {
     log.Printf("Compacted: %d -> %d tokens",
-        event.OriginalTokens,
-        event.CompactedTokens)
+        result.OriginalTokens,
+        result.CompactedTokens)
 
     // Send metrics
-    metrics.RecordCompaction(event)
+    metrics.RecordCompaction(result)
     return nil
 })
 ```

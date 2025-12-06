@@ -6,6 +6,9 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.19.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.2
+	github.com/lib/pq v1.10.9
+	github.com/youssefsiam38/agentpg/driver/databasesql v0.0.0
+	github.com/youssefsiam38/agentpg/driver/pgxv5 v0.0.0
 )
 
 require (
@@ -19,4 +22,9 @@ require (
 	golang.org/x/crypto v0.40.0 // indirect
 	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/text v0.27.0 // indirect
+)
+
+replace (
+	github.com/youssefsiam38/agentpg/driver/databasesql => ./driver/databasesql
+	github.com/youssefsiam38/agentpg/driver/pgxv5 => ./driver/pgxv5
 )

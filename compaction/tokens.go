@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"sync"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/youssefsiam38/agentpg/types"
@@ -12,6 +13,7 @@ import (
 // TokenCounter provides token counting with caching
 type TokenCounter struct {
 	client *anthropic.Client
+	mu     sync.RWMutex
 	cache  map[string]int
 }
 
@@ -25,11 +27,14 @@ func NewTokenCounter(client *anthropic.Client) *TokenCounter {
 
 // CountTokens uses Claude's token counting API with caching
 func (c *TokenCounter) CountTokens(ctx context.Context, model string, content string) (int, error) {
-	// Check cache first
+	// Check cache first (read lock)
 	cacheKey := c.cacheKey(model, content)
+	c.mu.RLock()
 	if count, ok := c.cache[cacheKey]; ok {
+		c.mu.RUnlock()
 		return count, nil
 	}
+	c.mu.RUnlock()
 
 	// Use Anthropic token counting API
 	resp, err := c.client.Messages.CountTokens(ctx, anthropic.MessageCountTokensParams{
@@ -49,7 +54,12 @@ func (c *TokenCounter) CountTokens(ctx context.Context, model string, content st
 	}
 
 	count := int(resp.InputTokens)
+
+	// Store in cache (write lock)
+	c.mu.Lock()
 	c.cache[cacheKey] = count
+	c.mu.Unlock()
+
 	return count, nil
 }
 
@@ -108,8 +118,12 @@ func (c *TokenCounter) CountMessagesTokens(
 
 // ApproximateTokens provides fast estimation without API call
 func ApproximateTokens(content string) int {
-	// Claude tokenizes roughly 3.5 characters per token for English text
-	return len(content) * 10 / 35
+	// Claude tokenizes roughly 4 characters per token for English text
+	// Using (len + 3) / 4 to round up and avoid integer division issues
+	if len(content) == 0 {
+		return 0
+	}
+	return (len(content) + 3) / 4
 }
 
 // SumTokens calculates total tokens across messages

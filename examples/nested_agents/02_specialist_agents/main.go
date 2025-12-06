@@ -12,6 +12,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
+	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 	"github.com/youssefsiam38/agentpg/tool"
 )
 
@@ -194,14 +195,17 @@ func main() {
 	// Create Anthropic client
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 
+	// Create driver
+	drv := pgxv5.New(pool)
+
 	// ==========================================================
 	// Create SPECIALIST AGENTS with their own tools
 	// ==========================================================
 
 	// Code Specialist - focuses on code analysis
 	codeAgent, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:     pool,
 			Client: &client,
 			Model:  "claude-sonnet-4-5-20250929",
 			SystemPrompt: `You are a code analysis specialist. Your role is to:
@@ -225,8 +229,8 @@ Always use your tools to back up your analysis.`,
 
 	// Data Specialist - focuses on data analysis
 	dataAgent, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:     pool,
 			Client: &client,
 			Model:  "claude-sonnet-4-5-20250929",
 			SystemPrompt: `You are a data analysis specialist. Your role is to:
@@ -250,8 +254,8 @@ Always query the data before providing insights.`,
 
 	// Research Specialist - focuses on knowledge search
 	researchAgent, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:     pool,
 			Client: &client,
 			Model:  "claude-sonnet-4-5-20250929",
 			SystemPrompt: `You are a research specialist. Your role is to:
@@ -277,8 +281,8 @@ Use your search tool to find relevant information.`,
 	// Create ORCHESTRATOR agent
 	// ==========================================================
 	orchestrator, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:     pool,
 			Client: &client,
 			Model:  "claude-sonnet-4-5-20250929",
 			SystemPrompt: `You are an orchestrator that coordinates multiple specialist agents.

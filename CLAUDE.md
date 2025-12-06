@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AgentPG is a production-grade stateful AI agent toolkit for Go. It provides persistent conversation management with PostgreSQL, automatic context compaction, a composable tool system, and multi-tenant session isolation.
 
-**Tech Stack**: Go 1.25.4, PostgreSQL 14+, Anthropic Claude API (official Go SDK), pgx/v5
+**Tech Stack**: Go 1.25.4, PostgreSQL 14+, Anthropic Claude API (official Go SDK), pgx/v5 or database/sql
 
 ## Common Commands
 
@@ -34,27 +34,35 @@ go test -v -run TestFunctionName ./path/to/package
 ## Architecture
 
 ```
-Agent (Orchestrator)
+Agent[TTx] (Orchestrator with generic transaction type)
+├── Driver[TTx] (database abstraction layer)
+│   ├── pgxv5.Driver (pgx/v5 transactions)
+│   └── databasesql.Driver (database/sql with savepoint nesting)
 ├── Session Manager (multi-tenant isolation, sync.RWMutex)
 ├── Tool System (registry → executor → validator)
 ├── Compaction Manager (hybrid strategy: pruning + summarization)
 ├── Hook System (observability: OnBeforeMessage, OnAfterMessage, OnToolCall, etc.)
 └── Storage Layer (pluggable Store interface)
-    └── PostgreSQL (reference implementation with pgx)
+    └── Driver-provided Store implementations
 ```
 
 **Key Design Patterns:**
-- **Functional Options**: `New(cfg, WithMaxTokens(4096), WithTemperature(0.7))`
-- **Interface-Based Extensibility**: Store, Tool, Strategy, Hook interfaces
+- **Driver Pattern**: Inspired by River queue - `New(driver, cfg, opts...)`
+- **Generics with Type Inference**: `Agent[TTx]` type inferred from driver
+- **Functional Options**: `New(drv, cfg, WithMaxTokens(4096), WithTemperature(0.7))`
+- **Interface-Based Extensibility**: Driver, Store, Tool, Strategy, Hook interfaces
 - **Streaming-First**: All Claude API calls use streaming with automatic accumulation
 
 ## Package Structure
 
 | Package | Purpose |
 |---------|---------|
-| `agentpg` (root) | Agent orchestrator, session management, configuration |
+| `agentpg` (root) | Agent[TTx] orchestrator, session management, configuration |
+| `driver/` | Driver interface definitions (Driver, Executor, ExecutorTx) |
+| `driver/pgxv5/` | pgx/v5 driver implementation (separate Go module) |
+| `driver/databasesql/` | database/sql driver with savepoint nesting (separate Go module) |
 | `compaction/` | Context management (hybrid strategy, summarization, token counting) |
-| `storage/` | Pluggable persistence (Store interface, PostgreSQL impl, migrations) |
+| `storage/` | Store interface and migrations |
 | `tool/` | Tool registry, executor, JSON Schema validation, built-in tools |
 | `streaming/` | Response accumulation, event types |
 | `hooks/` | Observability hooks (logging, custom) |

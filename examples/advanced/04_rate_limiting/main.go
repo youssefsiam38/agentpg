@@ -13,6 +13,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
+	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 	"github.com/youssefsiam38/agentpg/types"
 )
 
@@ -143,10 +144,13 @@ func main() {
 	fmt.Println("  Capacity: 5 (burst size)")
 	fmt.Println()
 
+	// Create driver
+	drv := pgxv5.New(pool)
+
 	// Create agent
 	agent, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:           pool,
 			Client:       &client,
 			Model:        "claude-sonnet-4-5-20250929",
 			SystemPrompt: "You are a helpful assistant. Be very brief.",

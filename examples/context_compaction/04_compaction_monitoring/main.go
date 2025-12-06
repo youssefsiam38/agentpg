@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/compaction"
+	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
 
 // ==========================================================
@@ -126,6 +128,9 @@ func main() {
 	// Create Anthropic client
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 
+	// Create driver
+	drv := pgxv5.New(pool)
+
 	// Create compaction monitor
 	monitor := NewCompactionMonitor()
 
@@ -135,8 +140,8 @@ func main() {
 
 	// Create agent with compaction enabled
 	agent, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:           pool,
 			Client:       &client,
 			Model:        "claude-sonnet-4-5-20250929",
 			SystemPrompt: "You are a helpful assistant. Provide detailed responses.",
@@ -283,17 +288,4 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
-}
-
-// strings package inline to avoid import
-var strings = struct {
-	Repeat func(string, int) string
-}{
-	Repeat: func(s string, n int) string {
-		result := ""
-		for i := 0; i < n; i++ {
-			result += s
-		}
-		return result
-	},
 }

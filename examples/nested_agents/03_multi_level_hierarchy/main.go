@@ -11,6 +11,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
+	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 	"github.com/youssefsiam38/agentpg/tool"
 )
 
@@ -122,6 +123,9 @@ func main() {
 	// Create Anthropic client
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 
+	// Create driver
+	drv := pgxv5.New(pool)
+
 	// ==========================================================
 	// LEVEL 3: Worker Agents (with specialized tools)
 	// ==========================================================
@@ -130,8 +134,8 @@ func main() {
 
 	// Frontend Developer
 	frontendDev, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:     pool,
 			Client: &client,
 			Model:  "claude-sonnet-4-5-20250929",
 			SystemPrompt: `You are a frontend developer specialist. You:
@@ -149,8 +153,8 @@ func main() {
 
 	// Backend Developer
 	backendDev, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:     pool,
 			Client: &client,
 			Model:  "claude-sonnet-4-5-20250929",
 			SystemPrompt: `You are a backend developer specialist. You:
@@ -168,8 +172,8 @@ func main() {
 
 	// Database Specialist
 	dbSpecialist, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:     pool,
 			Client: &client,
 			Model:  "claude-sonnet-4-5-20250929",
 			SystemPrompt: `You are a database specialist. You:
@@ -187,8 +191,8 @@ func main() {
 
 	// UX Designer
 	uxDesigner, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:     pool,
 			Client: &client,
 			Model:  "claude-sonnet-4-5-20250929",
 			SystemPrompt: `You are a UX designer. You:
@@ -212,8 +216,8 @@ func main() {
 
 	// Engineering Lead (manages frontend, backend, db)
 	engineeringLead, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:     pool,
 			Client: &client,
 			Model:  "claude-sonnet-4-5-20250929",
 			SystemPrompt: `You are the Engineering Team Lead. You:
@@ -240,8 +244,8 @@ Your team members:
 
 	// Design Lead (manages UX designer)
 	designLead, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:     pool,
 			Client: &client,
 			Model:  "claude-sonnet-4-5-20250929",
 			SystemPrompt: `You are the Design Team Lead. You:
@@ -269,8 +273,8 @@ Your team:
 	fmt.Println("Creating Level 1 project manager...")
 
 	projectManager, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:     pool,
 			Client: &client,
 			Model:  "claude-sonnet-4-5-20250929",
 			SystemPrompt: `You are the Project Manager. You:

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/compaction"
+	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
 
 func main() {
@@ -37,14 +38,17 @@ func main() {
 	// Create Anthropic client
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 
+	// Create driver
+	drv := pgxv5.New(pool)
+
 	// Track compaction events
 	compactionCount := 0
 	var lastCompaction *compaction.CompactionResult
 
 	// Create agent with auto-compaction enabled
 	agent, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:           pool,
 			Client:       &client,
 			Model:        "claude-sonnet-4-5-20250929",
 			SystemPrompt: "You are a helpful assistant. Provide detailed, thorough responses to questions.",

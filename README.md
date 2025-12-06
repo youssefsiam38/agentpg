@@ -18,7 +18,12 @@ AgentPG is an opinionated, batteries-included package for building AI agents pow
 ## Installation
 
 ```bash
+# Core package
 go get github.com/youssefsiam38/agentpg
+
+# Choose your database driver:
+go get github.com/youssefsiam38/agentpg/driver/pgxv5      # Recommended: pgx/v5
+go get github.com/youssefsiam38/agentpg/driver/databasesql # Alternative: database/sql
 ```
 
 ## Quick Start
@@ -47,6 +52,7 @@ import (
     "github.com/anthropics/anthropic-sdk-go/option"
     "github.com/jackc/pgx/v5/pgxpool"
     "github.com/youssefsiam38/agentpg"
+    "github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
 
 func main() {
@@ -61,10 +67,13 @@ func main() {
         option.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")),
     )
 
-    // Create agent
+    // Create database driver
+    drv := pgxv5.New(pool)
+
+    // Create agent (driver first, then config)
     agent, err := agentpg.New(
+        drv,
         agentpg.Config{
-            DB:           pool,
             Client:       &client,
             Model:        "claude-sonnet-4-5-20250929",
             SystemPrompt: "You are a helpful coding assistant",
@@ -79,7 +88,7 @@ func main() {
     // Create session
     // For single-tenant apps, use "1" as tenant_id
     // identifier can be user ID, conversation name, etc.
-    sessionID, _ := agent.NewSession(ctx, "1", "user-123", nil)
+    sessionID, _ := agent.NewSession(ctx, "1", "user-123", nil, nil)
     fmt.Printf("Session: %s\n", sessionID)
 
     // Run agent
@@ -101,11 +110,13 @@ func main() {
 
 ### Configuration
 
-**Required Parameters** (via `Config` struct):
-- `DB` - PostgreSQL connection pool
-- `Client` - Anthropic API client
-- `Model` - Model ID (e.g., "claude-sonnet-4-5-20250929")
-- `SystemPrompt` - System prompt for the agent
+**Required Parameters**:
+- `Driver` - Database driver (first argument to `New()`)
+  - `pgxv5.New(pool)` - For pgx/v5 users (recommended)
+  - `databasesql.New(db)` - For database/sql users
+- `Config.Client` - Anthropic API client
+- `Config.Model` - Model ID (e.g., "claude-sonnet-4-5-20250929")
+- `Config.SystemPrompt` - System prompt for the agent
 
 **Optional Parameters** (via functional options):
 - `WithMaxTokens(n)` - Maximum output tokens
@@ -124,12 +135,13 @@ Sessions represent conversations and are persisted in PostgreSQL with multi-tena
 // Create new session
 // tenantID: for multi-tenant apps (use "1" for single-tenant)
 // identifier: custom identifier (user ID, conversation name, etc.)
-sessionID, err := agent.NewSession(ctx, "tenant-123", "user-456", map[string]any{
+// parentSessionID: nil for top-level sessions, or parent ID for nested agents
+sessionID, err := agent.NewSession(ctx, "tenant-123", "user-456", nil, map[string]any{
     "tags": []string{"support", "urgent"},
 })
 
 // For single-tenant apps, use constant tenant_id
-sessionID, err := agent.NewSession(ctx, "1", "conversation-abc", nil)
+sessionID, err := agent.NewSession(ctx, "1", "conversation-abc", nil, nil)
 
 // Load existing session
 err = agent.LoadSession(ctx, sessionID)
@@ -185,7 +197,7 @@ func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, er
 }
 
 // Register with agent
-agent, _ := agentpg.New(config, agentpg.WithTools(&MyTool{}))
+agent, _ := agentpg.New(drv, config, agentpg.WithTools(&MyTool{}))
 ```
 
 ### Nested Agents
@@ -193,24 +205,24 @@ agent, _ := agentpg.New(config, agentpg.WithTools(&MyTool{}))
 Agents can use other agents as tools automatically:
 
 ```go
+// Create database driver
+drv := pgxv5.New(pool)
+
 // Create specialist agents
-dbAgent, _ := agentpg.New(agentpg.Config{
-    DB:           pool,
+dbAgent, _ := agentpg.New(drv, agentpg.Config{
     Client:       client,
     Model:        "claude-sonnet-4-5-20250929",
     SystemPrompt: "You are a PostgreSQL database expert",
 })
 
-apiAgent, _ := agentpg.New(agentpg.Config{
-    DB:           pool,
+apiAgent, _ := agentpg.New(drv, agentpg.Config{
     Client:       client,
     Model:        "claude-sonnet-4-5-20250929",
     SystemPrompt: "You are a REST API design expert",
 })
 
 // Create orchestrator
-orchestrator, _ := agentpg.New(agentpg.Config{
-    DB:           pool,
+orchestrator, _ := agentpg.New(drv, agentpg.Config{
     Client:       client,
     Model:        "claude-sonnet-4-5-20250929",
     SystemPrompt: "You coordinate other agents",
@@ -270,6 +282,7 @@ AgentPG includes production-grade context compaction based on patterns from Clau
 
 ```go
 agent, _ := agentpg.New(
+    drv,
     config,
     agentpg.WithAutoCompaction(true), // Default: enabled
     agentpg.WithCompactionStrategy(agentpg.HybridStrategy), // Default
@@ -286,7 +299,7 @@ Manual compaction control:
 
 ```go
 // Disable auto-compaction
-agent, _ := agentpg.New(config, agentpg.WithAutoCompaction(false))
+agent, _ := agentpg.New(drv, config, agentpg.WithAutoCompaction(false))
 
 // Check if compaction is needed
 stats, _ := agent.GetCompactionStats(ctx, sessionID)
@@ -302,12 +315,13 @@ Enable 1M token context with automatic retry:
 
 ```go
 agent, _ := agentpg.New(
+    drv,
     config,
     agentpg.WithExtendedContext(true),
 )
 
 // If a max_tokens error occurs, the agent automatically retries
-// with the anthropic-beta: context-1m-2025-08-07 header
+// with the anthropic-beta header for extended context
 ```
 
 ### Streaming Architecture
@@ -347,6 +361,7 @@ response, err := agent.Run(ctx, "Hello!")
 // If error occurs, all messages are rolled back automatically
 
 // Advanced usage - combine your business logic with agent in ONE transaction
+// With pgxv5 driver:
 tx, err := pool.Begin(ctx)  // Use native pgx transaction
 if err != nil {
     return err
@@ -367,11 +382,18 @@ if err != nil {
 
 // Commit all atomically - your business logic AND agent messages
 return tx.Commit(ctx)
+
+// With database/sql driver:
+tx, err := db.BeginTx(ctx, nil)
+// ... same pattern with *sql.Tx
+response, err := agent.RunTx(ctx, tx, "Process this order")
+tx.Commit()
 ```
 
 **Benefits:**
 - **Full atomicity** - Combine your business logic with agent operations in one transaction
-- **Native pgx.Tx** - Use standard PostgreSQL transaction patterns
+- **Native transactions** - Use pgx.Tx or *sql.Tx depending on your driver
+- **Type-safe** - The transaction type is inferred from your driver choice
 - **Nested agent isolation** - Each nested agent manages its own independent transaction
 - **No partial state** - On timeout or error, everything is rolled back cleanly
 
@@ -390,18 +412,28 @@ AgentPG follows these design principles:
 
 ```
 agentpg/
-├── agent.go                    # Core Agent type
+├── agent.go                    # Core Agent[TTx] type with generics
 ├── config.go                   # Configuration
 ├── options.go                  # Functional options
 ├── session.go                  # Session management
 ├── message.go                  # Message types
 ├── errors.go                   # Error handling
+├── driver/                     # Database driver abstraction
+│   ├── driver.go               # Driver interface
+│   ├── executor.go             # Executor interfaces
+│   ├── context.go              # Context injection
+│   ├── pgxv5/                  # pgx/v5 driver (separate module)
+│   │   ├── driver.go           # Driver implementation
+│   │   └── store.go            # Storage operations
+│   └── databasesql/            # database/sql driver (separate module)
+│       ├── driver.go           # Driver with savepoint nesting
+│       └── store.go            # Storage operations
 ├── tool/                       # Tool system
 │   ├── tool.go                 # Tool interface
 │   ├── registry.go             # Tool registry
 │   └── executor.go             # Tool execution
-├── storage/                    # PostgreSQL storage
-│   ├── postgres.go             # pgx implementation
+├── storage/                    # Storage abstraction
+│   ├── store.go                # Store interface
 │   └── migrations/             # SQL migrations
 ├── streaming/                  # Streaming support
 │   ├── stream.go               # Stream wrapper
@@ -446,6 +478,7 @@ agentpg/
 - [`examples/nested_agents/`](examples/nested_agents/) - Agent composition and delegation
 - [`examples/context_compaction/`](examples/context_compaction/) - Context management strategies
 - [`examples/extended_context/`](examples/extended_context/) - 1M token context window
+- [`examples/database_sql/`](examples/database_sql/) - Using the database/sql driver
 - [`examples/advanced/`](examples/advanced/) - Production patterns (multi-tenant, observability, rate limiting, etc.)
 
 See the [examples README](examples/README.md) for detailed documentation and usage instructions.
@@ -458,5 +491,6 @@ Contributions are welcome! Please see the [architecture documentation](docs/arch
 
 Built with:
 - [Anthropic Go SDK](https://github.com/anthropics/anthropic-sdk-go)
-- [pgx](https://github.com/jackc/pgx) - PostgreSQL driver
+- [pgx](https://github.com/jackc/pgx) - PostgreSQL driver (pgxv5 driver)
+- [lib/pq](https://github.com/lib/pq) - PostgreSQL driver (databasesql driver)
 - [uuid](https://github.com/google/uuid) - UUID generation

@@ -71,6 +71,11 @@ func (s *SummarizationStrategy) Compact(
 	messages []*types.Message,
 	config CompactionConfig,
 ) (*CompactionResult, error) {
+	// Guard against empty messages
+	if len(messages) == 0 {
+		return nil, nil // Nothing to compact
+	}
+
 	// Partition messages
 	preserved, toSummarize := s.partitioner.Partition(messages, config)
 
@@ -108,18 +113,22 @@ func (s *SummarizationStrategy) Compact(
 	// Extract summary text
 	summary := extractTextContent(resp.Content)
 
-	// Count summary tokens
-	summaryTokens, _ := s.counter.CountTokens(ctx, config.SummarizerModel, summary)
+	// Build the full continuation prompt (this is what actually goes in the message)
+	continuationText := buildContinuationPrompt(summary)
 
-	// Create summary message
+	// Count tokens on the FULL continuation prompt, not just the summary
+	summaryTokens, _ := s.counter.CountTokens(ctx, config.SummarizerModel, continuationText)
+
+	// Create summary message as user message (continuation context)
+	// Using user role since this represents context being provided to the assistant
 	summaryMsg := &types.Message{
 		ID:        uuid.New().String(),
 		SessionID: messages[0].SessionID, // Use same session
-		Role:      types.RoleSystem,
+		Role:      types.RoleUser,
 		Content: []types.ContentBlock{
 			{
 				Type: types.ContentTypeText,
-				Text: buildContinuationPrompt(summary),
+				Text: continuationText,
 			},
 		},
 		Usage: &types.Usage{

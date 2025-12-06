@@ -10,6 +10,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
+	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
 
 func main() {
@@ -39,10 +40,13 @@ func main() {
 		option.WithAPIKey(apiKey),
 	)
 
+	// Create driver
+	drv := pgxv5.New(pool)
+
 	// Create agent
 	agent, err := agentpg.New(
+		drv,
 		agentpg.Config{
-			DB:           pool,
 			Client:       &client,
 			Model:        "claude-sonnet-4-5-20250929",
 			SystemPrompt: "You are a helpful coding assistant",

@@ -4,24 +4,29 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
-	"github.com/jackc/pgx/v5"
 	"github.com/youssefsiam38/agentpg/compaction"
+	"github.com/youssefsiam38/agentpg/driver"
 	anthropicinternal "github.com/youssefsiam38/agentpg/internal/anthropic"
+	"github.com/youssefsiam38/agentpg/internal/convert"
 	"github.com/youssefsiam38/agentpg/storage"
 	"github.com/youssefsiam38/agentpg/streaming"
 	"github.com/youssefsiam38/agentpg/tool"
 	"github.com/youssefsiam38/agentpg/types"
 )
 
-// Agent represents an AI agent instance
-type Agent struct {
+// Agent represents an AI agent instance.
+// TTx is the native transaction type from the driver (e.g., pgx.Tx, *sql.Tx).
+// The type parameter is automatically inferred when creating agents via New().
+type Agent[TTx any] struct {
 	config       *internalConfig
+	driver       driver.Driver[TTx]
 	store        storage.Store
 	toolRegistry *tool.Registry
 	toolExecutor *tool.Executor
@@ -30,8 +35,26 @@ type Agent struct {
 	currentSession string // Current active session ID
 }
 
-// New creates a new Agent with the given configuration and options
-func New(cfg Config, opts ...Option) (*Agent, error) {
+// New creates a new Agent with the given driver, configuration, and options.
+// The transaction type TTx is inferred from the driver argument.
+//
+// Example:
+//
+//	drv := pgxv5.New(pool)
+//	agent, err := agentpg.New(drv, agentpg.Config{
+//	    Client:       &client,
+//	    Model:        "claude-sonnet-4-5-20250929",
+//	    SystemPrompt: "You are a helpful assistant",
+//	}, agentpg.WithMaxTokens(4096))
+func New[TTx any](drv driver.Driver[TTx], cfg Config, opts ...Option) (*Agent[TTx], error) {
+	// Validate driver
+	if drv == nil {
+		return nil, fmt.Errorf("%w: driver is required", ErrInvalidConfig)
+	}
+	if !drv.PoolIsSet() {
+		return nil, fmt.Errorf("%w: driver pool is not set", ErrInvalidConfig)
+	}
+
 	// Validate required configuration
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -47,8 +70,8 @@ func New(cfg Config, opts ...Option) (*Agent, error) {
 		}
 	}
 
-	// Create storage layer
-	store := storage.NewPostgresStore(cfg.DB)
+	// Get storage layer from driver
+	store := drv.GetStore()
 
 	// Create tool registry and executor
 	registry := tool.NewRegistry()
@@ -68,12 +91,12 @@ func New(cfg Config, opts ...Option) (*Agent, error) {
 		MainModel:        internal.model,
 		MaxContextTokens: internal.maxContextTokens,
 	}
-	compactionManager := compaction.NewManager(cfg.Client, store, compactionConfig)
-	compactionManager.SetPool(cfg.DB) // Set pool for transactional compaction
+	compactionManager := compaction.NewManager(cfg.Client, store, drv, compactionConfig)
 	internal.compactionManager = compactionManager
 
-	agent := &Agent{
+	agent := &Agent[TTx]{
 		config:       internal,
+		driver:       drv,
 		store:        store,
 		toolRegistry: registry,
 		toolExecutor: executor,
@@ -83,59 +106,59 @@ func New(cfg Config, opts ...Option) (*Agent, error) {
 }
 
 // GetModel returns the model being used by this agent
-func (a *Agent) GetModel() string {
+func (a *Agent[TTx]) GetModel() string {
 	return a.config.model
 }
 
 // GetSystemPrompt returns the system prompt
-func (a *Agent) GetSystemPrompt() string {
+func (a *Agent[TTx]) GetSystemPrompt() string {
 	return a.config.systemPrompt
 }
 
 // CurrentSession returns the current session ID (thread-safe)
-func (a *Agent) CurrentSession() string {
+func (a *Agent[TTx]) CurrentSession() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.currentSession
 }
 
 // setCurrentSession sets the current session ID (thread-safe)
-func (a *Agent) setCurrentSession(sessionID string) {
+func (a *Agent[TTx]) setCurrentSession(sessionID string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.currentSession = sessionID
 }
 
 // OnBeforeMessage registers a hook called before sending messages
-func (a *Agent) OnBeforeMessage(hook func(ctx context.Context, messages []*types.Message) error) {
+func (a *Agent[TTx]) OnBeforeMessage(hook func(ctx context.Context, messages []*types.Message) error) {
 	a.config.hooks.OnBeforeMessage(hook)
 }
 
 // OnAfterMessage registers a hook called after receiving a response
-func (a *Agent) OnAfterMessage(hook func(ctx context.Context, response *types.Response) error) {
+func (a *Agent[TTx]) OnAfterMessage(hook func(ctx context.Context, response *types.Response) error) {
 	a.config.hooks.OnAfterMessage(hook)
 }
 
 // OnToolCall registers a hook called when a tool is executed
-func (a *Agent) OnToolCall(hook func(ctx context.Context, toolName string, input json.RawMessage, output string, err error) error) {
+func (a *Agent[TTx]) OnToolCall(hook func(ctx context.Context, toolName string, input json.RawMessage, output string, err error) error) {
 	a.config.hooks.OnToolCall(hook)
 }
 
 // OnBeforeCompaction registers a hook called before context compaction
-func (a *Agent) OnBeforeCompaction(hook func(ctx context.Context, sessionID string) error) {
+func (a *Agent[TTx]) OnBeforeCompaction(hook func(ctx context.Context, sessionID string) error) {
 	a.config.hooks.OnBeforeCompaction(hook)
 }
 
 // OnAfterCompaction registers a hook called after context compaction
-func (a *Agent) OnAfterCompaction(hook func(ctx context.Context, result *compaction.CompactionResult) error) {
+func (a *Agent[TTx]) OnAfterCompaction(hook func(ctx context.Context, result *compaction.CompactionResult) error) {
 	a.config.hooks.OnAfterCompaction(hook)
 }
 
 // Run executes the agent with the given prompt.
 // Automatically wraps execution in a transaction for atomicity.
-func (a *Agent) Run(ctx context.Context, prompt string) (*Response, error) {
-	// Begin transaction using the pool from config
-	tx, err := a.config.db.Begin(ctx)
+func (a *Agent[TTx]) Run(ctx context.Context, prompt string) (*Response, error) {
+	// Begin transaction using the driver
+	execTx, err := a.driver.Begin(ctx)
 	if err != nil {
 		return nil, NewAgentError("Run", fmt.Errorf("failed to begin transaction: %w", err))
 	}
@@ -144,9 +167,14 @@ func (a *Agent) Run(ctx context.Context, prompt string) (*Response, error) {
 	committed := false
 	defer func() {
 		if !committed {
-			_ = tx.Rollback(ctx)
+			if err := execTx.Rollback(ctx); err != nil {
+				log.Printf("agentpg: failed to rollback transaction: %v", err)
+			}
 		}
 	}()
+
+	// Get native transaction for RunTx
+	tx := a.driver.UnwrapTx(execTx)
 
 	// Execute with transaction
 	response, err := a.RunTx(ctx, tx, prompt)
@@ -155,7 +183,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) (*Response, error) {
 	}
 
 	// Commit transaction
-	if err := tx.Commit(ctx); err != nil {
+	if err := execTx.Commit(ctx); err != nil {
 		return nil, NewAgentError("Run", fmt.Errorf("failed to commit transaction: %w", err))
 	}
 	committed = true
@@ -183,7 +211,7 @@ func (a *Agent) Run(ctx context.Context, prompt string) (*Response, error) {
 //	}
 //
 //	tx.Commit(ctx)
-func (a *Agent) RunTx(ctx context.Context, tx pgx.Tx, prompt string) (*Response, error) {
+func (a *Agent[TTx]) RunTx(ctx context.Context, tx TTx, prompt string) (*Response, error) {
 	// Ensure we have a session
 	if err := a.ensureSession(ctx); err != nil {
 		return nil, err
@@ -191,8 +219,9 @@ func (a *Agent) RunTx(ctx context.Context, tx pgx.Tx, prompt string) (*Response,
 
 	sessionID := a.CurrentSession()
 
-	// Create transaction context FIRST so all operations use the same transaction
-	txCtx := storage.WithTx(ctx, tx)
+	// Wrap transaction in executor and inject into context
+	execTx := a.driver.UnwrapExecutor(tx)
+	txCtx := driver.WithExecutor(ctx, execTx)
 
 	// Check for auto-compaction (within the same transaction)
 	if a.config.autoCompaction {
@@ -203,7 +232,7 @@ func (a *Agent) RunTx(ctx context.Context, tx pgx.Tx, prompt string) (*Response,
 
 	// Add user message within transaction
 	userMsg := NewUserMessage(sessionID, prompt)
-	if err := a.store.SaveMessage(txCtx, a.convertToStorageMessage(userMsg)); err != nil {
+	if err := a.store.SaveMessage(txCtx, convert.ToStorageMessage(userMsg)); err != nil {
 		return nil, NewAgentErrorWithSession("RunTx", sessionID, err)
 	}
 
@@ -212,7 +241,7 @@ func (a *Agent) RunTx(ctx context.Context, tx pgx.Tx, prompt string) (*Response,
 }
 
 // checkAndCompact checks if compaction is needed and performs it
-func (a *Agent) checkAndCompact(ctx context.Context, sessionID string) error {
+func (a *Agent[TTx]) checkAndCompact(ctx context.Context, sessionID string) error {
 	if a.config.compactionManager == nil {
 		return nil
 	}
@@ -250,8 +279,145 @@ func (a *Agent) checkAndCompact(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// Compact manually triggers context compaction for the current session.
+// Automatically wraps execution in a transaction for atomicity.
+// Returns the compaction result, or nil if no compaction was needed.
+func (a *Agent[TTx]) Compact(ctx context.Context) (*compaction.CompactionResult, error) {
+	// Begin transaction using the driver
+	execTx, err := a.driver.Begin(ctx)
+	if err != nil {
+		return nil, NewAgentError("Compact", fmt.Errorf("failed to begin transaction: %w", err))
+	}
+
+	// Ensure rollback on error
+	committed := false
+	defer func() {
+		if !committed {
+			if err := execTx.Rollback(ctx); err != nil {
+				log.Printf("agentpg: failed to rollback transaction: %v", err)
+			}
+		}
+	}()
+
+	// Get native transaction for CompactTx
+	tx := a.driver.UnwrapTx(execTx)
+
+	// Execute compaction within transaction
+	result, err := a.CompactTx(ctx, tx)
+	if err != nil {
+		return nil, err // Rollback via defer
+	}
+
+	// Commit transaction
+	if err := execTx.Commit(ctx); err != nil {
+		return nil, NewAgentError("Compact", fmt.Errorf("failed to commit transaction: %w", err))
+	}
+	committed = true
+
+	return result, nil
+}
+
+// CompactTx manually triggers context compaction within an existing transaction.
+// The caller is responsible for calling tx.Commit() or tx.Rollback().
+// Returns the compaction result, or nil if no compaction was needed.
+//
+// This allows developers to combine compaction with other database operations atomically:
+//
+//	tx, _ := pool.Begin(ctx)
+//	defer tx.Rollback(ctx)
+//
+//	// Compact the session
+//	result, err := agent.CompactTx(ctx, tx)
+//	if err != nil {
+//	    return err
+//	}
+//
+//	// Your business logic in the same transaction
+//	tx.Exec(ctx, "UPDATE usage_stats ...")
+//
+//	tx.Commit(ctx)
+func (a *Agent[TTx]) CompactTx(ctx context.Context, tx TTx) (*compaction.CompactionResult, error) {
+	return a.compactInternal(ctx, &tx)
+}
+
+// compactInternal is the internal implementation for manual compaction
+func (a *Agent[TTx]) compactInternal(ctx context.Context, tx *TTx) (*compaction.CompactionResult, error) {
+	// Ensure we have a session
+	if err := a.ensureSession(ctx); err != nil {
+		return nil, err
+	}
+
+	sessionID := a.CurrentSession()
+
+	// Get compaction manager
+	if a.config.compactionManager == nil {
+		return nil, NewAgentError("Compact", fmt.Errorf("compaction manager not configured"))
+	}
+
+	mgr, ok := a.config.compactionManager.(*compaction.Manager)
+	if !ok {
+		return nil, NewAgentError("Compact", fmt.Errorf("invalid compaction manager type"))
+	}
+
+	// Inject transaction into context if provided
+	txCtx := ctx
+	if tx != nil {
+		execTx := a.driver.UnwrapExecutor(*tx)
+		txCtx = driver.WithExecutor(ctx, execTx)
+	}
+
+	opName := "Compact"
+	if tx != nil {
+		opName = "CompactTx"
+	}
+
+	// Trigger before-compaction hook
+	if err := a.config.hooks.TriggerBeforeCompaction(txCtx, sessionID); err != nil {
+		return nil, NewAgentErrorWithSession(opName, sessionID, fmt.Errorf("before-compaction hook failed: %w", err))
+	}
+
+	// Perform compaction
+	result, err := mgr.Compact(txCtx, sessionID, a.config.compactionStrategy)
+	if err != nil {
+		return nil, NewAgentErrorWithSession(opName, sessionID, fmt.Errorf("compaction failed: %w", err))
+	}
+
+	// Trigger after-compaction hook
+	if err := a.config.hooks.TriggerAfterCompaction(txCtx, result); err != nil {
+		return nil, NewAgentErrorWithSession(opName, sessionID, fmt.Errorf("after-compaction hook failed: %w", err))
+	}
+
+	return result, nil
+}
+
+// GetCompactionStats returns compaction statistics for the current session
+func (a *Agent[TTx]) GetCompactionStats(ctx context.Context) (*compaction.CompactionStats, error) {
+	if err := a.ensureSession(ctx); err != nil {
+		return nil, err
+	}
+
+	sessionID := a.CurrentSession()
+
+	if a.config.compactionManager == nil {
+		return nil, NewAgentError("GetCompactionStats", fmt.Errorf("compaction manager not configured"))
+	}
+
+	mgr, ok := a.config.compactionManager.(*compaction.Manager)
+	if !ok {
+		return nil, NewAgentError("GetCompactionStats", fmt.Errorf("invalid compaction manager type"))
+	}
+
+	return mgr.GetCompactionStats(ctx, sessionID)
+}
+
 // runWithToolLoop executes the agent with automatic tool calling
-func (a *Agent) runWithToolLoop(ctx context.Context, sessionID string, useExtendedContext bool) (*Response, error) {
+func (a *Agent[TTx]) runWithToolLoop(ctx context.Context, sessionID string, useExtendedContext bool) (*Response, error) {
+	return a.runWithToolLoopInternal(ctx, sessionID, useExtendedContext, 0)
+}
+
+// runWithToolLoopInternal is the internal implementation with retry tracking
+func (a *Agent[TTx]) runWithToolLoopInternal(ctx context.Context, sessionID string, useExtendedContext bool, extendedContextRetries int) (*Response, error) {
+	const maxExtendedContextRetries = 1 // Only retry once with extended context
 	iteration := 0
 
 	for iteration < a.config.maxToolIterations {
@@ -275,9 +441,9 @@ func (a *Agent) runWithToolLoop(ctx context.Context, sessionID string, useExtend
 		stream, err := a.streamMessage(ctx, anthropicMsgs, useExtendedContext)
 		if err != nil {
 			// Check for max_tokens error
-			if anthropicinternal.IsMaxTokensError(err) && a.config.extendedContext && !useExtendedContext {
-				// Retry with extended context
-				return a.runWithToolLoop(ctx, sessionID, true)
+			if anthropicinternal.IsMaxTokensError(err) && a.config.extendedContext && !useExtendedContext && extendedContextRetries < maxExtendedContextRetries {
+				// Retry with extended context (only once)
+				return a.runWithToolLoopInternal(ctx, sessionID, true, extendedContextRetries+1)
 			}
 
 			// Check if retryable
@@ -309,7 +475,7 @@ func (a *Agent) runWithToolLoop(ctx context.Context, sessionID string, useExtend
 		assistantMsg.Usage = anthropicinternal.ConvertUsage(streamMsg.Usage)
 
 		// Save assistant message (store uses transaction from context if present)
-		if err := a.store.SaveMessage(ctx, a.convertToStorageMessage(assistantMsg)); err != nil {
+		if err := a.store.SaveMessage(ctx, convert.ToStorageMessage(assistantMsg)); err != nil {
 			return nil, NewAgentErrorWithSession("Run", sessionID, err)
 		}
 
@@ -345,11 +511,11 @@ func (a *Agent) runWithToolLoop(ctx context.Context, sessionID string, useExtend
 // but preserving deadline, cancellation, and other values.
 // Used when nested agents should have their own independent transaction.
 func stripTransaction(ctx context.Context) context.Context {
-	return storage.StripTx(ctx)
+	return driver.StripExecutor(ctx)
 }
 
 // streamMessage creates a streaming message request
-func (a *Agent) streamMessage(ctx context.Context, messages []anthropic.MessageParam, useExtendedContext bool) (*ssestream.Stream[anthropic.MessageStreamEventUnion], error) {
+func (a *Agent[TTx]) streamMessage(ctx context.Context, messages []anthropic.MessageParam, useExtendedContext bool) (*ssestream.Stream[anthropic.MessageStreamEventUnion], error) {
 	// Build request parameters
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(a.config.model),
@@ -397,15 +563,21 @@ func (a *Agent) streamMessage(ctx context.Context, messages []anthropic.MessageP
 }
 
 // executeToolCalls executes all tool calls in a message
-func (a *Agent) executeToolCalls(ctx context.Context, sessionID string, msg *Message) error {
+func (a *Agent[TTx]) executeToolCalls(ctx context.Context, sessionID string, msg *Message) error {
 	toolCalls := anthropicinternal.ExtractToolCalls(msg.Content)
 	if len(toolCalls) == 0 {
 		return nil
 	}
 
-	// Build execution requests
+	// Build execution requests with validation
 	requests := make([]tool.ToolCallRequest, len(toolCalls))
 	for i, call := range toolCalls {
+		// Validate input against tool schema before execution
+		if err := a.toolExecutor.ValidateInput(call.Name, call.Input); err != nil {
+			log.Printf("agentpg: tool input validation failed for %s: %v", call.Name, err)
+			// Continue with execution - the tool can handle invalid input and return an error
+		}
+
 		requests[i] = tool.ToolCallRequest{
 			ID:       call.ID,
 			ToolName: call.Name,
@@ -442,7 +614,7 @@ func (a *Agent) executeToolCalls(ctx context.Context, sessionID string, msg *Mes
 	}
 
 	// Save tool result message (store uses transaction from context if present)
-	if err := a.store.SaveMessage(ctx, a.convertToStorageMessage(toolResultMsg)); err != nil {
+	if err := a.store.SaveMessage(ctx, convert.ToStorageMessage(toolResultMsg)); err != nil {
 		return NewAgentErrorWithSession("executeToolCalls", sessionID, err)
 	}
 
@@ -450,7 +622,7 @@ func (a *Agent) executeToolCalls(ctx context.Context, sessionID string, msg *Mes
 }
 
 // getMessageHistory retrieves message history for the given session
-func (a *Agent) getMessageHistory(ctx context.Context, sessionID string) ([]*Message, error) {
+func (a *Agent[TTx]) getMessageHistory(ctx context.Context, sessionID string) ([]*Message, error) {
 	storageMessages, err := a.store.GetMessages(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -459,146 +631,33 @@ func (a *Agent) getMessageHistory(ctx context.Context, sessionID string) ([]*Mes
 	// Convert storage messages to agentpg messages
 	messages := make([]*Message, len(storageMessages))
 	for i, sm := range storageMessages {
-		messages[i] = a.convertFromStorageMessage(sm)
+		messages[i] = convert.FromStorageMessage(sm)
 	}
 
 	return messages, nil
 }
 
-// convertToStorageMessage converts an agentpg message to storage format
-func (a *Agent) convertToStorageMessage(msg *Message) *storage.Message {
-	var usage *storage.MessageUsage
-	if msg.Usage != nil {
-		usage = &storage.MessageUsage{
-			InputTokens:         msg.Usage.InputTokens,
-			OutputTokens:        msg.Usage.OutputTokens,
-			CacheCreationTokens: msg.Usage.CacheCreationTokens,
-			CacheReadTokens:     msg.Usage.CacheReadTokens,
-		}
-	}
-	return &storage.Message{
-		ID:          msg.ID,
-		SessionID:   msg.SessionID,
-		Role:        string(msg.Role),
-		Content:     msg.Content,
-		Usage:       usage,
-		Metadata:    msg.Metadata,
-		IsPreserved: msg.IsPreserved,
-		IsSummary:   msg.IsSummary,
-		CreatedAt:   msg.CreatedAt,
-		UpdatedAt:   msg.UpdatedAt,
-	}
-}
-
-// convertFromStorageMessage converts a storage message to agentpg format
-func (a *Agent) convertFromStorageMessage(sm *storage.Message) *Message {
-	var usage *Usage
-	if sm.Usage != nil {
-		usage = &Usage{
-			InputTokens:         sm.Usage.InputTokens,
-			OutputTokens:        sm.Usage.OutputTokens,
-			CacheCreationTokens: sm.Usage.CacheCreationTokens,
-			CacheReadTokens:     sm.Usage.CacheReadTokens,
-		}
-	}
-	msg := &Message{
-		ID:          sm.ID,
-		SessionID:   sm.SessionID,
-		Role:        Role(sm.Role),
-		Usage:       usage,
-		Metadata:    sm.Metadata,
-		IsPreserved: sm.IsPreserved,
-		IsSummary:   sm.IsSummary,
-		CreatedAt:   sm.CreatedAt,
-		UpdatedAt:   sm.UpdatedAt,
-	}
-
-	// Convert content from storage format
-	switch content := sm.Content.(type) {
-	case []byte:
-		// Raw JSON bytes - unmarshal directly
-		var blocks []ContentBlock
-		if err := json.Unmarshal(content, &blocks); err == nil {
-			msg.Content = blocks
-		}
-	case []ContentBlock:
-		// Already the right type
-		msg.Content = content
-	case []any:
-		// Generic slice from JSON unmarshal - convert each element
-		blocks := make([]ContentBlock, 0, len(content))
-		for _, item := range content {
-			if blockMap, ok := item.(map[string]any); ok {
-				block := convertMapToContentBlock(blockMap)
-				blocks = append(blocks, block)
-			}
-		}
-		msg.Content = blocks
-	}
-
-	return msg
-}
-
-// convertMapToContentBlock converts a map to a ContentBlock
-// Field names match JSON tags in types.ContentBlock struct
-func convertMapToContentBlock(m map[string]any) ContentBlock {
-	block := ContentBlock{}
-
-	if t, ok := m["type"].(string); ok {
-		block.Type = ContentType(t)
-	}
-	if text, ok := m["text"].(string); ok {
-		block.Text = text
-	}
-	// Tool use fields (json tags: id, name, input)
-	if id, ok := m["id"].(string); ok {
-		block.ToolUseID = id
-	}
-	if name, ok := m["name"].(string); ok {
-		block.ToolName = name
-	}
-	if input, ok := m["input"].(map[string]any); ok {
-		block.ToolInput = input
-		if raw, err := json.Marshal(input); err == nil {
-			block.ToolInputRaw = raw
-		}
-	}
-	// Tool result fields (json tags: tool_use_id, content, is_error)
-	if id, ok := m["tool_use_id"].(string); ok {
-		block.ToolResultID = id
-	}
-	if content, ok := m["content"].(string); ok {
-		block.ToolContent = content
-	}
-	if isErr, ok := m["is_error"].(bool); ok {
-		block.IsError = isErr
-	}
-
-	return block
-}
 
 // RegisterTool adds a new tool to the agent
-func (a *Agent) RegisterTool(t tool.Tool) error {
+func (a *Agent[TTx]) RegisterTool(t tool.Tool) error {
 	return a.toolRegistry.Register(t)
 }
 
 // GetTools returns all registered tool names
-func (a *Agent) GetTools() []string {
+func (a *Agent[TTx]) GetTools() []string {
 	return a.toolRegistry.List()
 }
 
-// AsToolFor registers this agent as a tool for another agent
-// The nested agent will have its own dedicated session linked to the parent's session
-func (a *Agent) AsToolFor(parent *Agent) error {
+// AsToolFor registers this agent as a tool for another agent.
+// Both agents must use the same driver type.
+// The nested agent will have its own dedicated session linked to the parent's session.
+func (a *Agent[TTx]) AsToolFor(parent *Agent[TTx]) error {
 	// Import here to avoid circular dependency
 	// We'll use the builtin package
 	toolName := fmt.Sprintf("agent_%s", sanitizeName(a.config.systemPrompt))
 
 	// Create agent tool wrapper with reference to parent agent
-	agentTool, err := createAgentTool(a, parent, toolName, a.config.systemPrompt)
-	if err != nil {
-		return fmt.Errorf("failed to create agent tool: %w", err)
-	}
+	agentTool := createAgentTool(a, parent, toolName, a.config.systemPrompt)
 
 	// Register with parent
 	return parent.RegisterTool(agentTool)
@@ -628,36 +687,36 @@ func sanitizeName(s string) string {
 }
 
 // createAgentTool creates an agent tool wrapper (defined inline to avoid import cycle)
-func createAgentTool(agent *Agent, parent *Agent, name string, description string) (tool.Tool, error) {
-	return &agentToolWrapper{
+func createAgentTool[TTx any](agent *Agent[TTx], parent *Agent[TTx], name string, description string) tool.Tool {
+	return &agentToolWrapper[TTx]{
 		agent:       agent,
 		parentAgent: parent,
 		name:        name,
 		description: description,
-	}, nil
+	}
 }
 
 // agentToolWrapper implements tool.Tool for nested agents
-type agentToolWrapper struct {
-	agent       *Agent
-	parentAgent *Agent
+type agentToolWrapper[TTx any] struct {
+	agent       *Agent[TTx]
+	parentAgent *Agent[TTx]
 	name        string
 	description string
 	sessionID   string
 }
 
-func (a *agentToolWrapper) Name() string {
+func (a *agentToolWrapper[TTx]) Name() string {
 	return a.name
 }
 
-func (a *agentToolWrapper) Description() string {
+func (a *agentToolWrapper[TTx]) Description() string {
 	if a.description == "" {
 		return fmt.Sprintf("Delegate task to %s agent", a.name)
 	}
 	return a.description
 }
 
-func (a *agentToolWrapper) InputSchema() tool.ToolSchema {
+func (a *agentToolWrapper[TTx]) InputSchema() tool.ToolSchema {
 	return tool.ToolSchema{
 		Type: "object",
 		Properties: map[string]tool.PropertyDef{
@@ -674,7 +733,7 @@ func (a *agentToolWrapper) InputSchema() tool.ToolSchema {
 	}
 }
 
-func (a *agentToolWrapper) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+func (a *agentToolWrapper[TTx]) Execute(ctx context.Context, input json.RawMessage) (string, error) {
 	var params struct {
 		Task    string `json:"task"`
 		Context string `json:"context"`
