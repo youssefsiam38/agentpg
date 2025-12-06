@@ -76,7 +76,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      GOLANGCI_LINT_VERSION: v2.1.6
+      # Use golangci-lint v2.7.1+ which is built with Go 1.25
+      GOLANGCI_LINT_VERSION: v2.7.1
+      GOTOOLCHAIN: local
     permissions:
       contents: read
       pull-requests: read
@@ -84,8 +86,8 @@ jobs:
     steps:
       - uses: actions/setup-go@v5
         with:
-          go-version: "stable"
-          check-latest: true
+          # Must match project's toolchain (go1.25.4)
+          go-version: "1.25"
 
       - name: Checkout
         uses: actions/checkout@v4
