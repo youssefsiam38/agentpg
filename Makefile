@@ -31,7 +31,7 @@ test-coverage:
 	go tool cover -html=coverage.out -o coverage.html
 
 lint:
-	@which golangci-lint > /dev/null 2>&1 || (echo "Installing golangci-lint..." && go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest)
+	@echo "Installing golangci-lint..." && GOTOOLCHAIN=local go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 	@PATH="$(PATH):$(shell go env GOPATH)/bin" golangci-lint run ./...
 
 build:
