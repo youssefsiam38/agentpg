@@ -187,11 +187,7 @@ CREATE INDEX idx_archive_session ON message_archive(session_id, archived_at DESC
 
 ```bash
 # Using psql
-psql "$DATABASE_URL" \
-  -f storage/migrations/001_create_sessions.up.sql \
-  -f storage/migrations/002_create_messages.up.sql \
-  -f storage/migrations/003_create_compaction_events.up.sql \
-  -f storage/migrations/004_create_message_archive.up.sql
+psql "$DATABASE_URL" -f storage/migrations/001_initial_schema.up.sql
 
 # Using make (if available)
 make migrate
@@ -201,24 +197,15 @@ make migrate
 
 ```
 storage/migrations/
-├── 001_create_sessions.up.sql
-├── 001_create_sessions.down.sql
-├── 002_create_messages.up.sql
-├── 002_create_messages.down.sql
-├── 003_create_compaction_events.up.sql
-├── 003_create_compaction_events.down.sql
-├── 004_create_message_archive.up.sql
-└── 004_create_message_archive.down.sql
+├── 001_initial_schema.up.sql
+├── 001_initial_schema.down.sql
+└── README.md
 ```
 
 ### Rollback Migrations
 
 ```bash
-psql "$DATABASE_URL" \
-  -f storage/migrations/004_create_message_archive.down.sql \
-  -f storage/migrations/003_create_compaction_events.down.sql \
-  -f storage/migrations/002_create_messages.down.sql \
-  -f storage/migrations/001_create_sessions.down.sql
+psql "$DATABASE_URL" -f storage/migrations/001_initial_schema.down.sql
 ```
 
 ---

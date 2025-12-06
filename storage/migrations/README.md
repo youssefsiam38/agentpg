@@ -6,10 +6,7 @@ This directory contains SQL migration files for setting up the AgentPG database 
 
 Migrations are numbered and include both `up` (apply) and `down` (rollback) scripts:
 
-1. **001_create_sessions** - Creates the `sessions` table for conversation sessions
-2. **002_create_messages** - Creates the `messages` table for conversation messages
-3. **003_create_compaction_events** - Creates the `compaction_events` table for compaction audit trail
-4. **004_create_message_archive** - Creates the `message_archive` table for message reversibility
+- **001_initial_schema** - Creates all tables: `sessions`, `messages`, `compaction_events`, and `message_archive`
 
 ## Applying Migrations
 
@@ -46,10 +43,7 @@ goose -dir ./storage/migrations postgres "user=myuser password=mypass dbname=myd
 You can also apply the migrations manually using `psql`:
 
 ```bash
-psql -U myuser -d mydb -f storage/migrations/001_create_sessions.up.sql
-psql -U myuser -d mydb -f storage/migrations/002_create_messages.up.sql
-psql -U myuser -d mydb -f storage/migrations/003_create_compaction_events.up.sql
-psql -U myuser -d mydb -f storage/migrations/004_create_message_archive.up.sql
+psql -U myuser -d mydb -f storage/migrations/001_initial_schema.up.sql
 ```
 
 ## Schema Overview

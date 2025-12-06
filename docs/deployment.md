@@ -97,11 +97,7 @@ max_connections = 200            # Adjust based on app pool size
 
 ```bash
 # Using psql
-psql "$DATABASE_URL" \
-    -f storage/migrations/001_create_sessions.up.sql \
-    -f storage/migrations/002_create_messages.up.sql \
-    -f storage/migrations/003_create_compaction_events.up.sql \
-    -f storage/migrations/004_create_message_archive.up.sql
+psql "$DATABASE_URL" -f storage/migrations/001_initial_schema.up.sql
 
 # Using golang-migrate
 migrate -database "$DATABASE_URL" -path storage/migrations up
