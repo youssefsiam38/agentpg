@@ -179,3 +179,9 @@ air.toml
 # ------------------------------
 docker-compose.override.yml
 .docker/
+
+
+# ------------------------------
+# Claude AI
+# ------------------------------
+.claude/commands/release.md
