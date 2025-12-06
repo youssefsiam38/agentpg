@@ -1,4 +1,7 @@
-.PHONY: all test test-unit test-integration lint build docker-up docker-down migrate clean help
+.PHONY: all test test-unit test-integration lint build docker-up docker-down migrate clean help update-mod-go
+
+GO_VERSION := 1.25.4
+GO_MOD_DIRS := . driver/pgxv5 driver/databasesql
 
 all: lint test build
 
@@ -54,3 +57,13 @@ clean:
 
 fmt:
 	gofmt -s -w .
+
+update-mod-go:
+	@for dir in $(GO_MOD_DIRS); do \
+		if [ "$(CHECK)" = "true" ]; then \
+			grep -q "go $(GO_VERSION)" $$dir/go.mod || (echo "go.mod in $$dir has wrong go version" && exit 1); \
+		else \
+			cd $$dir && go mod edit -go=$(GO_VERSION) && cd - > /dev/null; \
+		fi \
+	done
+	@if [ "$(CHECK)" = "true" ]; then echo "All go.mod files have correct go version"; fi

@@ -1,39 +1,45 @@
 name: CI
 
+env:
+  DATABASE_URL: postgres://test:test@localhost:5432/agentpg_test?sslmode=disable
+
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
-  # lint:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-go@v5
-  #       with:
-  #         go-version-file: ./go.mod
-  #     - name: golangci-lint
-  #       uses: golangci/golangci-lint-action@v4
-  #       with:
-  #         version: latest
-
-  test-unit:
+  build_and_test:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: ./go.mod
-      - name: Run unit tests
-        run: go test -v -race -short ./...
+    env:
+      # The special value "local" tells Go to use the bundled Go version rather
+      # than trying to fetch one according to a `toolchain` value in `go.mod`.
+      # This ensures that we're really running the Go version in the CI matrix
+      # rather than one that the Go command has upgraded to automatically.
+      GOTOOLCHAIN: local
+    strategy:
+      matrix:
+        include:
+          # Run the latest Go version against all supported Postgres versions:
+          - go-version: "1.25"
+            postgres-version: 18
+          - go-version: "1.25"
+            postgres-version: 17
+          - go-version: "1.25"
+            postgres-version: 16
+          - go-version: "1.25"
+            postgres-version: 15
+          - go-version: "1.25"
+            postgres-version: 14
 
-  test-integration:
-    runs-on: ubuntu-latest
+          # Also run the previous Go version against the latest Postgres version:
+          - go-version: "1.24"
+            postgres-version: 18
+      fail-fast: false
+    timeout-minutes: 5
+
     services:
       postgres:
-        image: postgres:16
+        image: postgres:${{ matrix.postgres-version }}
         env:
           POSTGRES_USER: test
           POSTGRES_PASSWORD: test
@@ -42,21 +48,73 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd pg_isready
-          --health-interval 10s
+          --health-interval 2s
           --health-timeout 5s
           --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+
+      - name: Setup Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
         with:
-          go-version-file: ./go.mod
+          go-version: ${{ matrix.go-version }}
+
+      - name: Display Go version
+        run: go version
+
       - name: Install migrate
         run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+
       - name: Run migrations
-        env:
-          DATABASE_URL: postgres://test:test@localhost:5432/agentpg_test?sslmode=disable
         run: migrate -path storage/migrations -database "$DATABASE_URL" up
-      - name: Run integration tests
-        env:
-          DATABASE_URL: postgres://test:test@localhost:5432/agentpg_test?sslmode=disable
-        run: go test -v -race -run Integration ./...
+
+      - name: Run tests
+        run: go test -v -race ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GOLANGCI_LINT_VERSION: v2.1.6
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          check-latest: true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          # golangci-lint needs to be run separately for every Go module, and
+          # its GitHub Action doesn't provide any way to do that. Have it fetch
+          # the golangci-lint binary, trick it into not running by sending only
+          # `--help`, then run the full set of lints below.
+          args: --help
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+      - name: Run lint
+        run: make lint
+
+  submodule_check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          check-latest: true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check all go/toolchain directives match
+        run: CHECK=true make update-mod-go
