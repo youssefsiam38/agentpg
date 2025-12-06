@@ -50,10 +50,12 @@ jobs:
             echo "- Driver pattern supporting pgx/v5 and database/sql" >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
           else
-            echo "notes<<EOF" >> $GITHUB_OUTPUT
-            git log ${PREV_TAG}..HEAD --pretty=format:"- %s"
-            echo "" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+            {
+              echo "notes<<EOF"
+              git log ${PREV_TAG}..HEAD --pretty=format:"- %s"
+              echo ""
+              echo "EOF"
+            } >> $GITHUB_OUTPUT
           fi
 
       - name: Create GitHub Release
