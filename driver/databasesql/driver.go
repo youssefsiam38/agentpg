@@ -89,8 +89,8 @@ func (e *Executor) Begin(ctx context.Context) (driver.ExecutorTx, error) {
 }
 
 // Exec executes a query that doesn't return rows.
-func (e *Executor) Exec(ctx context.Context, sql string, args ...any) (int64, error) {
-	result, err := e.db.ExecContext(ctx, sql, args...)
+func (e *Executor) Exec(ctx context.Context, query string, args ...any) (int64, error) {
+	result, err := e.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -102,8 +102,8 @@ func (e *Executor) Exec(ctx context.Context, sql string, args ...any) (int64, er
 }
 
 // Query executes a query that returns rows.
-func (e *Executor) Query(ctx context.Context, sql string, args ...any) (driver.Rows, error) {
-	rows, err := e.db.QueryContext(ctx, sql, args...)
+func (e *Executor) Query(ctx context.Context, query string, args ...any) (driver.Rows, error) {
+	rows, err := e.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -111,8 +111,8 @@ func (e *Executor) Query(ctx context.Context, sql string, args ...any) (driver.R
 }
 
 // QueryRow executes a query that returns at most one row.
-func (e *Executor) QueryRow(ctx context.Context, sql string, args ...any) driver.Row {
-	return e.db.QueryRowContext(ctx, sql, args...)
+func (e *Executor) QueryRow(ctx context.Context, query string, args ...any) driver.Row {
+	return e.db.QueryRowContext(ctx, query, args...)
 }
 
 // SendBatch executes multiple queries sequentially.
@@ -155,8 +155,8 @@ func (e *ExecutorTx) Begin(ctx context.Context) (driver.ExecutorTx, error) {
 }
 
 // Exec executes a query that doesn't return rows within the transaction.
-func (e *ExecutorTx) Exec(ctx context.Context, sql string, args ...any) (int64, error) {
-	result, err := e.tx.ExecContext(ctx, sql, args...)
+func (e *ExecutorTx) Exec(ctx context.Context, query string, args ...any) (int64, error) {
+	result, err := e.tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -168,8 +168,8 @@ func (e *ExecutorTx) Exec(ctx context.Context, sql string, args ...any) (int64, 
 }
 
 // Query executes a query that returns rows within the transaction.
-func (e *ExecutorTx) Query(ctx context.Context, sql string, args ...any) (driver.Rows, error) {
-	rows, err := e.tx.QueryContext(ctx, sql, args...)
+func (e *ExecutorTx) Query(ctx context.Context, query string, args ...any) (driver.Rows, error) {
+	rows, err := e.tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -177,8 +177,8 @@ func (e *ExecutorTx) Query(ctx context.Context, sql string, args ...any) (driver
 }
 
 // QueryRow executes a query that returns at most one row within the transaction.
-func (e *ExecutorTx) QueryRow(ctx context.Context, sql string, args ...any) driver.Row {
-	return e.tx.QueryRowContext(ctx, sql, args...)
+func (e *ExecutorTx) QueryRow(ctx context.Context, query string, args ...any) driver.Row {
+	return e.tx.QueryRowContext(ctx, query, args...)
 }
 
 // Commit commits the transaction or releases the savepoint.
@@ -237,7 +237,7 @@ type rowsWrapper struct {
 
 // Close closes the Rows.
 func (r *rowsWrapper) Close() {
-	r.Rows.Close()
+	_ = r.Rows.Close()
 }
 
 // Err returns any error encountered during iteration.

@@ -219,11 +219,13 @@ func TestIntegration_DatabaseSQL_Store_Transaction(t *testing.T) {
 
 	// Use driver context injection
 	txCtx := driver.WithExecutor(ctx, execTx)
-	if err := store.SaveMessage(txCtx, msg); err != nil {
+	err = store.SaveMessage(txCtx, msg)
+	if err != nil {
 		t.Fatalf("SaveMessage in tx failed: %v", err)
 	}
 
-	if err := execTx.Commit(ctx); err != nil {
+	err = execTx.Commit(ctx)
+	if err != nil {
 		t.Fatalf("Commit failed: %v", err)
 	}
 
@@ -317,7 +319,8 @@ func TestIntegration_DatabaseSQL_Driver_NestedTransactions(t *testing.T) {
 	}
 
 	outerCtx := driver.WithExecutor(ctx, outerTx)
-	if err := store.SaveMessage(outerCtx, outerMsg); err != nil {
+	err = store.SaveMessage(outerCtx, outerMsg)
+	if err != nil {
 		t.Fatalf("SaveMessage in outer tx failed: %v", err)
 	}
 
