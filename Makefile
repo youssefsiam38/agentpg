@@ -32,7 +32,10 @@ test-coverage:
 
 lint:
 	@echo "Installing golangci-lint..." && GOTOOLCHAIN=local go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-	@PATH="$(PATH):$(shell go env GOPATH)/bin" golangci-lint run ./...
+	@for dir in $(GO_MOD_DIRS); do \
+		echo "Linting $$dir..."; \
+		(cd $$dir && PATH="$(PATH):$(shell go env GOPATH)/bin" golangci-lint run ./...) || exit 1; \
+	done
 
 build:
 	go build ./...
