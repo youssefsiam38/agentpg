@@ -27,10 +27,7 @@ go get github.com/youssefsiam38/agentpg
 
 ```bash
 # Using psql
-psql -U myuser -d mydb -f storage/migrations/001_create_sessions.up.sql
-psql -U myuser -d mydb -f storage/migrations/002_create_messages.up.sql
-psql -U myuser -d mydb -f storage/migrations/003_create_compaction_events.up.sql
-psql -U myuser -d mydb -f storage/migrations/004_create_message_archive.up.sql
+psql -U myuser -d mydb -f storage/migrations/001_initial_schema.up.sql
 ```
 
 Or use your preferred migration tool (goose, golang-migrate, etc.). See `storage/migrations/README.md` for details.
@@ -455,11 +452,7 @@ See the [examples README](examples/README.md) for detailed documentation and usa
 
 ## Contributing
 
-Contributions are welcome! Please see the [implementation plan](/.claude/plans/flickering-sprouting-comet.md) for details on the architecture.
-
-## License
-
-MIT License - see LICENSE file for details.
+Contributions are welcome! Please see the [architecture documentation](docs/architecture.md) for details on the system design.
 
 ## Credits
 
@@ -467,5 +460,3 @@ Built with:
 - [Anthropic Go SDK](https://github.com/anthropics/anthropic-sdk-go)
 - [pgx](https://github.com/jackc/pgx) - PostgreSQL driver
 - [uuid](https://github.com/google/uuid) - UUID generation
-
-Inspired by production patterns from Claude Code, Aider, Cline, and OpenCode.
