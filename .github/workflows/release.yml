@@ -51,7 +51,8 @@ jobs:
             echo "EOF" >> $GITHUB_OUTPUT
           else
             echo "notes<<EOF" >> $GITHUB_OUTPUT
-            git log ${PREV_TAG}..HEAD --pretty=format:"- %s" >> $GITHUB_OUTPUT
+            git log ${PREV_TAG}..HEAD --pretty=format:"- %s"
+            echo "" >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
           fi
 
