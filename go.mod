@@ -7,7 +7,7 @@ toolchain go1.25.4
 require (
 	github.com/anthropics/anthropic-sdk-go v1.19.0
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.7.2
+	github.com/jackc/pgx/v5 v5.7.6
 	github.com/lib/pq v1.10.9
 	github.com/youssefsiam38/agentpg/driver/databasesql v0.0.0
 	github.com/youssefsiam38/agentpg/driver/pgxv5 v0.0.0
