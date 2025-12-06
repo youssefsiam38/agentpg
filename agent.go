@@ -586,7 +586,7 @@ func (a *Agent[TTx]) executeToolCalls(ctx context.Context, sessionID string, msg
 	}
 
 	// Execute tools (parallel execution if tool supports it)
-	results := a.toolExecutor.ExecuteBatch(ctx, requests, false) // Sequential for safety
+	results := a.toolExecutor.ExecuteBatch(ctx, requests, true)
 
 	// Trigger tool call hooks and collect results
 	outputs := make([]string, len(results))
