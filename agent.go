@@ -223,6 +223,9 @@ func (a *Agent[TTx]) RunTx(ctx context.Context, tx TTx, prompt string) (*Respons
 	execTx := a.driver.UnwrapExecutor(tx)
 	txCtx := driver.WithExecutor(ctx, execTx)
 
+	// Also inject the native transaction for tool access via TxFromContext
+	txCtx = withNativeTx(txCtx, tx)
+
 	// Check for auto-compaction (within the same transaction)
 	if a.config.autoCompaction {
 		if err := a.checkAndCompact(txCtx, sessionID); err != nil {
@@ -511,7 +514,10 @@ func (a *Agent[TTx]) runWithToolLoopInternal(ctx context.Context, sessionID stri
 // but preserving deadline, cancellation, and other values.
 // Used when nested agents should have their own independent transaction.
 func stripTransaction(ctx context.Context) context.Context {
-	return driver.StripExecutor(ctx)
+	// Strip both the executor and native transaction
+	ctx = driver.StripExecutor(ctx)
+	ctx = stripNativeTx(ctx)
+	return ctx
 }
 
 // streamMessage creates a streaming message request
