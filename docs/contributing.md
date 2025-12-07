@@ -109,6 +109,45 @@ agentpg/
 
 ---
 
+## Migration Naming Convention
+
+**IMPORTANT**: All migration files MUST follow this exact naming pattern. This is non-negotiable.
+
+### File Naming Pattern
+
+```
+{NNN}_agentpg_migration.{up|down}.sql
+```
+
+Where `{NNN}` is a three-digit sequence number (001, 002, 003, etc.).
+
+### Examples
+
+```
+storage/migrations/
+├── 001_agentpg_migration.up.sql
+├── 001_agentpg_migration.down.sql
+├── 002_agentpg_migration.up.sql
+├── 002_agentpg_migration.down.sql
+├── 003_agentpg_migration.up.sql
+├── 003_agentpg_migration.down.sql
+└── README.md
+```
+
+### Rules
+
+- The name is **always** `agentpg_migration` - never add suffixes or change it
+- Only the sequence number changes between migrations
+- Each migration must have both `.up.sql` and `.down.sql` files
+
+### DO NOT
+
+- `001_initial_schema.up.sql` - wrong name
+- `002_agentpg_migration_add_indexes.up.sql` - no suffixes allowed
+- `002_add_tables.up.sql` - wrong name
+
+---
+
 ## Development Workflow
 
 ### Make Commands

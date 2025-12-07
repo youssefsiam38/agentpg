@@ -8,7 +8,7 @@ This example demonstrates the simplest use case of the AgentPG package.
 
 ```bash
 # Using psql
-psql -U myuser -d mydb -f ../../storage/migrations/001_initial_schema.up.sql
+psql -U myuser -d mydb -f ../../storage/migrations/001_agentpg_migration.up.sql
 ```
 
 2. Set environment variables:

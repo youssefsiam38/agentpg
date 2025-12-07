@@ -32,7 +32,7 @@ go get github.com/youssefsiam38/agentpg/driver/databasesql # Alternative: databa
 
 ```bash
 # Using psql
-psql -U myuser -d mydb -f storage/migrations/001_initial_schema.up.sql
+psql -U myuser -d mydb -f storage/migrations/001_agentpg_migration.up.sql
 ```
 
 Or use your preferred migration tool (goose, golang-migrate, etc.). See `storage/migrations/README.md` for details.
