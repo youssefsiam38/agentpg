@@ -200,6 +200,68 @@ func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, er
 agent, _ := agentpg.New(drv, config, agentpg.WithTools(&MyTool{}))
 ```
 
+### Transaction-Aware Tools
+
+Tools can access the native database transaction when running within `RunTx`. This enables tools to perform database operations that are atomic with the agent's operations:
+
+```go
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+
+    "github.com/jackc/pgx/v5"
+    "github.com/youssefsiam38/agentpg"
+    "github.com/youssefsiam38/agentpg/tool"
+)
+
+type OrderTool struct{}
+
+func (t *OrderTool) Name() string        { return "create_order" }
+func (t *OrderTool) Description() string { return "Create a new order in the database" }
+func (t *OrderTool) InputSchema() tool.ToolSchema {
+    return tool.ToolSchema{
+        Type: "object",
+        Properties: map[string]tool.PropertyDef{
+            "product_id": {Type: "string", Description: "Product ID"},
+            "quantity":   {Type: "integer", Description: "Quantity to order"},
+        },
+        Required: []string{"product_id", "quantity"},
+    }
+}
+
+func (t *OrderTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    var params struct {
+        ProductID string `json:"product_id"`
+        Quantity  int    `json:"quantity"`
+    }
+    if err := json.Unmarshal(input, &params); err != nil {
+        return "", err
+    }
+
+    // Get the native transaction from context
+    // For pgxv5 driver, use pgx.Tx; for databasesql driver, use *sql.Tx
+    tx := agentpg.TxFromContext[pgx.Tx](ctx)
+
+    // Insert order within the agent's transaction
+    _, err := tx.Exec(ctx,
+        "INSERT INTO orders (product_id, quantity) VALUES ($1, $2)",
+        params.ProductID, params.Quantity)
+    if err != nil {
+        return "", err
+    }
+
+    return fmt.Sprintf("Created order for %d units of %s", params.Quantity, params.ProductID), nil
+}
+```
+
+**Important**:
+- `TxFromContext[TTx]` panics if no transaction is available (when using `Run` instead of `RunTx`)
+- Use `TxFromContextSafely[TTx]` if your tool needs to handle both cases gracefully
+- The transaction type must match your driver (`pgx.Tx` for pgxv5, `*sql.Tx` for databasesql)
+
+See [docs/tools.md](docs/tools.md) for detailed documentation on transaction access patterns.
+
 ### Nested Agents
 
 Agents can use other agents as tools automatically:

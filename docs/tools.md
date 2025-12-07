@@ -472,6 +472,200 @@ calculatorTool := tool.NewFuncTool(
 
 ---
 
+## Transaction Access in Tools
+
+When agents run via `RunTx`, tools can access the native database transaction to perform their own database operations atomically with the agent's operations.
+
+### TxFromContext
+
+```go
+import (
+    "github.com/jackc/pgx/v5"
+    "github.com/youssefsiam38/agentpg"
+)
+
+// Get the native transaction - panics if not available
+tx := agentpg.TxFromContext[pgx.Tx](ctx)
+
+// Safely get the transaction - returns error if not available
+tx, err := agentpg.TxFromContextSafely[pgx.Tx](ctx)
+if err != nil {
+    // Handle case where agent was called via Run() instead of RunTx()
+}
+```
+
+### When is a Transaction Available?
+
+| Method | Transaction in Context |
+|--------|----------------------|
+| `agent.Run(ctx, prompt)` | Yes (auto-managed) |
+| `agent.RunTx(ctx, tx, prompt)` | Yes (user-provided) |
+
+Both `Run()` and `RunTx()` provide transaction access to tools. The difference is:
+- **`Run()`** - Agent manages the transaction lifecycle (begin/commit/rollback)
+- **`RunTx()`** - You control the transaction, allowing you to combine agent operations with your own database work atomically
+
+### Example: Database Tool with Transaction
+
+```go
+type AuditLogTool struct {
+    pool *pgxpool.Pool // Fallback for non-transactional use
+}
+
+func (t *AuditLogTool) Name() string        { return "audit_log" }
+func (t *AuditLogTool) Description() string { return "Log an action to the audit trail" }
+func (t *AuditLogTool) InputSchema() tool.ToolSchema {
+    return tool.ToolSchema{
+        Type: "object",
+        Properties: map[string]tool.PropertyDef{
+            "action":  {Type: "string", Description: "Action performed"},
+            "details": {Type: "string", Description: "Action details"},
+        },
+        Required: []string{"action"},
+    }
+}
+
+func (t *AuditLogTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    var params struct {
+        Action  string `json:"action"`
+        Details string `json:"details"`
+    }
+    json.Unmarshal(input, &params)
+
+    // Try to get transaction, fall back to pool
+    tx, err := agentpg.TxFromContextSafely[pgx.Tx](ctx)
+    if err != nil {
+        // No transaction - use pool directly (auto-commit)
+        _, err = t.pool.Exec(ctx,
+            "INSERT INTO audit_log (action, details) VALUES ($1, $2)",
+            params.Action, params.Details)
+    } else {
+        // Has transaction - use it (will commit/rollback with agent)
+        _, err = tx.Exec(ctx,
+            "INSERT INTO audit_log (action, details) VALUES ($1, $2)",
+            params.Action, params.Details)
+    }
+
+    if err != nil {
+        return "", fmt.Errorf("failed to log: %w", err)
+    }
+    return "Logged successfully", nil
+}
+```
+
+### Example: Tool Requiring Transaction
+
+```go
+type TransferFundsTool struct{}
+
+func (t *TransferFundsTool) Name() string        { return "transfer_funds" }
+func (t *TransferFundsTool) Description() string { return "Transfer funds between accounts" }
+func (t *TransferFundsTool) InputSchema() tool.ToolSchema {
+    return tool.ToolSchema{
+        Type: "object",
+        Properties: map[string]tool.PropertyDef{
+            "from_account": {Type: "string", Description: "Source account ID"},
+            "to_account":   {Type: "string", Description: "Destination account ID"},
+            "amount":       {Type: "number", Description: "Amount to transfer"},
+        },
+        Required: []string{"from_account", "to_account", "amount"},
+    }
+}
+
+func (t *TransferFundsTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    var params struct {
+        FromAccount string  `json:"from_account"`
+        ToAccount   string  `json:"to_account"`
+        Amount      float64 `json:"amount"`
+    }
+    json.Unmarshal(input, &params)
+
+    // This tool REQUIRES a transaction - use the panicking version
+    tx := agentpg.TxFromContext[pgx.Tx](ctx)
+
+    // Debit source account
+    _, err := tx.Exec(ctx,
+        "UPDATE accounts SET balance = balance - $1 WHERE id = $2",
+        params.Amount, params.FromAccount)
+    if err != nil {
+        return "", err
+    }
+
+    // Credit destination account
+    _, err = tx.Exec(ctx,
+        "UPDATE accounts SET balance = balance + $1 WHERE id = $2",
+        params.Amount, params.ToAccount)
+    if err != nil {
+        return "", err
+    }
+
+    return fmt.Sprintf("Transferred $%.2f from %s to %s",
+        params.Amount, params.FromAccount, params.ToAccount), nil
+}
+```
+
+**Note**: If `TransferFundsTool` is called via `Run()` instead of `RunTx()`, it will panic. This is intentional - financial operations should always be transactional.
+
+### Using with database/sql Driver
+
+For the database/sql driver, use `*sql.Tx`:
+
+```go
+import "database/sql"
+
+func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    tx := agentpg.TxFromContext[*sql.Tx](ctx)
+
+    result, err := tx.ExecContext(ctx, "INSERT INTO ...")
+    // ...
+}
+```
+
+### Testing Tools with Transactions
+
+When testing tools that use `TxFromContext`, you need to provide a context with a transaction:
+
+```go
+func TestOrderTool(t *testing.T) {
+    ctx := context.Background()
+    pool, _ := pgxpool.New(ctx, databaseURL)
+
+    tx, _ := pool.Begin(ctx)
+    defer tx.Rollback(ctx)
+
+    // Create context with transaction using the test helper
+    ctx = agentpg.WithTestTx(ctx, tx)
+
+    tool := &OrderTool{}
+    result, err := tool.Execute(ctx, json.RawMessage(`{"product_id": "123", "quantity": 5}`))
+
+    // Assert results...
+    // tx.Rollback() cleans up test data
+}
+```
+
+### API Reference
+
+```go
+// ErrNoTransaction is returned when TxFromContextSafely is called
+// but no transaction exists in context.
+var ErrNoTransaction = errors.New("agentpg: no transaction in context, only available within agent execution")
+
+// TxFromContext returns the native database transaction from context.
+// Panics if no transaction is available.
+// TTx must match your driver: pgx.Tx for pgxv5, *sql.Tx for databasesql.
+func TxFromContext[TTx any](ctx context.Context) TTx
+
+// TxFromContextSafely returns the native transaction, or error if not available.
+// Use this for tools that should work both with and without transactions.
+func TxFromContextSafely[TTx any](ctx context.Context) (TTx, error)
+
+// WithTestTx creates a context with a native transaction for testing tools.
+func WithTestTx[TTx any](ctx context.Context, tx TTx) context.Context
+```
+
+---
+
 ## Nested Agents as Tools
 
 You can use one agent as a tool for another:
