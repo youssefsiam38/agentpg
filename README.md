@@ -1,6 +1,6 @@
 # AgentPG
 
-**Stateful AI agent toolkit for Go. PostgreSQL-backed, transaction-safe.**
+**Stateful AI agents for Go and Postgres, transaction-safe.**
 
 AgentPG is an opinionated, batteries-included package for building AI agents powered by Anthropic's Claude with PostgreSQL persistence. Built for long-context operations, tool use, and agent composition.
 
