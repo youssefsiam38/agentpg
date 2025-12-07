@@ -261,7 +261,7 @@ CREATE INDEX idx_archive_session ON message_archive(session_id, archived_at DESC
 
 ```bash
 # Using psql
-psql "$DATABASE_URL" -f storage/migrations/001_initial_schema.up.sql
+psql "$DATABASE_URL" -f storage/migrations/001_agentpg_migration.up.sql
 
 # Using make (if available)
 make migrate
@@ -271,15 +271,15 @@ make migrate
 
 ```
 storage/migrations/
-├── 001_initial_schema.up.sql
-├── 001_initial_schema.down.sql
+├── 001_agentpg_migration.up.sql
+├── 001_agentpg_migration.down.sql
 └── README.md
 ```
 
 ### Rollback Migrations
 
 ```bash
-psql "$DATABASE_URL" -f storage/migrations/001_initial_schema.down.sql
+psql "$DATABASE_URL" -f storage/migrations/001_agentpg_migration.down.sql
 ```
 
 ---

@@ -6,7 +6,7 @@ This directory contains SQL migration files for setting up the AgentPG database 
 
 Migrations are numbered and include both `up` (apply) and `down` (rollback) scripts:
 
-- **001_initial_schema** - Creates all tables: `sessions`, `messages`, `compaction_events`, and `message_archive`
+- **001_agentpg_migration** - Creates all tables: `sessions`, `messages`, `compaction_events`, and `message_archive`
 
 ## Applying Migrations
 
@@ -43,7 +43,7 @@ goose -dir ./storage/migrations postgres "user=myuser password=mypass dbname=myd
 You can also apply the migrations manually using `psql`:
 
 ```bash
-psql -U myuser -d mydb -f storage/migrations/001_initial_schema.up.sql
+psql -U myuser -d mydb -f storage/migrations/001_agentpg_migration.up.sql
 ```
 
 ## Schema Overview

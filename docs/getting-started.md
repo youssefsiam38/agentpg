@@ -36,7 +36,7 @@ Apply the database schema:
 
 ```bash
 psql "postgres://agentpg:agentpg@localhost:5432/agentpg" \
-  -f storage/migrations/001_initial_schema.up.sql
+  -f storage/migrations/001_agentpg_migration.up.sql
 ```
 
 ### 3. Create Your First Agent
