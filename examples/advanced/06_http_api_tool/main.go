@@ -1,3 +1,9 @@
+// Package main demonstrates the Client API with HTTP API tool.
+//
+// This example shows:
+// - HTTP API tool with host whitelist
+// - Response size limits and timeouts
+// - Mock API server for demonstration
 package main
 
 import (
@@ -8,11 +14,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
@@ -199,8 +205,28 @@ func (m *MockWeatherAPI) Stop() {
 	m.server.Close()
 }
 
+// Register agent at package initialization.
+func init() {
+	maxTokens := 1024
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:        "http-tool-demo",
+		Description: "Weather assistant with HTTP API access",
+		Model:       "claude-sonnet-4-5-20250929",
+		SystemPrompt: `You are a helpful weather assistant. You have access to a weather API.
+
+Use the http_request tool to:
+- Get weather for a city: http://localhost:8888/weather?city=CityName
+- List available cities: http://localhost:8888/cities
+
+Always use the API to get real data before answering weather questions.`,
+		MaxTokens: &maxTokens,
+	})
+}
+
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -219,9 +245,6 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer pool.Close()
-
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 
 	// ==========================================================
 	// Start mock weather API
@@ -244,35 +267,44 @@ func main() {
 	// Create agent with HTTP tool
 	// ==========================================================
 
-	// Create driver
+	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
 
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client: &client,
-			Model:  "claude-sonnet-4-5-20250929",
-			SystemPrompt: `You are a helpful weather assistant. You have access to a weather API.
-
-Use the http_request tool to:
-- Get weather for a city: http://localhost:8888/weather?city=CityName
-- List available cities: http://localhost:8888/cities
-
-Always use the API to get real data before answering weather questions.`,
-		},
-		agentpg.WithMaxTokens(1024),
-	)
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
 	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
+		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Register HTTP tool with allowed hosts
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
+	// Get the agent
+	agent := client.Agent("http-tool-demo")
+	if agent == nil {
+		log.Fatal("Agent 'http-tool-demo' not found")
+	}
+
+	// Register HTTP tool with allowed hosts (runtime registration for stateful tool)
 	httpTool := NewHTTPAPITool(
 		[]string{"localhost:8888"},
 		10*time.Second,
 	)
 	httpTool.SetDefaultHeader("User-Agent", "AgentPG-Demo/1.0")
-	agent.RegisterTool(httpTool)
+	if err := agent.RegisterTool(httpTool); err != nil {
+		log.Fatalf("Failed to register tool: %v", err)
+	}
 
 	// Create session
 	sessionID, err := agent.NewSession(ctx, "1", "http-tool-demo", nil, nil)
@@ -295,7 +327,7 @@ Always use the API to get real data before answering weather questions.`,
 		fmt.Printf("=== Query %d ===\n", i+1)
 		fmt.Printf("User: %s\n\n", query)
 
-		response, err := agent.Run(ctx, query)
+		response, err := agent.Run(ctx, sessionID, query)
 		if err != nil {
 			log.Printf("Error: %v\n\n", err)
 			continue

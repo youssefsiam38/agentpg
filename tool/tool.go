@@ -59,6 +59,70 @@ type PropertyDef struct {
 	MaxLength *int `json:"maxLength,omitempty"`
 }
 
+// ToMap converts the schema to a map[string]any representation.
+// This is useful for storing in JSONB columns.
+func (s ToolSchema) ToMap() map[string]any {
+	result := map[string]any{
+		"type": s.Type,
+	}
+
+	if len(s.Properties) > 0 {
+		props := make(map[string]any)
+		for k, v := range s.Properties {
+			props[k] = v.toMap()
+		}
+		result["properties"] = props
+	}
+
+	if len(s.Required) > 0 {
+		result["required"] = s.Required
+	}
+
+	return result
+}
+
+// toMap converts a PropertyDef to a map[string]any representation.
+func (p PropertyDef) toMap() map[string]any {
+	result := map[string]any{
+		"type": p.Type,
+	}
+
+	if p.Description != "" {
+		result["description"] = p.Description
+	}
+
+	if len(p.Enum) > 0 {
+		result["enum"] = p.Enum
+	}
+
+	if p.Items != nil {
+		result["items"] = p.Items.toMap()
+	}
+
+	if len(p.Properties) > 0 {
+		props := make(map[string]any)
+		for k, v := range p.Properties {
+			props[k] = v.toMap()
+		}
+		result["properties"] = props
+	}
+
+	if p.Minimum != nil {
+		result["minimum"] = *p.Minimum
+	}
+	if p.Maximum != nil {
+		result["maximum"] = *p.Maximum
+	}
+	if p.MinLength != nil {
+		result["minLength"] = *p.MinLength
+	}
+	if p.MaxLength != nil {
+		result["maxLength"] = *p.MaxLength
+	}
+
+	return result
+}
+
 // funcTool is a simple Tool implementation using a function
 type funcTool struct {
 	name        string

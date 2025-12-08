@@ -235,10 +235,11 @@ func (s *Store) SaveMessages(ctx context.Context, messages []*storage.Message) e
 	}
 
 	query := `
-		INSERT INTO agentpg_messages (id, session_id, role, content, usage, metadata,
+		INSERT INTO agentpg_messages (id, session_id, run_id, role, content, usage, metadata,
 		                     is_preserved, is_summary, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (id) DO UPDATE SET
+			run_id = EXCLUDED.run_id,
 			content = EXCLUDED.content,
 			usage = EXCLUDED.usage,
 			metadata = EXCLUDED.metadata,
@@ -279,6 +280,7 @@ func (s *Store) SaveMessages(ctx context.Context, messages []*storage.Message) e
 		_, err = exec.Exec(ctx, query,
 			msg.ID,
 			msg.SessionID,
+			msg.RunID,
 			msg.Role,
 			contentJSON,
 			usageJSON,
@@ -299,7 +301,7 @@ func (s *Store) SaveMessages(ctx context.Context, messages []*storage.Message) e
 // GetMessages retrieves all messages for a session ordered by creation time.
 func (s *Store) GetMessages(ctx context.Context, sessionID string) ([]*storage.Message, error) {
 	query := `
-		SELECT id, session_id, role, content, usage, metadata,
+		SELECT id, session_id, run_id, role, content, usage, metadata,
 		       is_preserved, is_summary, created_at, updated_at
 		FROM agentpg_messages
 		WHERE session_id = $1
@@ -312,13 +314,13 @@ func (s *Store) GetMessages(ctx context.Context, sessionID string) ([]*storage.M
 	}
 	defer rows.Close()
 
-	return s.scanMessages(rows)
+	return s.scanMessagesWithRunID(rows)
 }
 
 // GetMessagesSince retrieves messages created after a specific time.
 func (s *Store) GetMessagesSince(ctx context.Context, sessionID string, since time.Time) ([]*storage.Message, error) {
 	query := `
-		SELECT id, session_id, role, content, usage, metadata,
+		SELECT id, session_id, run_id, role, content, usage, metadata,
 		       is_preserved, is_summary, created_at, updated_at
 		FROM agentpg_messages
 		WHERE session_id = $1 AND created_at > $2
@@ -331,7 +333,7 @@ func (s *Store) GetMessagesSince(ctx context.Context, sessionID string, since ti
 	}
 	defer rows.Close()
 
-	return s.scanMessages(rows)
+	return s.scanMessagesWithRunID(rows)
 }
 
 // DeleteMessages deletes messages by their IDs.
@@ -349,57 +351,6 @@ func (s *Store) DeleteMessages(ctx context.Context, messageIDs []string) error {
 	}
 
 	return nil
-}
-
-// scanMessages is a helper to scan message rows.
-func (s *Store) scanMessages(rows driver.Rows) ([]*storage.Message, error) {
-	var messages []*storage.Message
-
-	for rows.Next() {
-		var msg storage.Message
-		var contentJSON []byte
-		var usageJSON []byte
-		var metadataJSON []byte
-
-		err := rows.Scan(
-			&msg.ID,
-			&msg.SessionID,
-			&msg.Role,
-			&contentJSON,
-			&usageJSON,
-			&metadataJSON,
-			&msg.IsPreserved,
-			&msg.IsSummary,
-			&msg.CreatedAt,
-			&msg.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan message: %w", err)
-		}
-
-		if err := json.Unmarshal(contentJSON, &msg.Content); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal content: %w", err)
-		}
-
-		if len(usageJSON) > 0 {
-			msg.Usage = &storage.MessageUsage{}
-			if err := json.Unmarshal(usageJSON, msg.Usage); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal usage: %w", err)
-			}
-		}
-
-		if err := json.Unmarshal(metadataJSON, &msg.Metadata); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
-		}
-
-		messages = append(messages, &msg)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating messages: %w", err)
-	}
-
-	return messages, nil
 }
 
 // SaveCompactionEvent saves a compaction event.
@@ -532,3 +483,850 @@ func (s *Store) ArchiveMessages(ctx context.Context, compactionEventID string, m
 
 	return nil
 }
+
+// =============================================================================
+// Run operations
+// =============================================================================
+
+// CreateRun creates a new run record in the running state.
+func (s *Store) CreateRun(ctx context.Context, params *storage.CreateRunParams) (string, error) {
+	runID := uuid.New().String()
+
+	metadataJSON, err := json.Marshal(params.Metadata)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	query := `
+		INSERT INTO agentpg_runs (id, session_id, agent_name, prompt, instance_id, metadata, state, started_at)
+		VALUES ($1, $2, $3, $4, $5, $6, 'running', NOW())
+	`
+
+	_, err = s.getExecutor(ctx).Exec(ctx, query,
+		runID,
+		params.SessionID,
+		params.AgentName,
+		params.Prompt,
+		params.InstanceID,
+		metadataJSON,
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to create run: %w", err)
+	}
+
+	return runID, nil
+}
+
+// GetRun returns a run by ID.
+func (s *Store) GetRun(ctx context.Context, runID string) (*storage.Run, error) {
+	query := `
+		SELECT id, session_id, state, agent_name, prompt, response_text, stop_reason,
+		       input_tokens, output_tokens, tool_iterations, error_message, error_type,
+		       instance_id, metadata, started_at, finalized_at
+		FROM agentpg_runs
+		WHERE id = $1
+	`
+
+	var run storage.Run
+	var metadataJSON []byte
+
+	row := s.getExecutor(ctx).QueryRow(ctx, query, runID)
+	err := row.Scan(
+		&run.ID,
+		&run.SessionID,
+		&run.State,
+		&run.AgentName,
+		&run.Prompt,
+		&run.ResponseText,
+		&run.StopReason,
+		&run.InputTokens,
+		&run.OutputTokens,
+		&run.ToolIterations,
+		&run.ErrorMessage,
+		&run.ErrorType,
+		&run.InstanceID,
+		&metadataJSON,
+		&run.StartedAt,
+		&run.FinalizedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("run not found: %s", runID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get run: %w", err)
+	}
+
+	if err := json.Unmarshal(metadataJSON, &run.Metadata); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+	}
+
+	return &run, nil
+}
+
+// GetSessionRuns returns all runs for a session, ordered by started_at DESC.
+func (s *Store) GetSessionRuns(ctx context.Context, sessionID string) ([]*storage.Run, error) {
+	query := `
+		SELECT id, session_id, state, agent_name, prompt, response_text, stop_reason,
+		       input_tokens, output_tokens, tool_iterations, error_message, error_type,
+		       instance_id, metadata, started_at, finalized_at
+		FROM agentpg_runs
+		WHERE session_id = $1
+		ORDER BY started_at DESC
+	`
+
+	rows, err := s.getExecutor(ctx).Query(ctx, query, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query runs: %w", err)
+	}
+	defer rows.Close()
+
+	return s.scanRuns(rows)
+}
+
+// UpdateRunState transitions a run to a new state.
+func (s *Store) UpdateRunState(ctx context.Context, runID string, params *storage.UpdateRunStateParams) error {
+	// Validate the transition
+	if !params.State.IsTerminal() {
+		return fmt.Errorf("can only transition to terminal states")
+	}
+
+	query := `
+		UPDATE agentpg_runs
+		SET state = $2,
+		    response_text = COALESCE($3, response_text),
+		    stop_reason = COALESCE($4, stop_reason),
+		    input_tokens = $5,
+		    output_tokens = $6,
+		    tool_iterations = $7,
+		    error_message = COALESCE($8, error_message),
+		    error_type = COALESCE($9, error_type),
+		    finalized_at = NOW()
+		WHERE id = $1 AND state = 'running'
+	`
+
+	result, err := s.getExecutor(ctx).Exec(ctx, query,
+		runID,
+		params.State,
+		params.ResponseText,
+		params.StopReason,
+		params.InputTokens,
+		params.OutputTokens,
+		params.ToolIterations,
+		params.ErrorMessage,
+		params.ErrorType,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update run state: %w", err)
+	}
+
+	if result == 0 {
+		return fmt.Errorf("run not found or already finalized: %s", runID)
+	}
+
+	return nil
+}
+
+// GetRunMessages returns all messages associated with a run.
+func (s *Store) GetRunMessages(ctx context.Context, runID string) ([]*storage.Message, error) {
+	query := `
+		SELECT id, session_id, run_id, role, content, usage, metadata,
+		       is_preserved, is_summary, created_at, updated_at
+		FROM agentpg_messages
+		WHERE run_id = $1
+		ORDER BY created_at ASC
+	`
+
+	rows, err := s.getExecutor(ctx).Query(ctx, query, runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query run messages: %w", err)
+	}
+	defer rows.Close()
+
+	return s.scanMessagesWithRunID(rows)
+}
+
+// GetStuckRuns returns all runs that have been running longer than the horizon.
+func (s *Store) GetStuckRuns(ctx context.Context, horizon time.Time) ([]*storage.Run, error) {
+	query := `
+		SELECT id, session_id, state, agent_name, prompt, response_text, stop_reason,
+		       input_tokens, output_tokens, tool_iterations, error_message, error_type,
+		       instance_id, metadata, started_at, finalized_at
+		FROM agentpg_runs
+		WHERE state = 'running' AND started_at < $1
+		ORDER BY started_at ASC
+	`
+
+	rows, err := s.getExecutor(ctx).Query(ctx, query, horizon)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query stuck runs: %w", err)
+	}
+	defer rows.Close()
+
+	return s.scanRuns(rows)
+}
+
+// scanRuns is a helper to scan run rows.
+func (s *Store) scanRuns(rows driver.Rows) ([]*storage.Run, error) {
+	var runs []*storage.Run
+
+	for rows.Next() {
+		var run storage.Run
+		var metadataJSON []byte
+
+		err := rows.Scan(
+			&run.ID,
+			&run.SessionID,
+			&run.State,
+			&run.AgentName,
+			&run.Prompt,
+			&run.ResponseText,
+			&run.StopReason,
+			&run.InputTokens,
+			&run.OutputTokens,
+			&run.ToolIterations,
+			&run.ErrorMessage,
+			&run.ErrorType,
+			&run.InstanceID,
+			&metadataJSON,
+			&run.StartedAt,
+			&run.FinalizedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan run: %w", err)
+		}
+
+		if err := json.Unmarshal(metadataJSON, &run.Metadata); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+		}
+
+		runs = append(runs, &run)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating runs: %w", err)
+	}
+
+	return runs, nil
+}
+
+// scanMessagesWithRunID is a helper to scan message rows including run_id.
+func (s *Store) scanMessagesWithRunID(rows driver.Rows) ([]*storage.Message, error) {
+	var messages []*storage.Message
+
+	for rows.Next() {
+		var msg storage.Message
+		var contentJSON []byte
+		var usageJSON []byte
+		var metadataJSON []byte
+
+		err := rows.Scan(
+			&msg.ID,
+			&msg.SessionID,
+			&msg.RunID,
+			&msg.Role,
+			&contentJSON,
+			&usageJSON,
+			&metadataJSON,
+			&msg.IsPreserved,
+			&msg.IsSummary,
+			&msg.CreatedAt,
+			&msg.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan message: %w", err)
+		}
+
+		if err := json.Unmarshal(contentJSON, &msg.Content); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal content: %w", err)
+		}
+
+		if len(usageJSON) > 0 {
+			msg.Usage = &storage.MessageUsage{}
+			if err := json.Unmarshal(usageJSON, msg.Usage); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal usage: %w", err)
+			}
+		}
+
+		if err := json.Unmarshal(metadataJSON, &msg.Metadata); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+		}
+
+		messages = append(messages, &msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating messages: %w", err)
+	}
+
+	return messages, nil
+}
+
+// =============================================================================
+// Instance operations
+// =============================================================================
+
+// RegisterInstance registers a new instance with the given ID and metadata.
+func (s *Store) RegisterInstance(ctx context.Context, params *storage.RegisterInstanceParams) error {
+	metadataJSON, err := json.Marshal(params.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	query := `
+		INSERT INTO agentpg_instances (id, hostname, pid, version, metadata, created_at, last_heartbeat_at)
+		VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			hostname = EXCLUDED.hostname,
+			pid = EXCLUDED.pid,
+			version = EXCLUDED.version,
+			metadata = EXCLUDED.metadata,
+			last_heartbeat_at = NOW()
+	`
+
+	_, err = s.getExecutor(ctx).Exec(ctx, query,
+		params.ID,
+		params.Hostname,
+		params.PID,
+		params.Version,
+		metadataJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to register instance: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateInstanceHeartbeat updates the last_heartbeat_at for an instance.
+func (s *Store) UpdateInstanceHeartbeat(ctx context.Context, instanceID string) error {
+	query := `
+		UPDATE agentpg_instances
+		SET last_heartbeat_at = NOW()
+		WHERE id = $1
+	`
+
+	result, err := s.getExecutor(ctx).Exec(ctx, query, instanceID)
+	if err != nil {
+		return fmt.Errorf("failed to update heartbeat: %w", err)
+	}
+
+	if result == 0 {
+		return fmt.Errorf("instance not found: %s", instanceID)
+	}
+
+	return nil
+}
+
+// GetStaleInstances returns instance IDs that haven't heartbeated since horizon.
+func (s *Store) GetStaleInstances(ctx context.Context, horizon time.Time) ([]string, error) {
+	query := `
+		SELECT id FROM agentpg_instances
+		WHERE last_heartbeat_at < $1
+	`
+
+	rows, err := s.getExecutor(ctx).Query(ctx, query, horizon)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query stale instances: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to scan instance id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating instances: %w", err)
+	}
+
+	return ids, nil
+}
+
+// DeregisterInstance removes an instance and triggers orphan cleanup.
+func (s *Store) DeregisterInstance(ctx context.Context, instanceID string) error {
+	query := `DELETE FROM agentpg_instances WHERE id = $1`
+
+	_, err := s.getExecutor(ctx).Exec(ctx, query, instanceID)
+	if err != nil {
+		return fmt.Errorf("failed to deregister instance: %w", err)
+	}
+
+	return nil
+}
+
+// GetInstance returns an instance by ID.
+func (s *Store) GetInstance(ctx context.Context, instanceID string) (*storage.Instance, error) {
+	query := `
+		SELECT id, hostname, pid, version, metadata, created_at, last_heartbeat_at
+		FROM agentpg_instances
+		WHERE id = $1
+	`
+
+	var inst storage.Instance
+	var metadataJSON []byte
+
+	row := s.getExecutor(ctx).QueryRow(ctx, query, instanceID)
+	err := row.Scan(
+		&inst.ID,
+		&inst.Hostname,
+		&inst.PID,
+		&inst.Version,
+		&metadataJSON,
+		&inst.CreatedAt,
+		&inst.LastHeartbeatAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("instance not found: %s", instanceID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get instance: %w", err)
+	}
+
+	if err := json.Unmarshal(metadataJSON, &inst.Metadata); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+	}
+
+	return &inst, nil
+}
+
+// GetActiveInstances returns all instances with heartbeat after horizon.
+func (s *Store) GetActiveInstances(ctx context.Context, horizon time.Time) ([]*storage.Instance, error) {
+	query := `
+		SELECT id, hostname, pid, version, metadata, created_at, last_heartbeat_at
+		FROM agentpg_instances
+		WHERE last_heartbeat_at >= $1
+		ORDER BY created_at DESC
+	`
+
+	rows, err := s.getExecutor(ctx).Query(ctx, query, horizon)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query instances: %w", err)
+	}
+	defer rows.Close()
+
+	var instances []*storage.Instance
+	for rows.Next() {
+		var inst storage.Instance
+		var metadataJSON []byte
+
+		err := rows.Scan(
+			&inst.ID,
+			&inst.Hostname,
+			&inst.PID,
+			&inst.Version,
+			&metadataJSON,
+			&inst.CreatedAt,
+			&inst.LastHeartbeatAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan instance: %w", err)
+		}
+
+		if err := json.Unmarshal(metadataJSON, &inst.Metadata); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+		}
+
+		instances = append(instances, &inst)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating instances: %w", err)
+	}
+
+	return instances, nil
+}
+
+// =============================================================================
+// Leader election operations
+// =============================================================================
+
+// LeaderAttemptElect attempts to elect this instance as leader.
+func (s *Store) LeaderAttemptElect(ctx context.Context, params *storage.LeaderElectParams) (bool, error) {
+	now := time.Now()
+	expiresAt := now.Add(params.TTL)
+
+	query := `
+		INSERT INTO agentpg_leader (name, leader_id, elected_at, expires_at)
+		VALUES ('default', $1, $2, $3)
+		ON CONFLICT (name) DO NOTHING
+	`
+
+	result, err := s.getExecutor(ctx).Exec(ctx, query, params.LeaderID, now, expiresAt)
+	if err != nil {
+		return false, fmt.Errorf("failed to attempt election: %w", err)
+	}
+
+	return result > 0, nil
+}
+
+// LeaderAttemptReelect attempts to renew leadership.
+func (s *Store) LeaderAttemptReelect(ctx context.Context, params *storage.LeaderElectParams) (bool, error) {
+	now := time.Now()
+	expiresAt := now.Add(params.TTL)
+
+	query := `
+		UPDATE agentpg_leader
+		SET elected_at = $2, expires_at = $3
+		WHERE name = 'default' AND leader_id = $1
+	`
+
+	result, err := s.getExecutor(ctx).Exec(ctx, query, params.LeaderID, now, expiresAt)
+	if err != nil {
+		return false, fmt.Errorf("failed to attempt reelection: %w", err)
+	}
+
+	return result > 0, nil
+}
+
+// LeaderResign voluntarily gives up leadership.
+func (s *Store) LeaderResign(ctx context.Context, leaderID string) error {
+	query := `DELETE FROM agentpg_leader WHERE name = 'default' AND leader_id = $1`
+
+	_, err := s.getExecutor(ctx).Exec(ctx, query, leaderID)
+	if err != nil {
+		return fmt.Errorf("failed to resign leadership: %w", err)
+	}
+
+	return nil
+}
+
+// LeaderDeleteExpired removes expired leader entries.
+func (s *Store) LeaderDeleteExpired(ctx context.Context) (int, error) {
+	query := `DELETE FROM agentpg_leader WHERE expires_at < NOW()`
+
+	result, err := s.getExecutor(ctx).Exec(ctx, query)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete expired leader: %w", err)
+	}
+
+	return int(result), nil
+}
+
+// LeaderGetCurrent returns the current leader, or nil if none.
+func (s *Store) LeaderGetCurrent(ctx context.Context) (*storage.Leader, error) {
+	query := `
+		SELECT name, leader_id, elected_at, expires_at
+		FROM agentpg_leader
+		WHERE name = 'default' AND expires_at > NOW()
+	`
+
+	var leader storage.Leader
+	row := s.getExecutor(ctx).QueryRow(ctx, query)
+	err := row.Scan(
+		&leader.Name,
+		&leader.LeaderID,
+		&leader.ElectedAt,
+		&leader.ExpiresAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current leader: %w", err)
+	}
+
+	return &leader, nil
+}
+
+// =============================================================================
+// Agent registration operations
+// =============================================================================
+
+// RegisterAgent upserts an agent definition.
+func (s *Store) RegisterAgent(ctx context.Context, params *storage.RegisterAgentParams) error {
+	configJSON, err := json.Marshal(params.Config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	query := `
+		INSERT INTO agentpg_agents (name, description, model, system_prompt, max_tokens, temperature, config, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+		ON CONFLICT (name) DO UPDATE SET
+			description = EXCLUDED.description,
+			model = EXCLUDED.model,
+			system_prompt = EXCLUDED.system_prompt,
+			max_tokens = EXCLUDED.max_tokens,
+			temperature = EXCLUDED.temperature,
+			config = EXCLUDED.config,
+			updated_at = NOW()
+	`
+
+	_, err = s.getExecutor(ctx).Exec(ctx, query,
+		params.Name,
+		params.Description,
+		params.Model,
+		params.SystemPrompt,
+		params.MaxTokens,
+		params.Temperature,
+		configJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to register agent: %w", err)
+	}
+
+	return nil
+}
+
+// RegisterInstanceAgent links an instance to an agent.
+func (s *Store) RegisterInstanceAgent(ctx context.Context, instanceID, agentName string) error {
+	query := `
+		INSERT INTO agentpg_instance_agents (instance_id, agent_name, registered_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (instance_id, agent_name) DO NOTHING
+	`
+
+	_, err := s.getExecutor(ctx).Exec(ctx, query, instanceID, agentName)
+	if err != nil {
+		return fmt.Errorf("failed to register instance agent: %w", err)
+	}
+
+	return nil
+}
+
+// GetAgent returns an agent by name.
+func (s *Store) GetAgent(ctx context.Context, name string) (*storage.RegisteredAgent, error) {
+	query := `
+		SELECT name, description, model, system_prompt, max_tokens, temperature, config, created_at, updated_at
+		FROM agentpg_agents
+		WHERE name = $1
+	`
+
+	var agent storage.RegisteredAgent
+	var configJSON []byte
+
+	row := s.getExecutor(ctx).QueryRow(ctx, query, name)
+	err := row.Scan(
+		&agent.Name,
+		&agent.Description,
+		&agent.Model,
+		&agent.SystemPrompt,
+		&agent.MaxTokens,
+		&agent.Temperature,
+		&configJSON,
+		&agent.CreatedAt,
+		&agent.UpdatedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("agent not found: %s", name)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get agent: %w", err)
+	}
+
+	if err := json.Unmarshal(configJSON, &agent.Config); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+
+	return &agent, nil
+}
+
+// GetAvailableAgents returns all agents with at least one active instance.
+func (s *Store) GetAvailableAgents(ctx context.Context, horizon time.Time) ([]*storage.RegisteredAgent, error) {
+	query := `
+		SELECT DISTINCT a.name, a.description, a.model, a.system_prompt, a.max_tokens, a.temperature, a.config, a.created_at, a.updated_at
+		FROM agentpg_agents a
+		JOIN agentpg_instance_agents ia ON a.name = ia.agent_name
+		JOIN agentpg_instances i ON ia.instance_id = i.id
+		WHERE i.last_heartbeat_at >= $1
+		ORDER BY a.name
+	`
+
+	rows, err := s.getExecutor(ctx).Query(ctx, query, horizon)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query available agents: %w", err)
+	}
+	defer rows.Close()
+
+	var agents []*storage.RegisteredAgent
+	for rows.Next() {
+		var agent storage.RegisteredAgent
+		var configJSON []byte
+
+		err := rows.Scan(
+			&agent.Name,
+			&agent.Description,
+			&agent.Model,
+			&agent.SystemPrompt,
+			&agent.MaxTokens,
+			&agent.Temperature,
+			&configJSON,
+			&agent.CreatedAt,
+			&agent.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan agent: %w", err)
+		}
+
+		if err := json.Unmarshal(configJSON, &agent.Config); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+		}
+
+		agents = append(agents, &agent)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating agents: %w", err)
+	}
+
+	return agents, nil
+}
+
+// =============================================================================
+// Tool registration operations
+// =============================================================================
+
+// RegisterTool upserts a tool definition.
+func (s *Store) RegisterTool(ctx context.Context, params *storage.RegisterToolParams) error {
+	schemaJSON, err := json.Marshal(params.InputSchema)
+	if err != nil {
+		return fmt.Errorf("failed to marshal input schema: %w", err)
+	}
+
+	metadataJSON, err := json.Marshal(params.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	query := `
+		INSERT INTO agentpg_tools (name, description, input_schema, metadata, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, NOW(), NOW())
+		ON CONFLICT (name) DO UPDATE SET
+			description = EXCLUDED.description,
+			input_schema = EXCLUDED.input_schema,
+			metadata = EXCLUDED.metadata,
+			updated_at = NOW()
+	`
+
+	_, err = s.getExecutor(ctx).Exec(ctx, query,
+		params.Name,
+		params.Description,
+		schemaJSON,
+		metadataJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to register tool: %w", err)
+	}
+
+	return nil
+}
+
+// RegisterInstanceTool links an instance to a tool.
+func (s *Store) RegisterInstanceTool(ctx context.Context, instanceID, toolName string) error {
+	query := `
+		INSERT INTO agentpg_instance_tools (instance_id, tool_name, registered_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (instance_id, tool_name) DO NOTHING
+	`
+
+	_, err := s.getExecutor(ctx).Exec(ctx, query, instanceID, toolName)
+	if err != nil {
+		return fmt.Errorf("failed to register instance tool: %w", err)
+	}
+
+	return nil
+}
+
+// GetTool returns a tool by name.
+func (s *Store) GetTool(ctx context.Context, name string) (*storage.RegisteredTool, error) {
+	query := `
+		SELECT name, description, input_schema, metadata, created_at, updated_at
+		FROM agentpg_tools
+		WHERE name = $1
+	`
+
+	var tool storage.RegisteredTool
+	var schemaJSON []byte
+	var metadataJSON []byte
+
+	row := s.getExecutor(ctx).QueryRow(ctx, query, name)
+	err := row.Scan(
+		&tool.Name,
+		&tool.Description,
+		&schemaJSON,
+		&metadataJSON,
+		&tool.CreatedAt,
+		&tool.UpdatedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("tool not found: %s", name)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tool: %w", err)
+	}
+
+	if err := json.Unmarshal(schemaJSON, &tool.InputSchema); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal input schema: %w", err)
+	}
+
+	if err := json.Unmarshal(metadataJSON, &tool.Metadata); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+	}
+
+	return &tool, nil
+}
+
+// GetAvailableTools returns all tools with at least one active instance.
+func (s *Store) GetAvailableTools(ctx context.Context, horizon time.Time) ([]*storage.RegisteredTool, error) {
+	query := `
+		SELECT DISTINCT t.name, t.description, t.input_schema, t.metadata, t.created_at, t.updated_at
+		FROM agentpg_tools t
+		JOIN agentpg_instance_tools it ON t.name = it.tool_name
+		JOIN agentpg_instances i ON it.instance_id = i.id
+		WHERE i.last_heartbeat_at >= $1
+		ORDER BY t.name
+	`
+
+	rows, err := s.getExecutor(ctx).Query(ctx, query, horizon)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query available tools: %w", err)
+	}
+	defer rows.Close()
+
+	var tools []*storage.RegisteredTool
+	for rows.Next() {
+		var tool storage.RegisteredTool
+		var schemaJSON []byte
+		var metadataJSON []byte
+
+		err := rows.Scan(
+			&tool.Name,
+			&tool.Description,
+			&schemaJSON,
+			&metadataJSON,
+			&tool.CreatedAt,
+			&tool.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan tool: %w", err)
+		}
+
+		if err := json.Unmarshal(schemaJSON, &tool.InputSchema); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal input schema: %w", err)
+		}
+
+		if err := json.Unmarshal(metadataJSON, &tool.Metadata); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+		}
+
+		tools = append(tools, &tool)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating tools: %w", err)
+	}
+
+	return tools, nil
+}
+
+// Ensure Store implements storage.Store
+var _ storage.Store = (*Store)(nil)

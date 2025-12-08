@@ -1,3 +1,10 @@
+// Package main demonstrates using the Client API with database/sql driver.
+//
+// This example shows:
+// - Using the standard library database/sql package instead of pgx
+// - Global agent registration in init()
+// - Manual transaction support with RunTx
+// - Compatible with any database/sql driver (lib/pq, pgx stdlib, etc.)
 package main
 
 import (
@@ -6,16 +13,30 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/databasesql"
 )
 
+// Register agents at package initialization.
+func init() {
+	maxTokens := 1024
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:         "database-sql-demo",
+		Description:  "Demonstrates database/sql driver usage",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Keep responses concise.",
+		MaxTokens:    &maxTokens,
+	})
+}
+
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -32,7 +53,7 @@ func main() {
 	// Create database/sql connection
 	// ==========================================================
 
-	fmt.Println("=== database/sql Driver Example ===")
+	fmt.Println("=== database/sql Driver Example (Client API) ===")
 	fmt.Println()
 	fmt.Println("This example demonstrates using AgentPG with the")
 	fmt.Println("standard library database/sql package instead of pgx.")
@@ -52,32 +73,41 @@ func main() {
 	fmt.Println("Connected to PostgreSQL using database/sql")
 	fmt.Println()
 
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-
 	// ==========================================================
-	// Create driver and agent
+	// Create driver and client
 	// ==========================================================
 
 	// Create the database/sql driver
 	drv := databasesql.New(db)
 
-	// Create agent - note: no explicit generic type parameter needed!
-	// Type inference handles it automatically based on the driver
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a helpful assistant. Keep responses concise.",
-		},
-		agentpg.WithMaxTokens(1024),
-	)
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
 	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
+		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	fmt.Println("Agent created with database/sql driver")
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	fmt.Printf("Client started (instance ID: %s)\n", client.InstanceID())
+	fmt.Println()
+
+	// Get the registered agent handle
+	agent := client.Agent("database-sql-demo")
+	if agent == nil {
+		log.Fatal("Agent 'database-sql-demo' not found in registry")
+	}
+
+	fmt.Println("Agent handle acquired with database/sql driver")
 	fmt.Println()
 
 	// ==========================================================
@@ -107,7 +137,7 @@ func main() {
 		fmt.Printf("=== Message %d ===\n", i+1)
 		fmt.Printf("User: %s\n", prompt)
 
-		response, err := agent.Run(ctx, prompt)
+		response, err := agent.Run(ctx, sessionID, prompt)
 		if err != nil {
 			log.Printf("Error: %v\n\n", err)
 			continue
@@ -138,7 +168,7 @@ func main() {
 	}
 
 	// Run agent within the transaction
-	response, err := agent.RunTx(ctx, tx, "What's a fun fact about Tokyo?")
+	response, err := agent.RunTx(ctx, tx, sessionID, "What's a fun fact about Tokyo?")
 	if err != nil {
 		tx.Rollback()
 		log.Fatalf("Failed to run agent in transaction: %v", err)
@@ -169,10 +199,12 @@ func main() {
 	fmt.Println("3. Full transaction support with savepoint-based nesting")
 	fmt.Println("4. Standard library compatibility for existing codebases")
 	fmt.Println()
-	fmt.Println("Usage:")
+	fmt.Println("Client API Usage:")
 	fmt.Println("  db, _ := sql.Open(\"postgres\", dbURL)")
 	fmt.Println("  drv := databasesql.New(db)")
-	fmt.Println("  agent, _ := agentpg.New(drv, config)")
+	fmt.Println("  client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{APIKey: apiKey})")
+	fmt.Println("  client.Start(ctx)")
+	fmt.Println("  agent := client.Agent(\"my-agent\")")
 	fmt.Println()
 	fmt.Println("=== Demo Complete ===")
 }

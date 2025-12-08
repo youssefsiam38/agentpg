@@ -1,3 +1,9 @@
+// Package main demonstrates the Client API with multi-tenant support.
+//
+// This example shows:
+// - Per-tenant session management
+// - HTTP API integration pattern
+// - Session caching and reuse
 package main
 
 import (
@@ -7,64 +13,64 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
 
-// TenantManager manages agents and sessions per tenant
+// Register agent at package initialization.
+func init() {
+	maxTokens := 1024
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:         "multi-tenant-assistant",
+		Description:  "Multi-tenant assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Be concise and helpful.",
+		MaxTokens:    &maxTokens,
+		Config: map[string]any{
+			"auto_compaction": true,
+		},
+	})
+}
+
+// TenantManager manages sessions per tenant
 type TenantManager struct {
 	mu       sync.RWMutex
-	pool     *pgxpool.Pool
-	client   *anthropic.Client
-	drv      *pgxv5.Driver
+	client   *agentpg.Client[pgx.Tx]
 	sessions map[string]string // tenantID:userID -> sessionID
 }
 
-func NewTenantManager(pool *pgxpool.Pool, client *anthropic.Client) *TenantManager {
+func NewTenantManager(client *agentpg.Client[pgx.Tx]) *TenantManager {
 	return &TenantManager{
-		pool:     pool,
 		client:   client,
-		drv:      pgxv5.New(pool),
 		sessions: make(map[string]string),
 	}
 }
 
-func (tm *TenantManager) GetOrCreateSession(ctx context.Context, tenantID, userID string) (string, *agentpg.Agent[pgx.Tx], error) {
+func (tm *TenantManager) GetOrCreateSession(ctx context.Context, tenantID, userID string) (string, *agentpg.AgentHandle[pgx.Tx], error) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
 	key := fmt.Sprintf("%s:%s", tenantID, userID)
-
-	// Create a new agent for this request
-	agent, err := agentpg.New(
-		tm.drv,
-		agentpg.Config{
-			Client:       tm.client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: fmt.Sprintf("You are a helpful assistant for tenant %s. Be concise and helpful.", tenantID),
-		},
-		agentpg.WithMaxTokens(1024),
-		agentpg.WithAutoCompaction(true),
-	)
-	if err != nil {
-		return "", nil, fmt.Errorf("failed to create agent: %w", err)
+	agent := tm.client.Agent("multi-tenant-assistant")
+	if agent == nil {
+		return "", nil, fmt.Errorf("agent not found")
 	}
 
 	// Check if session exists
 	if sessionID, exists := tm.sessions[key]; exists {
-		// Resume existing session
-		if err := agent.LoadSession(ctx, sessionID); err != nil {
-			// Session may have expired, create new one
-			delete(tm.sessions, key)
-		} else {
+		// Verify session still exists
+		_, err := agent.GetSession(ctx, sessionID)
+		if err == nil {
 			return sessionID, agent, nil
 		}
+		// Session expired, remove from cache
+		delete(tm.sessions, key)
 	}
 
 	// Create new session
@@ -101,7 +107,9 @@ type ErrorResponse struct {
 }
 
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -121,11 +129,31 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
+	// Create the pgx/v5 driver
+	drv := pgxv5.New(pool)
+
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create client: %v", err)
+	}
+
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
 	// Create tenant manager
-	tm := NewTenantManager(pool, &client)
+	tm := NewTenantManager(client)
 
 	// ==========================================================
 	// HTTP Handler
@@ -169,7 +197,7 @@ func main() {
 		}
 
 		// Run agent
-		response, err := agent.Run(r.Context(), req.Message)
+		response, err := agent.Run(r.Context(), sessionID, req.Message)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -249,7 +277,7 @@ func main() {
 				continue
 			}
 
-			response, err := agent.Run(ctx, msg)
+			response, err := agent.Run(ctx, sessionID, msg)
 
 			if err != nil {
 				log.Printf("Error: %v", err)

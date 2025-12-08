@@ -135,6 +135,8 @@ debug/
 # ------------------------------
 # Internal references, guides, and planning documents
 /references/
+/focus.md
+/TODO/*
 
 # Example outputs
 /examples/output/

@@ -1,3 +1,9 @@
+// Package main demonstrates the Client API with observability hooks.
+//
+// This example shows:
+// - All 5 observability hooks
+// - Structured logging with slog
+// - Metrics collection
 package main
 
 import (
@@ -7,11 +13,11 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"os/signal"
 	"sync/atomic"
+	"syscall"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/compaction"
@@ -57,8 +63,25 @@ func (s *SimpleTool) Execute(ctx context.Context, input json.RawMessage) (string
 	return time.Now().Format(time.RFC3339), nil
 }
 
+// Register agent at package initialization.
+func init() {
+	maxTokens := 1024
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:         "observability-demo",
+		Description:  "Assistant with observability",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Use the get_time tool when asked about time.",
+		MaxTokens:    &maxTokens,
+		Config: map[string]any{
+			"auto_compaction": true,
+		},
+	})
+}
+
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Configure structured logger
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -83,38 +106,48 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-
 	// Create metrics collector
 	metrics := &Metrics{}
 
-	// Create driver
+	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
 
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create client: %v", err)
+	}
+
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
 	// ==========================================================
-	// Create agent with observability hooks
+	// Get agent and register hooks
 	// ==========================================================
 
 	fmt.Println("=== Observability Example ===")
 	fmt.Println()
 
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a helpful assistant. Use the get_time tool when asked about time.",
-		},
-		agentpg.WithMaxTokens(1024),
-		agentpg.WithAutoCompaction(true),
-	)
-	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
+	agent := client.Agent("observability-demo")
+	if agent == nil {
+		log.Fatal("Agent 'observability-demo' not found")
 	}
 
 	// Register tool
-	agent.RegisterTool(&SimpleTool{})
+	if err := agent.RegisterTool(&SimpleTool{}); err != nil {
+		log.Fatalf("Failed to register tool: %v", err)
+	}
 
 	// ==========================================================
 	// Hook 1: OnBeforeMessage
@@ -152,7 +185,7 @@ func main() {
 	// Hook 2: OnAfterMessage
 	// ==========================================================
 
-	agent.OnAfterMessage(func(ctx context.Context, response *types.Response) error {
+	agent.OnAfterMessage(func(ctx context.Context, response *agentpg.Response) error {
 		metrics.TotalInputTokens.Add(int64(response.Usage.InputTokens))
 		metrics.TotalOutputTokens.Add(int64(response.Usage.OutputTokens))
 
@@ -250,7 +283,7 @@ func main() {
 		fmt.Printf("--- Request %d ---\n", i+1)
 		fmt.Printf("User: %s\n", prompt)
 
-		response, err := agent.Run(ctx, prompt)
+		response, err := agent.Run(ctx, sessionID, prompt)
 		if err != nil {
 			log.Printf("Error: %v", err)
 			continue

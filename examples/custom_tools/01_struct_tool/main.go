@@ -1,3 +1,9 @@
+// Package main demonstrates the Client API with struct-based tools.
+//
+// This example shows:
+// - Implementing the tool.Tool interface with a struct
+// - Tools with internal state (API keys, configuration, mock data)
+// - Global tool registration with agentpg.MustRegisterTool
 package main
 
 import (
@@ -7,9 +13,9 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
@@ -144,8 +150,27 @@ func toLower(s string) string {
 	return string(result)
 }
 
+// Register tools and agents at package initialization.
+func init() {
+	// Register the weather tool globally
+	agentpg.MustRegisterTool(NewWeatherTool())
+
+	// Register the weather agent
+	maxTokens := 1024
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:         "weather-assistant",
+		Description:  "A helpful weather assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful weather assistant. Use the get_weather tool to provide weather information when asked.",
+		Tools:        []string{"get_weather"},
+		MaxTokens:    &maxTokens,
+	})
+}
+
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -165,30 +190,33 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-
-	// Create driver
+	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
 
-	// Create agent
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a helpful weather assistant. Use the get_weather tool to provide weather information when asked.",
-		},
-		agentpg.WithMaxTokens(1024),
-	)
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
 	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
+		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Register the struct-based tool
-	weatherTool := NewWeatherTool()
-	if err := agent.RegisterTool(weatherTool); err != nil {
-		log.Fatalf("Failed to register tool: %v", err)
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
+	// Get the registered agent handle
+	agent := client.Agent("weather-assistant")
+	if agent == nil {
+		log.Fatal("Agent 'weather-assistant' not found in registry")
 	}
 
 	// Create a new session
@@ -203,7 +231,7 @@ func main() {
 
 	// Example 1: Basic weather query
 	fmt.Println("=== Example 1: Basic Weather Query ===")
-	response1, err := agent.Run(ctx, "What's the weather like in Tokyo?")
+	response1, err := agent.Run(ctx, sessionID, "What's the weather like in Tokyo?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -216,7 +244,7 @@ func main() {
 
 	// Example 2: Weather with unit preference
 	fmt.Println("\n=== Example 2: Weather with Fahrenheit ===")
-	response2, err := agent.Run(ctx, "What's the temperature in New York in Fahrenheit?")
+	response2, err := agent.Run(ctx, sessionID, "What's the temperature in New York in Fahrenheit?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -229,7 +257,7 @@ func main() {
 
 	// Example 3: Unknown city (generates random weather)
 	fmt.Println("\n=== Example 3: Unknown City ===")
-	response3, err := agent.Run(ctx, "How's the weather in Reykjavik?")
+	response3, err := agent.Run(ctx, sessionID, "How's the weather in Reykjavik?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -238,12 +266,6 @@ func main() {
 		if block.Type == agentpg.ContentTypeText {
 			fmt.Println(block.Text)
 		}
-	}
-
-	// Show registered tools
-	fmt.Println("\n=== Registered Tools ===")
-	for _, name := range agent.GetTools() {
-		fmt.Printf("- %s\n", name)
 	}
 
 	fmt.Println("\n=== Demo Complete ===")

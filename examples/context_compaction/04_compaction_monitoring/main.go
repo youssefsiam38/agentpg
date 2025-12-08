@@ -1,3 +1,10 @@
+// Package main demonstrates the Client API with compaction monitoring.
+//
+// This example shows:
+// - Comprehensive compaction monitoring with hooks
+// - Tracking metrics across compaction events
+// - Before/after compaction hooks
+// - Token usage metrics
 package main
 
 import (
@@ -5,12 +12,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/compaction"
@@ -104,8 +111,27 @@ func (m *CompactionMonitor) GetStats() (total int, avgReduction float64, totalTo
 	return len(m.events), sumReduction / float64(len(m.events)), totalTokensSaved
 }
 
+// Register agent at package initialization.
+func init() {
+	maxTokens := 4096
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:         "compaction-monitoring-demo",
+		Description:  "Assistant with compaction monitoring",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Provide detailed responses.",
+		MaxTokens:    &maxTokens,
+		Config: map[string]any{
+			"auto_compaction":    true,
+			"compaction_trigger": 0.85,
+			"compaction_target":  80000,
+		},
+	})
+}
+
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -125,11 +151,34 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-
-	// Create driver
+	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
+
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create client: %v", err)
+	}
+
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
+	// Get the registered agent handle
+	agent := client.Agent("compaction-monitoring-demo")
+	if agent == nil {
+		log.Fatal("Agent 'compaction-monitoring-demo' not found in registry")
+	}
 
 	// Create compaction monitor
 	monitor := NewCompactionMonitor()
@@ -137,23 +186,6 @@ func main() {
 	// Track timing for compaction
 	var compactionStart time.Time
 	var currentSessionID string
-
-	// Create agent with compaction enabled
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a helpful assistant. Provide detailed responses.",
-		},
-		agentpg.WithAutoCompaction(true),
-		agentpg.WithCompactionTrigger(0.85),
-		agentpg.WithCompactionTarget(80000),
-		agentpg.WithMaxTokens(4096),
-	)
-	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
-	}
 
 	// ==========================================================
 	// Register monitoring hooks
@@ -229,7 +261,7 @@ func main() {
 		fmt.Printf("\n=== Query %d/%d ===\n", i+1, len(prompts))
 		fmt.Printf("Prompt: %s\n\n", truncate(prompt, 60))
 
-		response, err := agent.Run(ctx, prompt)
+		response, err := agent.Run(ctx, sessionID, prompt)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}

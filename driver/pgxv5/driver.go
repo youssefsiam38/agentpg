@@ -70,6 +70,32 @@ func (d *Driver) Pool() *pgxpool.Pool {
 	return d.pool
 }
 
+// SupportsListener returns true as pgx supports dedicated LISTEN connections.
+func (d *Driver) SupportsListener() bool {
+	return true
+}
+
+// SupportsNotify returns true as pgx supports NOTIFY.
+func (d *Driver) SupportsNotify() bool {
+	return true
+}
+
+// GetListener creates a new Listener for receiving PostgreSQL notifications.
+// The listener uses a dedicated connection from the pool.
+// The returned Listener must be closed when no longer needed.
+func (d *Driver) GetListener(ctx context.Context) (driver.Listener, error) {
+	conn, err := d.pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &Listener{conn: conn}, nil
+}
+
+// GetNotifier returns a Notifier for sending PostgreSQL notifications.
+func (d *Driver) GetNotifier() driver.Notifier {
+	return &Notifier{pool: d.pool}
+}
+
 // Executor wraps pgxpool.Pool for non-transactional operations.
 type Executor struct {
 	pool *pgxpool.Pool

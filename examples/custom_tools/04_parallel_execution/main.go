@@ -1,3 +1,10 @@
+// Package main demonstrates the Client API with tool registry and executor.
+//
+// This example shows:
+// - Standalone tool.Registry management
+// - tool.Executor with sequential vs parallel execution
+// - ExecuteParallel and ExecuteBatch methods
+// - Integration with AgentPG client
 package main
 
 import (
@@ -6,11 +13,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
@@ -147,8 +154,22 @@ func (d *DataFetchTool) GetCallLog() []string {
 	return result
 }
 
+// Register agent (tools will be registered at runtime)
+func init() {
+	maxTokens := 2048
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:         "data-processor",
+		Description:  "A data processing assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a data processing assistant. Use the available tools to fetch and process data. When asked to fetch from multiple sources, call the tools efficiently.",
+		MaxTokens:    &maxTokens,
+	})
+}
+
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -167,9 +188,6 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer pool.Close()
-
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 
 	// ==========================================================
 	// Part 1: Demonstrate tool.Registry management
@@ -270,21 +288,33 @@ func main() {
 	// Create driver
 	drv := pgxv5.New(pool)
 
-	// Create agent with multiple tools
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a data processing assistant. Use the available tools to fetch and process data. When asked to fetch from multiple sources, call the tools efficiently.",
-		},
-		agentpg.WithMaxTokens(2048),
-	)
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
 	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
+		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Register data fetch tool
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
+	// Get the registered agent handle
+	agent := client.Agent("data-processor")
+	if agent == nil {
+		log.Fatal("Agent 'data-processor' not found in registry")
+	}
+
+	// Register data fetch tool at runtime
 	dataFetcher := NewDataFetchTool()
 	if err := agent.RegisterTool(dataFetcher); err != nil {
 		log.Fatalf("Failed to register tool: %v", err)
@@ -302,7 +332,7 @@ func main() {
 
 	// Run agent with request that might trigger multiple tool calls
 	fmt.Println("Requesting data from multiple sources...")
-	response, err := agent.Run(ctx, "Fetch the user profile from both the database and the cache, and also get the latest data from the API. The query for all should be 'user-123'.")
+	response, err := agent.Run(ctx, sessionID, "Fetch the user profile from both the database and the cache, and also get the latest data from the API. The query for all should be 'user-123'.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -317,12 +347,6 @@ func main() {
 	fmt.Println("\n=== Tool Call Log ===")
 	for i, call := range dataFetcher.GetCallLog() {
 		fmt.Printf("%d. %s\n", i+1, call)
-	}
-
-	// Show registered tools
-	fmt.Println("\n=== Registered Tools ===")
-	for _, name := range agent.GetTools() {
-		fmt.Printf("- %s\n", name)
 	}
 
 	fmt.Println("\n=== Demo Complete ===")

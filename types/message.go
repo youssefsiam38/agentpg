@@ -116,4 +116,5 @@ type Response struct {
 	Message    *Message
 	StopReason string
 	Usage      *Usage
+	RunID      string // The run ID for this execution (empty for legacy API)
 }

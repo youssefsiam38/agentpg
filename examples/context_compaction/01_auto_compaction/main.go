@@ -1,3 +1,9 @@
+// Package main demonstrates the Client API with auto compaction.
+//
+// This example shows:
+// - Enabling auto compaction via Config
+// - Compaction hooks for monitoring
+// - Long conversation that may trigger compaction
 package main
 
 import (
@@ -5,17 +11,37 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/compaction"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
 
+// Register agent at package initialization.
+func init() {
+	maxTokens := 4096
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:         "auto-compaction-demo",
+		Description:  "Assistant with auto compaction enabled",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Provide detailed, thorough responses to questions.",
+		MaxTokens:    &maxTokens,
+		Config: map[string]any{
+			// Enable auto-compaction with settings
+			"auto_compaction":    true,
+			"compaction_trigger": 0.85,  // 85% threshold
+			"compaction_target":  80000, // Target token count after compaction
+		},
+	})
+}
+
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -35,36 +61,38 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-
-	// Create driver
+	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
+
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create client: %v", err)
+	}
+
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
+	// Get the registered agent handle
+	agent := client.Agent("auto-compaction-demo")
+	if agent == nil {
+		log.Fatal("Agent 'auto-compaction-demo' not found in registry")
+	}
 
 	// Track compaction events
 	compactionCount := 0
 	var lastCompaction *compaction.CompactionResult
-
-	// Create agent with auto-compaction enabled
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a helpful assistant. Provide detailed, thorough responses to questions.",
-		},
-		// Enable auto-compaction with default settings
-		agentpg.WithAutoCompaction(true),
-		// Lower the trigger threshold for demo purposes
-		// In production, 0.85 (85%) is recommended
-		agentpg.WithCompactionTrigger(0.85),
-		// Target a lower token count after compaction
-		agentpg.WithCompactionTarget(80000),
-		agentpg.WithMaxTokens(4096),
-	)
-	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
-	}
 
 	// Register compaction hooks for monitoring
 	agent.OnBeforeCompaction(func(ctx context.Context, sessionID string) error {
@@ -108,7 +136,7 @@ func main() {
 		fmt.Printf("=== Question %d/%d ===\n", i+1, len(questions))
 		fmt.Printf("Q: %s\n\n", truncateString(question, 80))
 
-		response, err := agent.Run(ctx, question)
+		response, err := agent.Run(ctx, sessionID, question)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}

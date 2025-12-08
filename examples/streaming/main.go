@@ -1,3 +1,10 @@
+// Package main demonstrates the Client API with tools and hooks.
+//
+// This example shows:
+// - Global tool and agent registration in init()
+// - All 5 observability hooks
+// - Automatic context compaction
+// - Tool usage with calculator
 package main
 
 import (
@@ -6,9 +13,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/compaction"
@@ -17,7 +24,7 @@ import (
 	"github.com/youssefsiam38/agentpg/types"
 )
 
-// Example tool: Calculator
+// CalculatorTool performs basic arithmetic operations.
 type CalculatorTool struct{}
 
 func (c *CalculatorTool) Name() string {
@@ -81,16 +88,36 @@ func (c *CalculatorTool) Execute(ctx context.Context, input json.RawMessage) (st
 	return fmt.Sprintf("%g", result), nil
 }
 
-func main() {
-	ctx := context.Background()
+// Register tools and agents at package initialization.
+func init() {
+	// Register the calculator tool globally
+	agentpg.MustRegisterTool(&CalculatorTool{})
 
-	// Get API key from environment
+	// Register the streaming demo agent
+	maxTokens := 4096
+	temp := float32(0.7)
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:         "streaming-demo",
+		Description:  "Demonstrates tools and hooks with streaming",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant that can use tools to help answer questions.",
+		Tools:        []string{"calculator"},
+		MaxTokens:    &maxTokens,
+		Temperature:  &temp,
+	})
+}
+
+func main() {
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
 		log.Fatal("ANTHROPIC_API_KEY environment variable is required")
 	}
 
-	// Get database URL from environment
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		log.Fatal("DATABASE_URL environment variable is required")
@@ -103,33 +130,33 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Create Anthropic client
-	client := anthropic.NewClient(
-		option.WithAPIKey(apiKey),
-	)
-
-	// Create driver
+	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
 
-	// Create agent with auto-compaction enabled
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a helpful assistant that can use tools to help answer questions.",
-		},
-		agentpg.WithMaxTokens(4096),
-		agentpg.WithTemperature(0.7),
-		agentpg.WithAutoCompaction(true), // Enable automatic context compaction
-	)
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
 	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
+		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Register calculator tool
-	if err := agent.RegisterTool(&CalculatorTool{}); err != nil {
-		log.Fatalf("Failed to register tool: %v", err)
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
+	// Get the registered agent handle
+	agent := client.Agent("streaming-demo")
+	if agent == nil {
+		log.Fatal("Agent 'streaming-demo' not found in registry")
 	}
 
 	// Register hooks for observability
@@ -179,7 +206,7 @@ func main() {
 
 	// Example 1: Simple calculation using tool
 	fmt.Println("\n=== Example 1: Tool Usage ===")
-	response1, err := agent.Run(ctx, "What is 42 multiplied by 1337?")
+	response1, err := agent.Run(ctx, sessionID, "What is 42 multiplied by 1337?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -193,7 +220,7 @@ func main() {
 
 	// Example 2: Multiple tool calls
 	fmt.Println("\n=== Example 2: Multiple Calculations ===")
-	response2, err := agent.Run(ctx, "Calculate (100 + 50) and then multiply that result by 2. Show your work.")
+	response2, err := agent.Run(ctx, sessionID, "Calculate (100 + 50) and then multiply that result by 2. Show your work.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -203,13 +230,6 @@ func main() {
 		if block.Type == agentpg.ContentTypeText {
 			fmt.Println(block.Text)
 		}
-	}
-
-	// Example 3: Check registered tools
-	fmt.Println("\n=== Registered Tools ===")
-	tools := agent.GetTools()
-	for _, toolName := range tools {
-		fmt.Printf("- %s\n", toolName)
 	}
 
 	fmt.Println("\n=== Demo Complete ===")

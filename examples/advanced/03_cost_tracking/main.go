@@ -1,3 +1,9 @@
+// Package main demonstrates the Client API with cost tracking.
+//
+// This example shows:
+// - Token usage tracking per session
+// - Budget management and alerts
+// - Cost calculation based on pricing
 package main
 
 import (
@@ -5,14 +11,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
-	"github.com/youssefsiam38/agentpg/types"
 )
 
 // CostTracker tracks token usage and calculates costs
@@ -143,8 +148,22 @@ func (ct *CostTracker) Report() {
 		ct.totalSpent, ct.totalBudget, ct.totalSpent/ct.totalBudget*100)
 }
 
+// Register agent at package initialization.
+func init() {
+	maxTokens := 512
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:         "cost-tracking-demo",
+		Description:  "Assistant with cost tracking",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Be concise.",
+		MaxTokens:    &maxTokens,
+	})
+}
+
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -163,9 +182,6 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer pool.Close()
-
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 
 	// ==========================================================
 	// Create cost tracker
@@ -192,21 +208,33 @@ func main() {
 	fmt.Printf("  Total budget:       $5.00\n")
 	fmt.Println()
 
-	// Create driver
+	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
 
-	// Create agent
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a helpful assistant. Be concise.",
-		},
-		agentpg.WithMaxTokens(512),
-	)
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
 	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
+		log.Fatalf("Failed to create client: %v", err)
+	}
+
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
+	// Get the agent
+	agent := client.Agent("cost-tracking-demo")
+	if agent == nil {
+		log.Fatal("Agent 'cost-tracking-demo' not found")
 	}
 
 	// ==========================================================
@@ -215,7 +243,7 @@ func main() {
 
 	var currentSessionID string
 
-	agent.OnAfterMessage(func(ctx context.Context, response *types.Response) error {
+	agent.OnAfterMessage(func(ctx context.Context, response *agentpg.Response) error {
 		cost, warnings := costTracker.RecordUsage(
 			currentSessionID,
 			response.Usage.InputTokens,
@@ -269,7 +297,7 @@ func main() {
 		for _, prompt := range sess.prompts {
 			fmt.Printf("\nUser: %s\n", prompt)
 
-			response, err := agent.Run(ctx, prompt)
+			response, err := agent.Run(ctx, sessionID, prompt)
 			if err != nil {
 				log.Printf("Error: %v", err)
 				continue
