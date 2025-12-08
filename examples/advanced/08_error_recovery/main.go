@@ -1,3 +1,9 @@
+// Package main demonstrates the Client API with error recovery.
+//
+// This example shows:
+// - Error classification (transient, rate limit, permanent)
+// - Retry with exponential backoff and jitter
+// - Graceful degradation patterns
 package main
 
 import (
@@ -8,10 +14,10 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
@@ -189,8 +195,22 @@ func (u *UnreliableTool) Execute(ctx context.Context, input json.RawMessage) (st
 	return fmt.Sprintf("API response for '%s': Success! Data retrieved.", params.Query), nil
 }
 
+// Register agent at package initialization.
+func init() {
+	maxTokens := 1024
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:         "error-recovery-demo",
+		Description:  "Assistant with error recovery",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Use the unreliable_api tool when asked to fetch data. If the tool fails, try again or explain the issue.",
+		MaxTokens:    &maxTokens,
+	})
+}
+
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -209,9 +229,6 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer pool.Close()
-
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 
 	// ==========================================================
 	// Demo error classification
@@ -270,25 +287,40 @@ func main() {
 	fmt.Println("=== Agent with Unreliable Tool ===")
 	fmt.Println()
 
-	// Create driver
+	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
 
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a helpful assistant. Use the unreliable_api tool when asked to fetch data. If the tool fails, try again or explain the issue.",
-		},
-		agentpg.WithMaxTokens(1024),
-	)
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
 	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
+		log.Fatalf("Failed to create client: %v", err)
+	}
+
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
+	// Get the agent
+	agent := client.Agent("error-recovery-demo")
+	if agent == nil {
+		log.Fatal("Agent 'error-recovery-demo' not found")
 	}
 
 	// Register unreliable tool (50% failure rate for demo)
 	unreliableTool := NewUnreliableTool(0.5)
-	agent.RegisterTool(unreliableTool)
+	if err := agent.RegisterTool(unreliableTool); err != nil {
+		log.Fatalf("Failed to register tool: %v", err)
+	}
 
 	// Add error tracking hook
 	var errorCount int
@@ -320,15 +352,15 @@ func main() {
 
 		// Run with manual retry wrapper
 		var response *agentpg.Response
-		config := RetryConfig{
+		retryConfig := RetryConfig{
 			MaxRetries:    2,
 			InitialDelay:  50 * time.Millisecond,
 			MaxDelay:      1 * time.Second,
 			BackoffFactor: 2.0,
 		}
 
-		response, err = WithRetry(ctx, config, func() (*agentpg.Response, error) {
-			return agent.Run(ctx, prompt)
+		response, err = WithRetry(ctx, retryConfig, func() (*agentpg.Response, error) {
+			return agent.Run(ctx, sessionID, prompt)
 		})
 
 		if err != nil {

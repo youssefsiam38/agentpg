@@ -19,7 +19,7 @@ var (
 	// ErrCompactionFailed is returned when context compaction fails
 	ErrCompactionFailed = errors.New("context compaction failed")
 
-	// ErrStorageError is returned when a storage operation fails
+	// ErrStorageError is returned when a storage operation failed
 	ErrStorageError = errors.New("storage operation failed")
 
 	// ErrNoSession is returned when no session is loaded
@@ -30,6 +30,49 @@ var (
 
 	// ErrToolExecutionFailed is returned when tool execution fails
 	ErrToolExecutionFailed = errors.New("tool execution failed")
+
+	// =========================================================================
+	// Run errors
+	// =========================================================================
+
+	// ErrRunNotFound is returned when a run does not exist
+	ErrRunNotFound = errors.New("run not found")
+
+	// ErrInvalidStateTransition is returned when a run state transition is invalid
+	ErrInvalidStateTransition = errors.New("invalid state transition")
+
+	// ErrRunAlreadyFinalized is returned when attempting to modify a finalized run
+	ErrRunAlreadyFinalized = errors.New("run already finalized")
+
+	// =========================================================================
+	// Instance errors
+	// =========================================================================
+
+	// ErrInstanceNotFound is returned when an instance does not exist
+	ErrInstanceNotFound = errors.New("instance not found")
+
+	// ErrInstanceAlreadyExists is returned when registering a duplicate instance
+	ErrInstanceAlreadyExists = errors.New("instance already exists")
+
+	// =========================================================================
+	// Agent registration errors
+	// =========================================================================
+
+	// ErrAgentNotFound is returned when an agent does not exist
+	ErrAgentNotFound = errors.New("agent not found")
+
+	// ErrAgentNotRegistered is returned when trying to use an unregistered agent
+	ErrAgentNotRegistered = errors.New("agent not registered")
+
+	// =========================================================================
+	// Client errors
+	// =========================================================================
+
+	// ErrClientNotStarted is returned when calling methods before Start()
+	ErrClientNotStarted = errors.New("client not started")
+
+	// ErrClientAlreadyStarted is returned when Start() is called twice
+	ErrClientAlreadyStarted = errors.New("client already started")
 )
 
 // AgentError represents an error with additional context

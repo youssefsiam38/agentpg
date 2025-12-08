@@ -21,6 +21,7 @@ AgentPG is a production-ready Go framework for building AI agents with PostgreSQ
 | [Architecture](./architecture.md) | System design and components |
 | [Storage](./storage.md) | Database schema and data model |
 | [Compaction](./compaction.md) | Context window management |
+| [Distributed](./distributed.md) | Multi-instance deployment |
 | [Security](./security.md) | Security model and best practices |
 
 ### For Operations & DevOps
@@ -28,6 +29,7 @@ AgentPG is a production-ready Go framework for building AI agents with PostgreSQ
 | Document | Description |
 |----------|-------------|
 | [Deployment](./deployment.md) | Production deployment guide |
+| [Distributed](./distributed.md) | Multi-instance deployment guide |
 | [Contributing](./contributing.md) | Development setup and guidelines |
 
 ## Quick Links
@@ -38,4 +40,4 @@ AgentPG is a production-ready Go framework for building AI agents with PostgreSQ
 
 ## Version
 
-This documentation is for AgentPG v0.1.0 (Beta).
+This documentation is for the latest version of AgentPG.

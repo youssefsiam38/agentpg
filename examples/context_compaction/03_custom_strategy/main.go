@@ -1,3 +1,9 @@
+// Package main demonstrates the Client API with custom compaction strategy.
+//
+// This example shows:
+// - Implementing the compaction.Strategy interface
+// - Custom logic for preserving tool results
+// - How to integrate custom strategies with AgentPG
 package main
 
 import (
@@ -5,10 +11,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/compaction"
@@ -25,13 +31,11 @@ import (
 
 // KeepToolResultsStrategy is a custom compaction strategy
 // that prioritizes keeping tool call results intact.
-type KeepToolResultsStrategy struct {
-	client *anthropic.Client
-}
+type KeepToolResultsStrategy struct{}
 
 // NewKeepToolResultsStrategy creates a new custom strategy
-func NewKeepToolResultsStrategy(client *anthropic.Client) *KeepToolResultsStrategy {
-	return &KeepToolResultsStrategy{client: client}
+func NewKeepToolResultsStrategy() *KeepToolResultsStrategy {
+	return &KeepToolResultsStrategy{}
 }
 
 // Name returns the strategy name
@@ -194,8 +198,25 @@ func (s *KeepToolResultsStrategy) createSummary(messages []*types.Message) strin
 	return sb.String()
 }
 
+// Register agent at package initialization.
+func init() {
+	maxTokens := 1024
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:         "custom-strategy-demo",
+		Description:  "Assistant for custom strategy demonstration",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant.",
+		MaxTokens:    &maxTokens,
+		Config: map[string]any{
+			"auto_compaction": true,
+		},
+	})
+}
+
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -215,9 +236,6 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-
 	// ==========================================================
 	// Demonstrate the custom strategy
 	// ==========================================================
@@ -226,7 +244,7 @@ func main() {
 	fmt.Println()
 
 	// Create the custom strategy
-	customStrategy := NewKeepToolResultsStrategy(&client)
+	customStrategy := NewKeepToolResultsStrategy()
 
 	fmt.Printf("Strategy Name: %s\n", customStrategy.Name())
 	fmt.Println("\nThis strategy:")
@@ -347,7 +365,7 @@ func main() {
 	fmt.Println(result.Summary)
 
 	// ==========================================================
-	// Show how to use with AgentPG (conceptual)
+	// Show how to use with AgentPG
 	// ==========================================================
 
 	fmt.Println("=== Using with AgentPG ===")
@@ -364,19 +382,30 @@ func main() {
 	// Create driver
 	drv := pgxv5.New(pool)
 
-	// Create a simple agent to show it works
-	_, err = agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a helpful assistant.",
-		},
-		agentpg.WithAutoCompaction(true),
-		agentpg.WithMaxTokens(1024),
-	)
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
 	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
+		log.Fatalf("Failed to create client: %v", err)
+	}
+
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
+	// Get the registered agent
+	agent := client.Agent("custom-strategy-demo")
+	if agent == nil {
+		log.Fatal("Agent 'custom-strategy-demo' not found in registry")
 	}
 
 	fmt.Println("\nAgent created with default compaction strategy.")

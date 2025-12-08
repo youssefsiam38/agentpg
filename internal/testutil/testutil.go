@@ -52,8 +52,18 @@ func (db *TestDB) Close() {
 }
 
 // CleanTables truncates all tables for test isolation
+// Order matters due to FK constraints - child tables first
 func (db *TestDB) CleanTables(ctx context.Context) error {
 	tables := []string{
+		// Distributed tables (child tables first)
+		"agentpg_instance_agents",
+		"agentpg_instance_tools",
+		"agentpg_runs",
+		"agentpg_leader",
+		"agentpg_instances",
+		"agentpg_agents",
+		"agentpg_tools",
+		// Original tables
 		"agentpg_message_archive",
 		"agentpg_compaction_events",
 		"agentpg_messages",

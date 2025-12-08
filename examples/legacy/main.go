@@ -1,3 +1,14 @@
+// Package main demonstrates the legacy Agent API pattern.
+//
+// This example uses the direct Agent creation pattern.
+// This API is still fully supported but the Client API is recommended
+// for new projects, especially for multi-instance deployments.
+//
+// Use this pattern when:
+// - You need a single-instance, simple setup
+// - You need fine-grained control over agent configuration at runtime
+//
+// For the recommended Client API, see examples/basic/main.go
 package main
 
 import (
@@ -43,7 +54,8 @@ func main() {
 	// Create driver
 	drv := pgxv5.New(pool)
 
-	// Create agent
+	// Create agent directly
+	// This pattern gives you direct control over the agent configuration
 	agent, err := agentpg.New(
 		drv,
 		agentpg.Config{
@@ -62,7 +74,7 @@ func main() {
 	// For single-tenant apps, use a constant like "1" for tenant_id
 	// identifier can be user ID, conversation ID, or any custom identifier
 	sessionID, err := agent.NewSession(ctx, "1", "example-user", nil, map[string]any{
-		"description": "Basic example session",
+		"description": "Legacy example session",
 	})
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)

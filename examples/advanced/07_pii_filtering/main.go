@@ -1,3 +1,9 @@
+// Package main demonstrates the Client API with PII filtering.
+//
+// This example shows:
+// - PII detection with regex patterns
+// - Message blocking, redaction, and warning modes
+// - Audit logging for compliance
 package main
 
 import (
@@ -5,13 +11,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
@@ -118,8 +124,22 @@ func (e *ErrPIIDetected) Error() string {
 	return fmt.Sprintf("message blocked: contains sensitive data (%s)", strings.Join(e.Types, ", "))
 }
 
+// Register agent at package initialization.
+func init() {
+	maxTokens := 1024
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:         "pii-filtering-demo",
+		Description:  "Assistant with PII filtering",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Never ask for or store sensitive personal information.",
+		MaxTokens:    &maxTokens,
+	})
+}
+
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -139,9 +159,6 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-
 	// ==========================================================
 	// Create PII filter
 	// ==========================================================
@@ -160,34 +177,46 @@ func main() {
 	fmt.Println("  - AWS Keys: AKIA...")
 	fmt.Println()
 
-	// Create driver
+	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
 
-	// Create agent
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a helpful assistant. Never ask for or store sensitive personal information.",
-		},
-		agentpg.WithMaxTokens(1024),
-	)
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
 	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
+		log.Fatalf("Failed to create client: %v", err)
+	}
+
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
+	// Get the agent
+	agent := client.Agent("pii-filtering-demo")
+	if agent == nil {
+		log.Fatal("Agent 'pii-filtering-demo' not found")
 	}
 
 	// ==========================================================
 	// Register PII filtering hook
 	// ==========================================================
 
+	var currentSessionID string
+
 	agent.OnBeforeMessage(func(ctx context.Context, messages []*types.Message) error {
 		// Extract the last user message text for PII checking
 		var lastPrompt string
-		var sessionID string
 		for i := len(messages) - 1; i >= 0; i-- {
 			if messages[i].Role == types.RoleUser {
-				sessionID = messages[i].SessionID
 				for _, block := range messages[i].Content {
 					if block.Type == types.ContentTypeText {
 						lastPrompt = block.Text
@@ -201,7 +230,7 @@ func main() {
 		detected, _ := piiFilter.Check(lastPrompt)
 
 		if len(detected) > 0 {
-			piiFilter.Record(sessionID, detected, lastPrompt)
+			piiFilter.Record(currentSessionID, detected, lastPrompt)
 
 			fmt.Printf("  [PII BLOCKED] Detected: %s\n", strings.Join(detected, ", "))
 
@@ -227,6 +256,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
+	currentSessionID = sessionID
 	fmt.Printf("Session: %s\n\n", sessionID[:8]+"...")
 
 	// ==========================================================
@@ -282,7 +312,7 @@ func main() {
 		fmt.Printf("Test %d: %s\n", i+1, test.description)
 		fmt.Printf("  Message: %s\n", truncate(test.message, 50))
 
-		response, err := agent.Run(ctx, test.message)
+		response, err := agent.Run(ctx, sessionID, test.message)
 		if err != nil {
 			if _, ok := err.(*ErrPIIDetected); ok {
 				fmt.Printf("  Result: BLOCKED (as expected: %v)\n", test.shouldBlock)

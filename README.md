@@ -14,6 +14,9 @@ AgentPG is an opinionated, batteries-included package for building AI agents pow
 - ✅ **Nested Agents** - Agents can use other agents as tools automatically
 - ✅ **Extended Context** - Automatic 1M token context with beta header support
 - ✅ **Hooks & Observability** - Before/after message, tool call, and compaction hooks
+- ✅ **Multi-Instance Deployment** - Run multiple agent instances with automatic leader election and cleanup
+- ✅ **Run Tracking** - Track individual agent runs with state machine (running → completed/cancelled/failed)
+- ✅ **Real-Time Events** - PostgreSQL LISTEN/NOTIFY for instant event propagation
 
 ## Installation
 
@@ -459,6 +462,101 @@ tx.Commit()
 - **Nested agent isolation** - Each nested agent manages its own independent transaction
 - **No partial state** - On timeout or error, everything is rolled back cleanly
 
+### Multi-Instance Deployment
+
+Run multiple AgentPG instances for high availability and scalability:
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+    "os/signal"
+
+    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/youssefsiam38/agentpg"
+    "github.com/youssefsiam38/agentpg/driver/pgxv5"
+)
+
+func main() {
+    ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+    defer cancel()
+
+    pool, _ := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+    defer pool.Close()
+
+    drv := pgxv5.New(pool)
+
+    // Create client with configuration
+    client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+        APIKey:            os.Getenv("ANTHROPIC_API_KEY"),
+        HeartbeatInterval: 30 * time.Second,
+        CleanupInterval:   1 * time.Minute,
+        StuckRunTimeout:   1 * time.Hour,
+        OnBecameLeader: func() {
+            log.Println("This instance is now the leader")
+        },
+        OnLostLeadership: func() {
+            log.Println("This instance lost leadership")
+        },
+        OnError: func(err error) {
+            log.Printf("Background error: %v", err)
+        },
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Start background services (heartbeat, leader election)
+    if err := client.Start(ctx); err != nil {
+        log.Fatal(err)
+    }
+    defer client.Stop(ctx)
+
+    // Get agent handle and run
+    agent := client.Agent("chat")
+    response, err := agent.Run(ctx, sessionID, "Hello!")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // ... process response
+}
+
+// Register agents globally (typically in init())
+func init() {
+    agentpg.Register(&agentpg.AgentDefinition{
+        Name:         "chat",
+        Description:  "General purpose chat agent",
+        Model:        "claude-sonnet-4-5-20250929",
+        SystemPrompt: "You are a helpful assistant.",
+    })
+}
+```
+
+**Multi-Instance Features:**
+
+| Feature | Description |
+|---------|-------------|
+| **Instance Registration** | Each instance registers with the database on Start() |
+| **Heartbeat** | Periodic heartbeats (default: 30s) mark instances as active |
+| **Leader Election** | TTL-based lease ensures only one leader at a time |
+| **Cleanup (Leader Only)** | Leader cleans up stale instances and stuck runs |
+| **Graceful Shutdown** | Stop() deregisters the instance and resigns leadership |
+
+**Run State Machine:**
+
+```
+running → completed (success)
+        → cancelled (user cancelled)
+        → failed (error or timeout)
+```
+
+Runs that exceed the `StuckRunTimeout` are automatically marked as failed by the leader's cleanup service.
+
+See [docs/distributed.md](docs/distributed.md) for detailed documentation.
 
 ## Architecture
 
@@ -474,15 +572,18 @@ AgentPG follows these design principles:
 ```
 agentpg/
 ├── agent.go                    # Core Agent[TTx] type with generics
+├── client.go                   # Client for multi-instance deployment
 ├── config.go                   # Configuration
 ├── options.go                  # Functional options
 ├── session.go                  # Session management
 ├── message.go                  # Message types
 ├── errors.go                   # Error handling
+├── registry.go                 # Global agent/tool registry
 ├── driver/                     # Database driver abstraction
 │   ├── driver.go               # Driver interface
 │   ├── executor.go             # Executor interfaces
 │   ├── context.go              # Context injection
+│   ├── listener.go             # LISTEN/NOTIFY support
 │   ├── pgxv5/                  # pgx/v5 driver (separate module)
 │   │   ├── driver.go           # Driver implementation
 │   │   └── store.go            # Storage operations
@@ -510,6 +611,15 @@ agentpg/
 │   ├── summarization.go        # Claude Code summarization
 │   ├── partitioner.go          # Message partitioning
 │   └── tokens.go               # Token counting
+├── leadership/                 # Leader election
+│   └── elector.go              # TTL-based leader election
+├── maintenance/                # Background services
+│   ├── heartbeat.go            # Instance heartbeat
+│   └── cleanup.go              # Stale instance/run cleanup
+├── notifier/                   # Real-time events
+│   └── notifier.go             # PostgreSQL LISTEN/NOTIFY
+├── runstate/                   # Run state machine
+│   └── state.go                # State transitions
 └── internal/                   # Internal utilities
     └── anthropic/              # Anthropic SDK adapters
 ```
@@ -528,7 +638,14 @@ agentpg/
 **Phase 4** ✅ - Streaming & Hooks (Complete)
 - Streaming-first architecture (all API calls use SSE), hooks, observability
 
-**Phase 5** 📋 - Advanced Features (Planned)
+**Phase 5** ✅ - Multi-Instance Deployment (Complete)
+- Client lifecycle, instance registration, heartbeat
+- Leader election with TTL-based lease
+- Cleanup service for stale instances and stuck runs
+- Run tracking with state machine
+- Real-time events via PostgreSQL LISTEN/NOTIFY
+
+**Phase 6** 📋 - Advanced Features (Planned)
 - Vision support, structured outputs, batch processing
 
 ## Examples

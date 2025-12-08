@@ -74,6 +74,29 @@ func (d *Driver) DB() *sql.DB {
 	return d.db
 }
 
+// SupportsListener returns false as database/sql doesn't support dedicated LISTEN connections.
+// database/sql uses a connection pool, so there's no way to maintain a dedicated connection
+// for receiving notifications. Use polling as a fallback instead.
+func (d *Driver) SupportsListener() bool {
+	return false
+}
+
+// SupportsNotify returns true as we can send NOTIFY commands through the pool.
+func (d *Driver) SupportsNotify() bool {
+	return true
+}
+
+// GetListener returns nil as database/sql doesn't support dedicated LISTEN connections.
+// Use polling as a fallback when SupportsListener() returns false.
+func (d *Driver) GetListener(ctx context.Context) (driver.Listener, error) {
+	return nil, nil
+}
+
+// GetNotifier returns a Notifier for sending PostgreSQL notifications.
+func (d *Driver) GetNotifier() driver.Notifier {
+	return &Notifier{db: d.db}
+}
+
 // Executor wraps *sql.DB for non-transactional operations.
 type Executor struct {
 	db *sql.DB

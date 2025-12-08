@@ -12,6 +12,8 @@ AgentPG is a stateful AI agent framework that solves three core problems:
 
 ## System Overview
 
+### Single-Instance Architecture
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         Application Layer                            │
@@ -48,6 +50,41 @@ AgentPG is a stateful AI agent framework that solves three core problems:
                                             │  │ message_arch* │ │
                                             │  └───────────────┘ │
                                             └─────────────────────┘
+```
+
+### Multi-Instance Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              PostgreSQL                                      │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌───────────────────┐  │
+│  │  instances  │  │   leader    │  │    runs     │  │  agents/tools     │  │
+│  │  sessions   │  │             │  │  messages   │  │  instance_agents  │  │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └───────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+          ▲               ▲               ▲                    ▲
+          │    LISTEN/NOTIFY              │                    │
+          │               │               │                    │
+┌─────────┴───────────────┴───────────────┴────────────────────┴──────────────┐
+│                                                                              │
+│   ┌─────────────────────────┐        ┌─────────────────────────┐            │
+│   │     Instance 1          │        │     Instance 2          │            │
+│   │     (Leader)            │        │     (Follower)          │            │
+│   │  ┌─────────────────┐   │        │  ┌─────────────────┐   │            │
+│   │  │     Client      │   │        │  │     Client      │   │            │
+│   │  │  ┌───────────┐  │   │        │  │  ┌───────────┐  │   │            │
+│   │  │  │ Heartbeat │  │   │        │  │  │ Heartbeat │  │   │            │
+│   │  │  │ Elector   │  │   │        │  │  │ Elector   │  │   │            │
+│   │  │  │ Cleanup   │  │   │        │  │  │           │  │   │            │
+│   │  │  │ Notifier  │  │   │        │  │  │ Notifier  │  │   │            │
+│   │  │  └───────────┘  │   │        │  │  └───────────┘  │   │            │
+│   │  │  ┌───────────┐  │   │        │  │  ┌───────────┐  │   │            │
+│   │  │  │   Agents  │  │   │        │  │  │   Agents  │  │   │            │
+│   │  │  └───────────┘  │   │        │  │  └───────────┘  │   │            │
+│   │  └─────────────────┘   │        │  └─────────────────┘   │            │
+│   └─────────────────────────┘        └─────────────────────────┘            │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Core Components
@@ -396,6 +433,102 @@ See [Security](./security.md) for detailed analysis. Key points:
 - Archive tables can be partitioned by date
 - Indexes optimized for common query patterns
 
+## Distributed Components
+
+### 8. Client (`client.go`)
+
+The Client manages multi-instance deployment lifecycle.
+
+**Responsibilities:**
+- Instance registration and deregistration
+- Background service coordination (heartbeat, cleanup, election)
+- Agent/tool registry management
+- Graceful shutdown orchestration
+
+```go
+type Client[TTx any] struct {
+    driver          driver.Driver[TTx]
+    store           storage.Store
+    anthropicClient *anthropic.Client
+    config          *ClientConfig
+    instanceID      string
+
+    // Background services
+    heartbeat *maintenance.Heartbeat
+    cleanup   *maintenance.Cleanup
+    elector   *leadership.Elector
+    notif     *notifier.Notifier
+
+    // State
+    started  atomic.Bool
+    isLeader atomic.Bool
+}
+```
+
+### 9. Leadership (`leadership/`)
+
+TTL-based leader election using PostgreSQL.
+
+**Election Flow:**
+```
+1. Instance attempts to acquire lease (INSERT with TTL)
+2. If successful, becomes leader and starts cleanup service
+3. Leader must renew lease before expiry (UPDATE expires_at)
+4. If renewal fails, leadership is lost
+5. Other instances can acquire expired leases
+```
+
+**Key Design Decisions:**
+- Single leader for cleanup prevents duplicate work
+- TTL-based lease allows automatic failover
+- No external coordinator required (PostgreSQL only)
+
+### 10. Maintenance (`maintenance/`)
+
+Background services for instance health and cleanup.
+
+**Heartbeat Service:**
+- Periodically updates `last_heartbeat_at` in database
+- Default interval: 30 seconds
+- Failure to heartbeat marks instance as stale
+
+**Cleanup Service (Leader Only):**
+- Removes stale instances (no heartbeat for 2 minutes)
+- Marks stuck runs as failed (running > timeout)
+- Cleans up expired leader entries
+
+### 11. Run State Machine (`runstate/`)
+
+Tracks individual agent executions with validated state transitions.
+
+```go
+// Valid transitions
+RunStateRunning → RunStateCompleted  // Success
+RunStateRunning → RunStateCancelled  // User cancel
+RunStateRunning → RunStateFailed     // Error or timeout
+
+// Invalid transitions (return error)
+RunStateCompleted → RunStateRunning  // Terminal state
+RunStateFailed → RunStateCompleted   // Terminal state
+```
+
+### 12. Notifier (`notifier/`)
+
+Real-time event propagation via PostgreSQL LISTEN/NOTIFY.
+
+**Event Types:**
+| Event | Description |
+|-------|-------------|
+| `run_state_changed` | Run completed/failed/cancelled |
+| `instance_registered` | New instance joined |
+| `instance_deregistered` | Instance left |
+| `leader_changed` | Leadership changed |
+
+**Architecture:**
+```
+Database Trigger → NOTIFY channel → Listener → Notifier → Subscriber Handlers
+```
+
 ## Future Architecture Considerations
 
 ### Planned Improvements
@@ -416,3 +549,4 @@ See [Security](./security.md) for detailed analysis. Key points:
 - [Tools](./tools.md) - Building custom tools
 - [Security](./security.md) - Security model
 - [Deployment](./deployment.md) - Production setup
+- [Distributed](./distributed.md) - Multi-instance deployment

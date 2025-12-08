@@ -2,6 +2,58 @@
 
 This directory contains comprehensive examples demonstrating various features of AgentPG.
 
+## Client API
+
+AgentPG provides a **Client API** for multi-instance deployment. The Client API provides:
+
+- **Global Registration**: Register agents and tools at package init time
+- **Instance Management**: Automatic heartbeats and instance tracking
+- **Leader Election**: Coordinated cleanup via single leader
+- **Multi-Instance**: Run multiple instances for high availability
+
+### Recommended Pattern
+
+```go
+// Register agents at init time
+func init() {
+    agentpg.MustRegister(&agentpg.AgentDefinition{
+        Name:         "chat",
+        Model:        "claude-sonnet-4-5-20250929",
+        SystemPrompt: "You are a helpful assistant",
+        Tools:        []string{"calculator"},
+    })
+    agentpg.MustRegisterTool(&CalculatorTool{})
+}
+
+func main() {
+    // Create client
+    client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
+        APIKey: apiKey,
+    })
+    client.Start(ctx)
+    defer client.Stop(ctx)
+
+    // Get agent handle and run
+    agent := client.Agent("chat")
+    sessionID, _ := agent.NewSession(ctx, "tenant1", "user1", nil, nil)
+    response, _ := agent.Run(ctx, sessionID, "Hello!")
+}
+```
+
+### Legacy Pattern
+
+The legacy `agentpg.New()` pattern is still fully supported:
+
+```go
+agent, _ := agentpg.New(drv, agentpg.Config{
+    Client:       &client,
+    Model:        "claude-sonnet-4-5-20250929",
+    SystemPrompt: "You are a helpful assistant",
+})
+```
+
+---
+
 ## Prerequisites
 
 Before running any example, ensure you have:
@@ -16,20 +68,52 @@ export ANTHROPIC_API_KEY="your-api-key-here"
 export DATABASE_URL="postgresql://user:password@localhost:5432/agentpg"
 ```
 
+---
+
 ## Example Categories
 
 ### basic/
 **Location**: `examples/basic/main.go`
 
-Basic agent creation and configuration:
-- Creating an AgentPG instance
-- Basic configuration (model, system prompt, temperature)
-- Creating and managing sessions
-- Running simple queries
-- Accessing response content and usage statistics
+**Client API** - The recommended pattern for new projects:
+- Global agent registration with `agentpg.MustRegister()`
+- Client creation with `agentpg.NewClient()`
+- Agent handles with `client.Agent()`
+- Session and run management
 
 ```bash
 go run examples/basic/main.go
+```
+
+---
+
+### distributed/
+**Location**: `examples/distributed/main.go`
+
+**Multi-Instance Deployment** - Full example with all features:
+- Global agent and tool registration
+- Client lifecycle (Start/Stop)
+- Leader election callbacks
+- Instance metadata
+- Tool usage with calculator
+
+```bash
+go run examples/distributed/main.go
+```
+
+---
+
+### legacy/
+**Location**: `examples/legacy/main.go`
+
+**Legacy API** - Direct agent creation:
+- Direct `agentpg.New()` pattern
+- Anthropic client setup
+- Functional options configuration
+- Simple single-instance usage
+
+```bash
+go run examples/legacy/main.go
 ```
 
 ---
@@ -76,7 +160,7 @@ Agent delegation and orchestration patterns.
 |---------|-------------|
 | `01_basic_delegation/` | Basic `agent.AsToolFor()` usage - research agent delegated from main agent |
 | `02_specialist_agents/` | Multiple specialist agents (coder, researcher, analyst) with own tools |
-| `03_multi_level_hierarchy/` | 3-level hierarchy: manager → team leads → workers |
+| `03_multi_level_hierarchy/` | 3-level hierarchy: manager -> team leads -> workers |
 
 ```bash
 go run examples/nested_agents/01_basic_delegation/main.go
@@ -150,9 +234,14 @@ go run examples/advanced/08_error_recovery/main.go
 
 | Feature | Example Location |
 |---------|------------------|
-| Agent creation & config | basic/, all examples |
+| **Client API** | basic/, distributed/ |
+| **Global registration** | basic/, distributed/ |
+| **Multi-instance** | distributed/ |
+| **Leader election** | distributed/ |
+| **Legacy API** | legacy/ |
+| Agent creation & config | all examples |
 | Session management | basic/, advanced/01_multi_tenant |
-| Tool interface (struct) | custom_tools/01_struct_tool |
+| Tool interface (struct) | custom_tools/01_struct_tool, distributed/ |
 | NewFuncTool | custom_tools/02_func_tool |
 | Schema validation | custom_tools/03_schema_validation |
 | Tool registry & executor | custom_tools/04_parallel_execution |
@@ -177,7 +266,41 @@ go run examples/advanced/08_error_recovery/main.go
 
 ## Configuration Options
 
-### Core Options
+### Client Config
+
+```go
+client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
+    APIKey:            apiKey,
+    InstanceID:        "instance-1",        // Auto-generated if not provided
+    Hostname:          "my-server",         // os.Hostname() if not provided
+    Metadata:          map[string]any{...}, // Custom instance metadata
+    HeartbeatInterval: 30 * time.Second,    // Default: 30s
+    CleanupInterval:   1 * time.Minute,     // Default: 1m
+    StuckRunTimeout:   1 * time.Hour,       // Default: 1h
+    LeaderTTL:         30 * time.Second,    // Default: 30s
+    OnBecameLeader:    func() { ... },
+    OnLostLeadership:  func() { ... },
+    OnError:           func(err error) { ... },
+})
+```
+
+### Agent Definition
+
+```go
+agentpg.MustRegister(&agentpg.AgentDefinition{
+    Name:         "chat",
+    Description:  "A helpful chat agent",
+    Model:        "claude-sonnet-4-5-20250929",
+    SystemPrompt: "You are a helpful assistant",
+    Tools:        []string{"calculator", "weather"},
+    MaxTokens:    &maxTokens,
+    Temperature:  &temp,
+    Config:       map[string]any{...},
+})
+```
+
+### Legacy Options (agentpg.New)
+
 - `WithMaxTokens(n)` - Set maximum output tokens
 - `WithTemperature(t)` - Control response randomness (0.0-1.0)
 - `WithTopK(k)` - Top-k sampling parameter
@@ -185,6 +308,7 @@ go run examples/advanced/08_error_recovery/main.go
 - `WithStopSequences(...)` - Custom stop sequences
 
 ### Compaction Options
+
 - `WithAutoCompaction(true)` - Enable automatic context management
 - `WithCompactionTrigger(0.85)` - Trigger threshold (% of context)
 - `WithCompactionTarget(0.5)` - Target utilization after compaction
@@ -193,6 +317,7 @@ go run examples/advanced/08_error_recovery/main.go
 - `WithSummarizerModel("claude-3-haiku")` - Model for summarization
 
 ### Extended Context
+
 - `WithExtendedContext(true)` - Enable 1M token context window
 
 ---
@@ -200,10 +325,21 @@ go run examples/advanced/08_error_recovery/main.go
 ## Database Schema
 
 AgentPG automatically manages the database schema. Tables created:
-- `sessions` - Stores conversation sessions with tenant isolation
-- `messages` - Stores all messages with JSONB content and usage tracking
-- `compaction_events` - Audit log of compaction operations
-- `message_archive` - Archived messages from compaction
+
+### Core Tables
+- `agentpg_sessions` - Stores conversation sessions with tenant isolation
+- `agentpg_messages` - Stores all messages with JSONB content and usage tracking
+- `agentpg_compaction_events` - Audit log of compaction operations
+- `agentpg_message_archive` - Archived messages from compaction
+
+### Distributed Tables
+- `agentpg_instances` - Instance registration and heartbeats
+- `agentpg_leader` - Leader election state
+- `agentpg_runs` - Run tracking with state machine
+- `agentpg_agents` - Agent definitions
+- `agentpg_tools` - Tool definitions
+- `agentpg_instance_agents` - Instance-to-agent links
+- `agentpg_instance_tools` - Instance-to-tool links
 
 ---
 
@@ -228,6 +364,8 @@ All hooks are available for custom observability:
 
 **Permission errors**: Ensure the database user has CREATE TABLE permissions
 
+**Instance not starting**: Check that the database has been migrated to the latest schema
+
 ---
 
 ## Next Steps
@@ -236,4 +374,5 @@ All hooks are available for custom observability:
 - Check out the [compaction](../compaction) package for context management
 - Explore the [tool](../tool) package for advanced tool patterns
 - Review the [hooks](../hooks) package for built-in observability hooks
+- See [docs/distributed.md](../docs/distributed.md) for multi-instance deployment
 - See [docs/](../docs/) for detailed documentation

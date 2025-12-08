@@ -40,6 +40,33 @@ type Driver[TTx any] interface {
 	// GetStore returns a Store implementation using this driver.
 	// The store handles all persistence operations for sessions, messages, etc.
 	GetStore() storage.Store
+
+	// =========================================================================
+	// Listener support
+	// =========================================================================
+
+	// SupportsListener returns true if this driver supports the Listener interface.
+	// pgx/v5 supports dedicated listener connections; database/sql does not.
+	// When this returns false, use polling as a fallback for event notifications.
+	SupportsListener() bool
+
+	// SupportsNotify returns true if this driver can send NOTIFY commands.
+	// Both pgx/v5 and database/sql support this since NOTIFY is just SQL.
+	// This is used to broadcast events even when Listener is not supported.
+	SupportsNotify() bool
+
+	// GetListener returns a Listener for receiving PostgreSQL notifications.
+	// Returns nil if SupportsListener() returns false.
+	// The returned Listener must be closed when no longer needed.
+	//
+	// For pgx/v5, this creates a dedicated connection for LISTEN.
+	// For database/sql, this returns nil (use polling fallback instead).
+	GetListener(ctx context.Context) (Listener, error)
+
+	// GetNotifier returns a Notifier for sending PostgreSQL notifications.
+	// Returns nil if SupportsNotify() returns false.
+	// The Notifier uses the driver's connection pool.
+	GetNotifier() Notifier
 }
 
 // Beginner is an interface for types that can begin transactions.

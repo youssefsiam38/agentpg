@@ -1,54 +1,62 @@
-# Basic Agent Example
+# Basic Examples
 
-This example demonstrates the simplest use case of the AgentPG package.
+This directory contains basic examples demonstrating core AgentPG features.
+
+## Examples
+
+### 01_simple_chat
+
+The simplest AgentPG example - a single agent with no tools.
+
+```bash
+go run ./01_simple_chat/
+```
+
+**Shows:**
+- Agent registration with `agentpg.MustRegister()`
+- Client creation with `agentpg.NewClient()`
+- Session creation and running prompts
+
+### 02_shared_tools
+
+Demonstrates sharing tools across multiple agents.
+
+```bash
+go run ./02_shared_tools/
+```
+
+**Shows:**
+- Global tool registration with `agentpg.MustRegisterTool()`
+- Referencing tools by name in `AgentDefinition.Tools`
+- Different agents with different tool subsets:
+  - `general-assistant`: all tools (get_time, calculator, get_weather)
+  - `math-tutor`: calculator + get_time
+  - `weather-bot`: get_weather + get_time
 
 ## Setup
 
-1. Apply database migrations:
-
-```bash
-# Using psql
-psql -U myuser -d mydb -f ../../storage/migrations/001_agentpg_migration.up.sql
-```
-
-2. Set environment variables:
+1. Set environment variables:
 
 ```bash
 export ANTHROPIC_API_KEY="your-api-key"
 export DATABASE_URL="postgresql://user:password@localhost:5432/dbname?sslmode=disable"
 ```
 
-3. Run the example:
+2. Apply migrations (if not already done):
 
 ```bash
-go run main.go
+psql $DATABASE_URL -f ../../storage/migrations/001_agentpg_migration.up.sql
 ```
 
-## What This Example Shows
+3. Run an example:
 
-- Creating an agent with required configuration
-- Using functional options (WithMaxTokens, WithTemperature)
-- Creating a new session
-- Running the agent with a simple prompt
-- Accessing the response content and usage stats
-
-## Output
-
-You should see:
-- The session ID
-- The agent's response
-- Token usage statistics
-- Stop reason
-
-## Key Features Demonstrated
-
-1. **Streaming-first**: Run() uses streaming internally for long context support
-2. **Automatic session management**: The agent manages conversation history
-3. **PostgreSQL persistence**: All messages are saved to the database
-4. **Simple API**: Just create, configure, and run
+```bash
+go run ./01_simple_chat/
+go run ./02_shared_tools/
+```
 
 ## Next Steps
 
-- See `examples/custom_tools/` for tool usage
+- See `examples/custom_tools/` for more tool patterns
 - See `examples/nested_agents/` for agent-as-tool patterns
-- See `examples/streaming/` for explicit streaming events
+- See `examples/streaming/` for streaming responses

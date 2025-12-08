@@ -1,3 +1,10 @@
+// Package main demonstrates the Client API with manual compaction.
+//
+// This example shows:
+// - Disabling auto compaction
+// - Using Compact() for manual compaction
+// - Before/after comparison of messages
+// - Verbose search tool to fill context
 package main
 
 import (
@@ -6,10 +13,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/compaction"
@@ -59,8 +66,30 @@ func (v *VerboseSearchTool) Execute(ctx context.Context, input json.RawMessage) 
 	return sb.String(), nil
 }
 
+// Register agent at package initialization.
+// Note: VerboseSearchTool will be registered at runtime.
+func init() {
+	maxTokens := 1024
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:         "manual-compaction-demo",
+		Description:  "Research assistant with manual compaction",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a research assistant. Use the search tool to find information. Keep responses brief.",
+		MaxTokens:    &maxTokens,
+		Config: map[string]any{
+			// DISABLE auto-compaction for manual control
+			"auto_compaction": false,
+			// LOW thresholds to trigger SUMMARIZATION (not just pruning)
+			"compaction_target":     500, // Target only 500 tokens - forces summarization
+			"compaction_preserve_n": 2,   // Keep only last 2 messages
+		},
+	})
+}
+
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -80,42 +109,37 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-
-	// Create driver
+	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
+
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create client: %v", err)
+	}
+
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
+	// Get the registered agent handle
+	agent := client.Agent("manual-compaction-demo")
+	if agent == nil {
+		log.Fatal("Agent 'manual-compaction-demo' not found in registry")
+	}
 
 	// Track compaction events
 	var lastCompaction *compaction.CompactionResult
-
-	// ==========================================================
-	// Create agent with LOW thresholds to demonstrate compaction
-	// ==========================================================
-
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a research assistant. Use the search tool to find information. Keep responses brief.",
-		},
-		// DISABLE auto-compaction for manual control
-		agentpg.WithAutoCompaction(false),
-
-		// LOW thresholds to trigger SUMMARIZATION (not just pruning)
-		agentpg.WithCompactionTarget(500),           // Target only 500 tokens - forces summarization
-		agentpg.WithCompactionPreserveN(2),          // Keep only last 2 messages
-		agentpg.WithCompactionProtectedTokens(1000), // Protect only last 1K tokens
-
-		// Use Haiku for cost-effective summarization
-		agentpg.WithSummarizerModel("claude-3-5-haiku-20241022"),
-
-		agentpg.WithMaxTokens(1024),
-	)
-	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
-	}
 
 	// Register compaction hooks for monitoring
 	agent.OnBeforeCompaction(func(ctx context.Context, sessionID string) error {
@@ -130,7 +154,7 @@ func main() {
 		return nil
 	})
 
-	// Register verbose search tool
+	// Register verbose search tool at runtime
 	if err := agent.RegisterTool(&VerboseSearchTool{}); err != nil {
 		log.Fatalf("Failed to register tool: %v", err)
 	}
@@ -151,7 +175,6 @@ func main() {
 	fmt.Println("  - Auto-compaction: DISABLED")
 	fmt.Println("  - Target tokens: 500 (forces summarization after pruning)")
 	fmt.Println("  - Preserve last N: 2 messages")
-	fmt.Println("  - Protected tokens: 1,000")
 	fmt.Println()
 
 	// ==========================================================
@@ -168,7 +191,7 @@ func main() {
 	for i, query := range queries {
 		fmt.Printf("Query %d: %s\n", i+1, query)
 
-		response, err := agent.Run(ctx, query)
+		response, err := agent.Run(ctx, sessionID, query)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}
@@ -193,12 +216,12 @@ func main() {
 	fmt.Println("BEFORE COMPACTION")
 	fmt.Println(strings.Repeat("=", 60))
 
-	messagesBefore, err := agent.GetMessages(ctx)
+	messagesBefore, err := agent.GetMessages(ctx, sessionID)
 	if err != nil {
 		log.Fatalf("Failed to get messages: %v", err)
 	}
 
-	statsBefore, err := agent.GetCompactionStats(ctx)
+	statsBefore, err := agent.GetCompactionStats(ctx, sessionID)
 	if err != nil {
 		log.Fatalf("Failed to get stats: %v", err)
 	}
@@ -218,7 +241,7 @@ func main() {
 	// Trigger manual compaction
 	// ==========================================================
 
-	result, err := agent.Compact(ctx)
+	result, err := agent.Compact(ctx, sessionID)
 	if err != nil {
 		log.Fatalf("Failed to compact: %v", err)
 	}
@@ -231,12 +254,12 @@ func main() {
 	fmt.Println("AFTER COMPACTION")
 	fmt.Println(strings.Repeat("=", 60))
 
-	messagesAfter, err := agent.GetMessages(ctx)
+	messagesAfter, err := agent.GetMessages(ctx, sessionID)
 	if err != nil {
 		log.Fatalf("Failed to get messages: %v", err)
 	}
 
-	statsAfter, err := agent.GetCompactionStats(ctx)
+	statsAfter, err := agent.GetCompactionStats(ctx, sessionID)
 	if err != nil {
 		log.Fatalf("Failed to get stats: %v", err)
 	}
@@ -308,7 +331,7 @@ func main() {
 	fmt.Println("VERIFICATION: Conversation continues with context")
 	fmt.Println(strings.Repeat("=", 60))
 
-	response, err := agent.Run(ctx, "Based on our previous discussion, what were the main topics we covered?")
+	response, err := agent.Run(ctx, sessionID, "Based on our previous discussion, what were the main topics we covered?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

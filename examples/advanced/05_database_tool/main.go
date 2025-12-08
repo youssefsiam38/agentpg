@@ -1,3 +1,9 @@
+// Package main demonstrates the Client API with database query tool.
+//
+// This example shows:
+// - Safe database query tool with SQL injection protection
+// - Table whitelist and query validation
+// - Read-only query enforcement
 package main
 
 import (
@@ -6,10 +12,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
@@ -140,8 +146,24 @@ func (d *DatabaseQueryTool) Execute(ctx context.Context, input json.RawMessage) 
 	return fmt.Sprintf("Query returned %d row(s):\n%s", len(results), string(output)), nil
 }
 
+// Register agent at package initialization.
+func init() {
+	maxTokens := 1024
+	agentpg.MustRegister(&agentpg.AgentDefinition{
+		Name:        "database-tool-demo",
+		Description: "Data analyst assistant with database access",
+		Model:       "claude-sonnet-4-5-20250929",
+		SystemPrompt: `You are a helpful data analyst assistant. You have access to a product database.
+Use the query_database tool to answer questions about products.
+The demo_products table has columns: id, name, category, price, stock, created_at.`,
+		MaxTokens: &maxTokens,
+	})
+}
+
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -160,9 +182,6 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer pool.Close()
-
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 
 	// ==========================================================
 	// Setup: Create sample table for demo
@@ -215,27 +234,40 @@ func main() {
 	// Create agent with database tool
 	// ==========================================================
 
-	// Create driver
+	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
 
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client: &client,
-			Model:  "claude-sonnet-4-5-20250929",
-			SystemPrompt: `You are a helpful data analyst assistant. You have access to a product database.
-Use the query_database tool to answer questions about products.
-The demo_products table has columns: id, name, category, price, stock, created_at.`,
-		},
-		agentpg.WithMaxTokens(1024),
-	)
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
 	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
+		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Register database tool with allowed tables
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
+	// Get the agent
+	agent := client.Agent("database-tool-demo")
+	if agent == nil {
+		log.Fatal("Agent 'database-tool-demo' not found")
+	}
+
+	// Register database tool with allowed tables (runtime registration for stateful tool)
 	dbTool := NewDatabaseQueryTool(pool, []string{"demo_products"})
-	agent.RegisterTool(dbTool)
+	if err := agent.RegisterTool(dbTool); err != nil {
+		log.Fatalf("Failed to register tool: %v", err)
+	}
 
 	// Create session
 	sessionID, err := agent.NewSession(ctx, "1", "db-tool-demo", nil, nil)
@@ -258,7 +290,7 @@ The demo_products table has columns: id, name, category, price, stock, created_a
 		fmt.Printf("=== Query %d ===\n", i+1)
 		fmt.Printf("User: %s\n\n", query)
 
-		response, err := agent.Run(ctx, query)
+		response, err := agent.Run(ctx, sessionID, query)
 		if err != nil {
 			log.Printf("Error: %v\n\n", err)
 			continue
@@ -299,7 +331,7 @@ The demo_products table has columns: id, name, category, price, stock, created_a
 	}
 
 	// ==========================================================
-	// Cleanup
+	// Summary
 	// ==========================================================
 
 	fmt.Println()
