@@ -261,7 +261,7 @@ func main() {
 
 	// Example 1: Get time in different timezone
 	fmt.Println("=== Example 1: Get Time in Tokyo ===")
-	response1, err := agent.Run(ctx, sessionID, "What time is it in Tokyo right now?")
+	response1, err := agent.RunSync(ctx, sessionID, "What time is it in Tokyo right now?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -274,7 +274,7 @@ func main() {
 
 	// Example 2: Get time with specific format
 	fmt.Println("\n=== Example 2: Time in 12-hour Format ===")
-	response2, err := agent.Run(ctx, sessionID, "What's the current time in New York (EST) in 12-hour format?")
+	response2, err := agent.RunSync(ctx, sessionID, "What's the current time in New York (EST) in 12-hour format?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -287,7 +287,7 @@ func main() {
 
 	// Example 3: Calculate date difference
 	fmt.Println("\n=== Example 3: Date Difference ===")
-	response3, err := agent.Run(ctx, sessionID, "How many weeks are between 2024-01-01 and 2024-12-31?")
+	response3, err := agent.RunSync(ctx, sessionID, "How many weeks are between 2024-01-01 and 2024-12-31?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

@@ -369,7 +369,7 @@ func main() {
 
 	// Example 1: Create task with all fields
 	fmt.Println("=== Example 1: Full Task Creation ===")
-	response1, err := agent.Run(ctx, sessionID, `Create a high priority task called "Implement user authentication" with score 85, tags ["security", "backend", "urgent"], and assign it to John Smith (john@example.com). Add a description about implementing OAuth2.`)
+	response1, err := agent.RunSync(ctx, sessionID, `Create a high priority task called "Implement user authentication" with score 85, tags ["security", "backend", "urgent"], and assign it to John Smith (john@example.com). Add a description about implementing OAuth2.`)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -382,7 +382,7 @@ func main() {
 
 	// Example 2: Create minimal task (only required fields)
 	fmt.Println("\n=== Example 2: Minimal Task ===")
-	response2, err := agent.Run(ctx, sessionID, `Create a low priority task called "Update documentation"`)
+	response2, err := agent.RunSync(ctx, sessionID, `Create a low priority task called "Update documentation"`)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -395,7 +395,7 @@ func main() {
 
 	// Example 3: Create critical task with array of tags
 	fmt.Println("\n=== Example 3: Critical Task with Tags ===")
-	response3, err := agent.Run(ctx, sessionID, `Create a critical priority task "Fix production database issue" with score 100 and tags ["production", "database", "emergency"]`)
+	response3, err := agent.RunSync(ctx, sessionID, `Create a critical priority task "Fix production database issue" with score 100 and tags ["production", "database", "emergency"]`)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -408,7 +408,7 @@ func main() {
 
 	// Example 4: List all tasks
 	fmt.Println("\n=== Example 4: List All Tasks ===")
-	response4, err := agent.Run(ctx, sessionID, "Show me all the tasks we've created")
+	response4, err := agent.RunSync(ctx, sessionID, "Show me all the tasks we've created")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -421,7 +421,7 @@ func main() {
 
 	// Example 5: Filter by priority
 	fmt.Println("\n=== Example 5: Filter by Priority ===")
-	response5, err := agent.Run(ctx, sessionID, "List only the critical priority tasks")
+	response5, err := agent.RunSync(ctx, sessionID, "List only the critical priority tasks")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

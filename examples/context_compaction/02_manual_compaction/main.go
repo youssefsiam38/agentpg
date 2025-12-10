@@ -191,7 +191,7 @@ func main() {
 	for i, query := range queries {
 		fmt.Printf("Query %d: %s\n", i+1, query)
 
-		response, err := agent.Run(ctx, sessionID, query)
+		response, err := agent.RunSync(ctx, sessionID, query)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}
@@ -331,7 +331,7 @@ func main() {
 	fmt.Println("VERIFICATION: Conversation continues with context")
 	fmt.Println(strings.Repeat("=", 60))
 
-	response, err := agent.Run(ctx, sessionID, "Based on our previous discussion, what were the main topics we covered?")
+	response, err := agent.RunSync(ctx, sessionID, "Based on our previous discussion, what were the main topics we covered?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

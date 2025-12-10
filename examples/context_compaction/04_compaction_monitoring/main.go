@@ -261,7 +261,7 @@ func main() {
 		fmt.Printf("\n=== Query %d/%d ===\n", i+1, len(prompts))
 		fmt.Printf("Prompt: %s\n\n", truncate(prompt, 60))
 
-		response, err := agent.Run(ctx, sessionID, prompt)
+		response, err := agent.RunSync(ctx, sessionID, prompt)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}

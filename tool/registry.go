@@ -208,3 +208,26 @@ func (r *Registry) ToAnthropicToolUnions() []anthropic.ToolUnionParam {
 
 	return unions
 }
+
+// ToAnthropicToolUnionsFiltered converts only the specified tools to union parameters.
+// If names is empty, returns an empty slice.
+func (r *Registry) ToAnthropicToolUnionsFiltered(names []string) []anthropic.ToolUnionParam {
+	if len(names) == 0 {
+		return nil
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	unions := make([]anthropic.ToolUnionParam, 0, len(names))
+	for _, name := range names {
+		if tool, exists := r.tools[name]; exists {
+			param := r.convertToolToParam(tool)
+			unions = append(unions, anthropic.ToolUnionParam{
+				OfTool: &param,
+			})
+		}
+	}
+
+	return unions
+}

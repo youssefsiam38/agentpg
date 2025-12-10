@@ -207,7 +207,7 @@ Please confirm you've received the document and provide a brief summary of its s
 
 	fmt.Println("\nSubmitting document for analysis...")
 
-	response1, err := agent.Run(ctx, sessionID, prompt)
+	response1, err := agent.RunSync(ctx, sessionID, prompt)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -244,7 +244,7 @@ Please confirm you've received the document and provide a brief summary of its s
 	for i, question := range questions {
 		fmt.Printf("Question %d: %s\n", i+1, question)
 
-		response, err := agent.Run(ctx, sessionID, question)
+		response, err := agent.RunSync(ctx, sessionID, question)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}

@@ -402,7 +402,7 @@ func main() {
 	// Example 1: Full project status
 	// ==========================================================
 	fmt.Println("=== Example 1: Full Project Status ===")
-	response1, err := projectManager.Run(ctx, sessionID, "I need a complete status update on the user authentication feature. Check with engineering on code quality and tests, and with design on the login page accessibility.")
+	response1, err := projectManager.RunSync(ctx, sessionID, "I need a complete status update on the user authentication feature. Check with engineering on code quality and tests, and with design on the login page accessibility.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -417,7 +417,7 @@ func main() {
 	// Example 2: Engineering-focused request
 	// ==========================================================
 	fmt.Println("\n=== Example 2: Engineering Focus ===")
-	response2, err := projectManager.Run(ctx, sessionID, "We need to deploy a database migration and ensure all backend tests pass. Please coordinate with the engineering team.")
+	response2, err := projectManager.RunSync(ctx, sessionID, "We need to deploy a database migration and ensure all backend tests pass. Please coordinate with the engineering team.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -432,7 +432,7 @@ func main() {
 	// Example 3: Design-focused request
 	// ==========================================================
 	fmt.Println("\n=== Example 3: Design Focus ===")
-	response3, err := projectManager.Run(ctx, sessionID, "Please have the design team review the new dashboard component for accessibility compliance.")
+	response3, err := projectManager.RunSync(ctx, sessionID, "Please have the design team review the new dashboard component for accessibility compliance.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

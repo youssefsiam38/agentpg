@@ -206,7 +206,7 @@ func main() {
 
 	// Example 1: Simple calculation using tool
 	fmt.Println("\n=== Example 1: Tool Usage ===")
-	response1, err := agent.Run(ctx, sessionID, "What is 42 multiplied by 1337?")
+	response1, err := agent.RunSync(ctx, sessionID, "What is 42 multiplied by 1337?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -220,7 +220,7 @@ func main() {
 
 	// Example 2: Multiple tool calls
 	fmt.Println("\n=== Example 2: Multiple Calculations ===")
-	response2, err := agent.Run(ctx, sessionID, "Calculate (100 + 50) and then multiply that result by 2. Show your work.")
+	response2, err := agent.RunSync(ctx, sessionID, "Calculate (100 + 50) and then multiply that result by 2. Show your work.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

@@ -21,8 +21,8 @@ import (
 
 // Register agents at package initialization.
 func init() {
-	maxTokensResearch := 2048
-	maxTokensMain := 1024
+	maxTokensResearch := 10000
+	maxTokensMain := 10000
 
 	// Register the research specialist agent
 	agentpg.MustRegister(&agentpg.AgentDefinition{
@@ -135,7 +135,7 @@ func main() {
 	// Example 1: Simple question (no delegation needed)
 	// ==========================================================
 	fmt.Println("=== Example 1: Simple Question (No Delegation) ===")
-	response1, err := mainAgent.Run(ctx, sessionID, "What is 2 + 2?")
+	response1, err := mainAgent.RunSync(ctx, sessionID, "What is 2 + 2?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -150,7 +150,7 @@ func main() {
 	// Example 2: Research question (triggers delegation)
 	// ==========================================================
 	fmt.Println("\n=== Example 2: Research Question (With Delegation) ===")
-	response2, err := mainAgent.Run(ctx, sessionID, "Can you research and explain how neural networks learn? I'd like a detailed explanation.")
+	response2, err := mainAgent.RunSync(ctx, sessionID, "Can you research and explain how neural networks learn? I'd like a detailed explanation.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -165,7 +165,7 @@ func main() {
 	// Example 3: Another delegation with context
 	// ==========================================================
 	fmt.Println("\n=== Example 3: Research with Specific Context ===")
-	response3, err := mainAgent.Run(ctx, sessionID, "Research the differences between SQL and NoSQL databases. Focus on when to use each one.")
+	response3, err := mainAgent.RunSync(ctx, sessionID, "Research the differences between SQL and NoSQL databases. Focus on when to use each one.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

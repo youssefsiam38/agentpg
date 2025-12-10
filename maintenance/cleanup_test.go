@@ -127,8 +127,8 @@ func TestCleanup_RunOnce_StaleInstances(t *testing.T) {
 func TestCleanup_RunOnce_StuckRuns(t *testing.T) {
 	store := &cleanupMockStore{
 		stuckRuns: []*storage.Run{
-			{ID: "run-1", State: runstate.RunStateRunning},
-			{ID: "run-2", State: runstate.RunStateRunning},
+			{ID: "run-1", State: runstate.RunStatePendingAPI},
+			{ID: "run-2", State: runstate.RunStatePendingAPI},
 		},
 	}
 
@@ -163,7 +163,7 @@ func TestCleanup_Callbacks(t *testing.T) {
 	store := &cleanupMockStore{
 		staleInstances: []string{"instance-1"},
 		stuckRuns: []*storage.Run{
-			{ID: "run-1", State: runstate.RunStateRunning},
+			{ID: "run-1", State: runstate.RunStatePendingAPI},
 		},
 	}
 

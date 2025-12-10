@@ -99,7 +99,6 @@ func TestIntegration_Store_MessageOperations(t *testing.T) {
 		ID:        msgID,
 		SessionID: sessionID,
 		Role:      "user",
-		Content:   []any{map[string]any{"type": "text", "text": "hello"}},
 		Usage: &storage.MessageUsage{
 			InputTokens:  5,
 			OutputTokens: 5,
@@ -175,7 +174,6 @@ func TestIntegration_Store_Transaction(t *testing.T) {
 		ID:        commitMsgID,
 		SessionID: sessionID,
 		Role:      "user",
-		Content:   []any{},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -214,7 +212,6 @@ func TestIntegration_Store_Transaction(t *testing.T) {
 		ID:        rollbackMsgID,
 		SessionID: sessionID,
 		Role:      "user",
-		Content:   []any{},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -338,7 +335,6 @@ func TestIntegration_Driver_NestedTransactions(t *testing.T) {
 		ID:        outerMsgID,
 		SessionID: sessionID,
 		Role:      "user",
-		Content:   []any{map[string]any{"type": "text", "text": "outer"}},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -360,7 +356,6 @@ func TestIntegration_Driver_NestedTransactions(t *testing.T) {
 		ID:        innerMsgID,
 		SessionID: sessionID,
 		Role:      "assistant",
-		Content:   []any{map[string]any{"type": "text", "text": "inner"}},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -451,7 +446,7 @@ func TestIntegration_Store_RunOperations(t *testing.T) {
 	if run.SessionID != sessionID {
 		t.Errorf("Expected session ID '%s', got '%s'", sessionID, run.SessionID)
 	}
-	if run.State != runstate.RunStateRunning {
+	if run.State != runstate.RunStatePending {
 		t.Errorf("Expected state 'running', got '%s'", run.State)
 	}
 	if run.Prompt != "Hello, world!" {
@@ -537,7 +532,6 @@ func TestIntegration_Store_RunWithMessages(t *testing.T) {
 		SessionID: sessionID,
 		RunID:     &runID,
 		Role:      "user",
-		Content:   []any{map[string]any{"type": "text", "text": "hello"}},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}

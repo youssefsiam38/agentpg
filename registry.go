@@ -133,6 +133,28 @@ func ListRegisteredAgents() []string {
 	return names
 }
 
+// AddToolToAgent adds a tool name to an agent's tool list.
+// This is used when dynamically registering tools via AsToolFor or RegisterTool.
+func AddToolToAgent(agentName, toolName string) error {
+	globalAgentsMu.Lock()
+	defer globalAgentsMu.Unlock()
+
+	def, ok := globalAgents[agentName]
+	if !ok {
+		return fmt.Errorf("agent not found: %s", agentName)
+	}
+
+	// Check if tool is already in the list
+	for _, name := range def.Tools {
+		if name == toolName {
+			return nil // Already registered
+		}
+	}
+
+	def.Tools = append(def.Tools, toolName)
+	return nil
+}
+
 // RegisterTool registers a tool globally.
 // This should be called at package init time before creating a Client.
 //
