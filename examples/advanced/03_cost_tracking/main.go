@@ -297,7 +297,7 @@ func main() {
 		for _, prompt := range sess.prompts {
 			fmt.Printf("\nUser: %s\n", prompt)
 
-			response, err := agent.Run(ctx, sessionID, prompt)
+			response, err := agent.RunSync(ctx, sessionID, prompt)
 			if err != nil {
 				log.Printf("Error: %v", err)
 				continue

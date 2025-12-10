@@ -89,7 +89,7 @@ func main() {
 	fmt.Printf("Created session: %s\n\n", sessionID)
 
 	// Run the agent with a prompt
-	response, err := agent.Run(ctx, sessionID, "Explain what the AgentPG package does in 3 sentences.")
+	response, err := agent.RunSync(ctx, sessionID, "Explain what the AgentPG package does in 3 sentences.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

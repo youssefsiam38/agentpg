@@ -371,7 +371,7 @@ func fibonacci(n int) int {
     return fibonacci(n-1) + fibonacci(n-2)
 }
 `
-	response1, err := orchestrator.Run(ctx, sessionID, codeQuestion)
+	response1, err := orchestrator.RunSync(ctx, sessionID, codeQuestion)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -386,7 +386,7 @@ func fibonacci(n int) int {
 	// Example 2: Data question (Data Agent)
 	// ==========================================================
 	fmt.Println("\n=== Example 2: Data Analysis ===")
-	response2, err := orchestrator.Run(ctx, sessionID, "What are our total sales and how many users do we have?")
+	response2, err := orchestrator.RunSync(ctx, sessionID, "What are our total sales and how many users do we have?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -401,7 +401,7 @@ func fibonacci(n int) int {
 	// Example 3: Research question (Research Agent)
 	// ==========================================================
 	fmt.Println("\n=== Example 3: Research Query ===")
-	response3, err := orchestrator.Run(ctx, sessionID, "Research best practices for API design")
+	response3, err := orchestrator.RunSync(ctx, sessionID, "Research best practices for API design")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -416,7 +416,7 @@ func fibonacci(n int) int {
 	// Example 4: Multi-specialist question
 	// ==========================================================
 	fmt.Println("\n=== Example 4: Multi-Specialist Query ===")
-	response4, err := orchestrator.Run(ctx, sessionID, "I'm building a new feature. Research best practices for user authentication, and also check our current user metrics to see how many users we have.")
+	response4, err := orchestrator.RunSync(ctx, sessionID, "I'm building a new feature. Research best practices for user authentication, and also check our current user metrics to see how many users we have.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

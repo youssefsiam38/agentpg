@@ -197,7 +197,7 @@ func main() {
 		}
 
 		// Run agent
-		response, err := agent.Run(r.Context(), sessionID, req.Message)
+		response, err := agent.RunSync(r.Context(), sessionID, req.Message)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -277,7 +277,7 @@ func main() {
 				continue
 			}
 
-			response, err := agent.Run(ctx, sessionID, msg)
+			response, err := agent.RunSync(ctx, sessionID, msg)
 
 			if err != nil {
 				log.Printf("Error: %v", err)

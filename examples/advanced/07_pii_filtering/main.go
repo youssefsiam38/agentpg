@@ -312,7 +312,7 @@ func main() {
 		fmt.Printf("Test %d: %s\n", i+1, test.description)
 		fmt.Printf("  Message: %s\n", truncate(test.message, 50))
 
-		response, err := agent.Run(ctx, sessionID, test.message)
+		response, err := agent.RunSync(ctx, sessionID, test.message)
 		if err != nil {
 			if _, ok := err.(*ErrPIIDetected); ok {
 				fmt.Printf("  Result: BLOCKED (as expected: %v)\n", test.shouldBlock)

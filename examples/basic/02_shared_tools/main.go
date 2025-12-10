@@ -213,7 +213,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
-	resp1, err := general.Run(ctx, sid1, "What time is it, what's 15*7, and what's the weather in Paris?")
+	resp1, err := general.RunSync(ctx, sid1, "What time is it, what's 15*7, and what's the weather in Paris?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -229,7 +229,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
-	resp2, err := math.Run(ctx, sid2, "What's 144 divided by 12?")
+	resp2, err := math.RunSync(ctx, sid2, "What's 144 divided by 12?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -245,7 +245,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
-	resp3, err := weather.Run(ctx, sid3, "What's the weather in Tokyo?")
+	resp3, err := weather.RunSync(ctx, sid3, "What's the weather in Tokyo?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

@@ -3,13 +3,14 @@ package convert
 
 import (
 	"encoding/json"
-	"log"
 
+	"github.com/google/uuid"
 	"github.com/youssefsiam38/agentpg/storage"
 	"github.com/youssefsiam38/agentpg/types"
 )
 
 // ToStorageMessage converts a types.Message to storage.Message format.
+// Note: Content blocks are stored separately and must be saved via SaveContentBlocks.
 func ToStorageMessage(msg *types.Message) *storage.Message {
 	var usage *storage.MessageUsage
 	if msg.Usage != nil {
@@ -20,21 +21,29 @@ func ToStorageMessage(msg *types.Message) *storage.Message {
 			CacheReadTokens:     msg.Usage.CacheReadTokens,
 		}
 	}
+
+	// Convert content blocks to storage format
+	var contentBlocks []*storage.ContentBlock
+	if len(msg.Content) > 0 {
+		contentBlocks = ToStorageContentBlocks(msg.ID, msg.Content)
+	}
+
 	return &storage.Message{
-		ID:          msg.ID,
-		SessionID:   msg.SessionID,
-		Role:        string(msg.Role),
-		Content:     msg.Content,
-		Usage:       usage,
-		Metadata:    msg.Metadata,
-		IsPreserved: msg.IsPreserved,
-		IsSummary:   msg.IsSummary,
-		CreatedAt:   msg.CreatedAt,
-		UpdatedAt:   msg.UpdatedAt,
+		ID:            msg.ID,
+		SessionID:     msg.SessionID,
+		Role:          string(msg.Role),
+		Usage:         usage,
+		Metadata:      msg.Metadata,
+		IsPreserved:   msg.IsPreserved,
+		IsSummary:     msg.IsSummary,
+		CreatedAt:     msg.CreatedAt,
+		UpdatedAt:     msg.UpdatedAt,
+		ContentBlocks: contentBlocks,
 	}
 }
 
 // FromStorageMessage converts a storage.Message to types.Message format.
+// Note: ContentBlocks should be pre-populated from GetMessageContentBlocks.
 func FromStorageMessage(sm *storage.Message) *types.Message {
 	var usage *types.Usage
 	if sm.Usage != nil {
@@ -57,35 +66,9 @@ func FromStorageMessage(sm *storage.Message) *types.Message {
 		UpdatedAt:   sm.UpdatedAt,
 	}
 
-	// Convert content from storage format
-	switch content := sm.Content.(type) {
-	case []byte:
-		// Raw JSON bytes - unmarshal directly
-		var blocks []types.ContentBlock
-		if err := json.Unmarshal(content, &blocks); err != nil {
-			log.Printf("agentpg: failed to unmarshal content blocks for message %s: %v", sm.ID, err)
-		} else {
-			msg.Content = blocks
-		}
-	case []types.ContentBlock:
-		// Already the right type
-		msg.Content = content
-	case []any:
-		// Generic slice from JSON unmarshal - convert each element
-		blocks := make([]types.ContentBlock, 0, len(content))
-		for _, item := range content {
-			if blockMap, ok := item.(map[string]any); ok {
-				block := mapToContentBlock(blockMap)
-				blocks = append(blocks, block)
-			} else {
-				log.Printf("agentpg: unexpected content block type in message %s: %T", sm.ID, item)
-			}
-		}
-		msg.Content = blocks
-	default:
-		if sm.Content != nil {
-			log.Printf("agentpg: unexpected content type in message %s: %T", sm.ID, sm.Content)
-		}
+	// Convert content blocks from storage format
+	if len(sm.ContentBlocks) > 0 {
+		msg.Content = FromStorageContentBlocks(sm.ContentBlocks)
 	}
 
 	return msg
@@ -109,39 +92,121 @@ func ToStorageMessages(messages []*types.Message) []*storage.Message {
 	return result
 }
 
-// mapToContentBlock converts a map to a ContentBlock.
-// Field names match JSON tags in types.ContentBlock struct.
-func mapToContentBlock(m map[string]any) types.ContentBlock {
-	block := types.ContentBlock{}
+// ToStorageContentBlocks converts types.ContentBlock slice to storage.ContentBlock slice.
+func ToStorageContentBlocks(messageID string, blocks []types.ContentBlock) []*storage.ContentBlock {
+	result := make([]*storage.ContentBlock, len(blocks))
+	for i, block := range blocks {
+		result[i] = ToStorageContentBlock(messageID, i, block)
+	}
+	return result
+}
 
-	if t, ok := m["type"].(string); ok {
-		block.Type = types.ContentType(t)
+// ToStorageContentBlock converts a types.ContentBlock to storage.ContentBlock.
+func ToStorageContentBlock(messageID string, index int, block types.ContentBlock) *storage.ContentBlock {
+	sb := &storage.ContentBlock{
+		ID:         uuid.New().String(),
+		MessageID:  messageID,
+		BlockIndex: index,
+		Type:       storage.ContentBlockType(block.Type),
+		IsError:    block.IsError,
 	}
-	if text, ok := m["text"].(string); ok {
-		block.Text = text
+
+	// Text content
+	if block.Text != "" {
+		sb.Text = &block.Text
 	}
-	// Tool use fields (json tags: id, name, input)
-	if id, ok := m["id"].(string); ok {
-		block.ToolUseID = id
+
+	// Tool use fields
+	if block.ToolUseID != "" {
+		sb.ToolUseID = &block.ToolUseID
 	}
-	if name, ok := m["name"].(string); ok {
-		block.ToolName = name
+	if block.ToolName != "" {
+		sb.ToolName = &block.ToolName
 	}
-	if input, ok := m["input"].(map[string]any); ok {
-		block.ToolInput = input
-		if raw, err := json.Marshal(input); err == nil {
+	if block.ToolInput != nil {
+		sb.ToolInput = block.ToolInput
+	}
+
+	// Tool result fields
+	if block.ToolResultID != "" {
+		sb.ToolResultForID = &block.ToolResultID
+	}
+	if block.ToolContent != "" {
+		sb.ToolContent = &block.ToolContent
+	}
+
+	// Image source
+	if block.ImageSource != nil {
+		sb.Source = map[string]any{
+			"type":       block.ImageSource.Type,
+			"media_type": block.ImageSource.MediaType,
+			"data":       block.ImageSource.Data,
+		}
+	}
+
+	return sb
+}
+
+// FromStorageContentBlocks converts storage.ContentBlock slice to types.ContentBlock slice.
+func FromStorageContentBlocks(blocks []*storage.ContentBlock) []types.ContentBlock {
+	result := make([]types.ContentBlock, len(blocks))
+	for i, block := range blocks {
+		result[i] = FromStorageContentBlock(block)
+	}
+	return result
+}
+
+// FromStorageContentBlock converts a storage.ContentBlock to types.ContentBlock.
+func FromStorageContentBlock(sb *storage.ContentBlock) types.ContentBlock {
+	block := types.ContentBlock{
+		Type:    types.ContentType(sb.Type),
+		IsError: sb.IsError,
+	}
+
+	// Text content
+	if sb.Text != nil {
+		block.Text = *sb.Text
+	}
+
+	// Tool use fields
+	if sb.ToolUseID != nil {
+		block.ToolUseID = *sb.ToolUseID
+	}
+	if sb.ToolName != nil {
+		block.ToolName = *sb.ToolName
+	}
+	if sb.ToolInput != nil {
+		block.ToolInput = sb.ToolInput
+		if raw, err := json.Marshal(sb.ToolInput); err == nil {
 			block.ToolInputRaw = raw
 		}
 	}
-	// Tool result fields (json tags: tool_use_id, content, is_error)
-	if id, ok := m["tool_use_id"].(string); ok {
-		block.ToolResultID = id
+
+	// Tool result fields
+	// For tool_result blocks, ToolUseID contains Claude's tool_use_id (what the API needs)
+	// ToolResultForID contains our internal block UUID (for database references)
+	if sb.ToolUseID != nil && sb.Type == storage.ContentBlockTypeToolResult {
+		block.ToolResultID = *sb.ToolUseID
+	} else if sb.ToolResultForID != nil {
+		block.ToolResultID = *sb.ToolResultForID
 	}
-	if content, ok := m["content"].(string); ok {
-		block.ToolContent = content
+	if sb.ToolContent != nil {
+		block.ToolContent = *sb.ToolContent
 	}
-	if isErr, ok := m["is_error"].(bool); ok {
-		block.IsError = isErr
+
+	// Image source
+	if sb.Source != nil {
+		if srcType, ok := sb.Source["type"].(string); ok {
+			block.ImageSource = &types.ImageSource{
+				Type: srcType,
+			}
+			if mediaType, ok := sb.Source["media_type"].(string); ok {
+				block.ImageSource.MediaType = mediaType
+			}
+			if data, ok := sb.Source["data"].(string); ok {
+				block.ImageSource.Data = data
+			}
+		}
 	}
 
 	return block

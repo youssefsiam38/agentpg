@@ -239,7 +239,7 @@ func main() {
 	for i, prompt := range prompts {
 		fmt.Printf("Request %d: %s\n", i+1, prompt)
 
-		response, err := agent.Run(ctx, sessionID, prompt)
+		response, err := agent.RunSync(ctx, sessionID, prompt)
 		if err != nil {
 			if errors.Is(err, ErrRateLimited) {
 				fmt.Printf("  Result: Rate limited!\n\n")
@@ -277,7 +277,7 @@ func main() {
 	fmt.Println()
 
 	fmt.Println("=== Final Request After Wait ===")
-	response, err := agent.Run(ctx, sessionID, "Say goodbye")
+	response, err := agent.RunSync(ctx, sessionID, "Say goodbye")
 	if err != nil {
 		log.Printf("Error: %v", err)
 	} else {

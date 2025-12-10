@@ -360,7 +360,7 @@ func main() {
 		}
 
 		response, err = WithRetry(ctx, retryConfig, func() (*agentpg.Response, error) {
-			return agent.Run(ctx, sessionID, prompt)
+			return agent.RunSync(ctx, sessionID, prompt)
 		})
 
 		if err != nil {

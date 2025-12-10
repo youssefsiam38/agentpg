@@ -4,11 +4,17 @@
 // multiple tool call iterations. Each run has a state that progresses
 // through the state machine until reaching a terminal state.
 //
-// State Machine:
+// Event-Driven State Machine:
 //
-//	running -> completed  (successful completion)
-//	running -> cancelled  (user/system cancellation)
-//	running -> failed     (error during execution)
+//	pending -> pending_api              (worker claims run)
+//	pending_api -> completed            (API returns end_turn or stop_sequence)
+//	pending_api -> pending_tools        (API returns tool_use)
+//	pending_api -> awaiting_continuation (API returns pause_turn or max_tokens)
+//	pending_api -> failed               (API returns refusal or error)
+//	pending_tools -> pending_api        (all tools complete)
+//	awaiting_continuation -> pending_api (continuation requested)
+//	* -> cancelled                      (user/system cancellation)
+//	* -> failed                         (error during execution)
 //
 // Terminal states (completed, cancelled, failed) cannot transition further.
 package runstate
@@ -22,9 +28,20 @@ import (
 type RunState string
 
 const (
-	// RunStateRunning indicates the run is currently in progress.
-	// This is the initial state when a run is created.
-	RunStateRunning RunState = "running"
+	// RunStatePending indicates the run is created but not yet picked up by a worker.
+	// This is the initial state when a run is created via Run().
+	RunStatePending RunState = "pending"
+
+	// RunStatePendingAPI indicates a worker has claimed the run and is calling the Claude API.
+	RunStatePendingAPI RunState = "pending_api"
+
+	// RunStatePendingTools indicates the API returned tool_use and we're waiting for
+	// all tool executions to complete before sending tool results.
+	RunStatePendingTools RunState = "pending_tools"
+
+	// RunStateAwaitingContinuation indicates the run needs continuation.
+	// This happens when the API returns pause_turn or max_tokens with more content expected.
+	RunStateAwaitingContinuation RunState = "awaiting_continuation"
 
 	// RunStateCompleted indicates the run finished successfully.
 	// The response_text and stop_reason fields will be populated.
@@ -42,7 +59,10 @@ const (
 // AllStates returns all possible run states.
 func AllStates() []RunState {
 	return []RunState{
-		RunStateRunning,
+		RunStatePending,
+		RunStatePendingAPI,
+		RunStatePendingTools,
+		RunStateAwaitingContinuation,
 		RunStateCompleted,
 		RunStateCancelled,
 		RunStateFailed,
@@ -58,10 +78,21 @@ func TerminalStates() []RunState {
 	}
 }
 
+// WorkableStates returns all states that can be picked up by workers.
+func WorkableStates() []RunState {
+	return []RunState{
+		RunStatePending,
+		RunStatePendingAPI,
+		RunStatePendingTools,
+		RunStateAwaitingContinuation,
+	}
+}
+
 // IsValid returns true if the state is a valid RunState value.
 func (s RunState) IsValid() bool {
 	switch s {
-	case RunStateRunning, RunStateCompleted, RunStateCancelled, RunStateFailed:
+	case RunStatePending, RunStatePendingAPI, RunStatePendingTools,
+		RunStateAwaitingContinuation, RunStateCompleted, RunStateCancelled, RunStateFailed:
 		return true
 	default:
 		return false
@@ -79,26 +110,85 @@ func (s RunState) IsTerminal() bool {
 	}
 }
 
+// IsWorkable returns true if the state can be picked up by workers for processing.
+func (s RunState) IsWorkable() bool {
+	switch s {
+	case RunStatePending, RunStatePendingAPI, RunStatePendingTools, RunStateAwaitingContinuation:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsWaitingForWork returns true if the state is waiting for worker pickup.
+// This is a subset of workable states that haven't been claimed yet.
+func (s RunState) IsWaitingForWork() bool {
+	return s == RunStatePending
+}
+
+// NeedsAPICall returns true if this state requires a Claude API call.
+func (s RunState) NeedsAPICall() bool {
+	switch s {
+	case RunStatePendingAPI, RunStateAwaitingContinuation:
+		return true
+	default:
+		return false
+	}
+}
+
+// NeedsToolExecution returns true if this state is waiting for tool executions.
+func (s RunState) NeedsToolExecution() bool {
+	return s == RunStatePendingTools
+}
+
 // CanTransitionTo returns true if a transition from this state to the
 // target state is valid.
 //
 // Valid transitions:
-//   - running -> completed
-//   - running -> cancelled
-//   - running -> failed
+//   - pending -> pending_api (worker claims run)
+//   - pending -> cancelled
+//   - pending -> failed
+//   - pending_api -> completed (end_turn, stop_sequence)
+//   - pending_api -> pending_tools (tool_use)
+//   - pending_api -> awaiting_continuation (pause_turn, max_tokens)
+//   - pending_api -> cancelled
+//   - pending_api -> failed
+//   - pending_tools -> pending_api (all tools complete)
+//   - pending_tools -> cancelled
+//   - pending_tools -> failed
+//   - awaiting_continuation -> pending_api (continuation)
+//   - awaiting_continuation -> cancelled
+//   - awaiting_continuation -> failed
 //
 // Invalid transitions:
 //   - Any terminal state to any other state
-//   - running -> running (no-op, not a valid transition)
+//   - Same state to same state (no-op)
 func (s RunState) CanTransitionTo(target RunState) bool {
 	// Terminal states cannot transition
 	if s.IsTerminal() {
 		return false
 	}
 
-	// From running, can only go to terminal states
-	if s == RunStateRunning && target.IsTerminal() {
+	// Same state is not a valid transition
+	if s == target {
+		return false
+	}
+
+	// Any workable state can transition to terminal states
+	if target.IsTerminal() {
 		return true
+	}
+
+	// Specific transitions
+	switch s {
+	case RunStatePending:
+		return target == RunStatePendingAPI
+	case RunStatePendingAPI:
+		return target == RunStatePendingTools || target == RunStateAwaitingContinuation
+	case RunStatePendingTools:
+		return target == RunStatePendingAPI
+	case RunStateAwaitingContinuation:
+		return target == RunStatePendingAPI
 	}
 
 	return false
@@ -159,9 +249,24 @@ func (t Transition) Validate() error {
 // ValidTransitions returns all valid state transitions.
 func ValidTransitions() []Transition {
 	return []Transition{
-		{From: RunStateRunning, To: RunStateCompleted},
-		{From: RunStateRunning, To: RunStateCancelled},
-		{From: RunStateRunning, To: RunStateFailed},
+		// From pending
+		{From: RunStatePending, To: RunStatePendingAPI},
+		{From: RunStatePending, To: RunStateCancelled},
+		{From: RunStatePending, To: RunStateFailed},
+		// From pending_api
+		{From: RunStatePendingAPI, To: RunStateCompleted},
+		{From: RunStatePendingAPI, To: RunStatePendingTools},
+		{From: RunStatePendingAPI, To: RunStateAwaitingContinuation},
+		{From: RunStatePendingAPI, To: RunStateCancelled},
+		{From: RunStatePendingAPI, To: RunStateFailed},
+		// From pending_tools
+		{From: RunStatePendingTools, To: RunStatePendingAPI},
+		{From: RunStatePendingTools, To: RunStateCancelled},
+		{From: RunStatePendingTools, To: RunStateFailed},
+		// From awaiting_continuation
+		{From: RunStateAwaitingContinuation, To: RunStatePendingAPI},
+		{From: RunStateAwaitingContinuation, To: RunStateCancelled},
+		{From: RunStateAwaitingContinuation, To: RunStateFailed},
 	}
 }
 
@@ -186,6 +291,9 @@ const (
 
 	// ErrorTypeCancelled indicates the run was cancelled by context.
 	ErrorTypeCancelled ErrorType = "cancelled"
+
+	// ErrorTypeRefusal indicates the model refused to respond (content policy).
+	ErrorTypeRefusal ErrorType = "refusal"
 )
 
 // String returns the string representation of the error type.
@@ -208,9 +316,83 @@ const (
 
 	// StopReasonStopSequence indicates a stop sequence was hit.
 	StopReasonStopSequence StopReason = "stop_sequence"
+
+	// StopReasonPauseTurn indicates a long-running turn was paused.
+	// The response can be sent back as-is to continue.
+	StopReasonPauseTurn StopReason = "pause_turn"
+
+	// StopReasonRefusal indicates streaming classifiers intervened
+	// to handle potential policy violations.
+	StopReasonRefusal StopReason = "refusal"
 )
 
 // String returns the string representation of the stop reason.
 func (r StopReason) String() string {
 	return string(r)
+}
+
+// IsValid returns true if the stop reason is a known value.
+func (r StopReason) IsValid() bool {
+	switch r {
+	case StopReasonEndTurn, StopReasonToolUse, StopReasonMaxTokens,
+		StopReasonStopSequence, StopReasonPauseTurn, StopReasonRefusal:
+		return true
+	default:
+		return false
+	}
+}
+
+// RequiresContinuation returns true if this stop reason means the run
+// should continue with another API call.
+func (r StopReason) RequiresContinuation() bool {
+	switch r {
+	case StopReasonPauseTurn, StopReasonMaxTokens:
+		return true
+	default:
+		return false
+	}
+}
+
+// RequiresToolExecution returns true if this stop reason means
+// tool executions need to be processed.
+func (r StopReason) RequiresToolExecution() bool {
+	return r == StopReasonToolUse
+}
+
+// IsTerminal returns true if this stop reason indicates the run is complete.
+func (r StopReason) IsTerminal() bool {
+	switch r {
+	case StopReasonEndTurn, StopReasonStopSequence:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsError returns true if this stop reason indicates an error.
+func (r StopReason) IsError() bool {
+	return r == StopReasonRefusal
+}
+
+// NextRunState returns the appropriate next run state based on this stop reason.
+func (r StopReason) NextRunState() RunState {
+	switch r {
+	case StopReasonEndTurn, StopReasonStopSequence:
+		return RunStateCompleted
+	case StopReasonToolUse:
+		return RunStatePendingTools
+	case StopReasonMaxTokens, StopReasonPauseTurn:
+		return RunStateAwaitingContinuation
+	case StopReasonRefusal:
+		return RunStateFailed
+	default:
+		// Unknown stop reason - treat as completed
+		return RunStateCompleted
+	}
+}
+
+// NextRunStateForStopReason returns the appropriate next run state
+// based on the given stop reason string.
+func NextRunStateForStopReason(reason string) RunState {
+	return StopReason(reason).NextRunState()
 }

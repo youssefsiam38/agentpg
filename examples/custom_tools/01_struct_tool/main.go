@@ -231,7 +231,7 @@ func main() {
 
 	// Example 1: Basic weather query
 	fmt.Println("=== Example 1: Basic Weather Query ===")
-	response1, err := agent.Run(ctx, sessionID, "What's the weather like in Tokyo?")
+	response1, err := agent.RunSync(ctx, sessionID, "What's the weather like in Tokyo?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -244,7 +244,7 @@ func main() {
 
 	// Example 2: Weather with unit preference
 	fmt.Println("\n=== Example 2: Weather with Fahrenheit ===")
-	response2, err := agent.Run(ctx, sessionID, "What's the temperature in New York in Fahrenheit?")
+	response2, err := agent.RunSync(ctx, sessionID, "What's the temperature in New York in Fahrenheit?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -257,7 +257,7 @@ func main() {
 
 	// Example 3: Unknown city (generates random weather)
 	fmt.Println("\n=== Example 3: Unknown City ===")
-	response3, err := agent.Run(ctx, sessionID, "How's the weather in Reykjavik?")
+	response3, err := agent.RunSync(ctx, sessionID, "How's the weather in Reykjavik?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

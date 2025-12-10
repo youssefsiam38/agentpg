@@ -332,7 +332,7 @@ func main() {
 
 	// Run agent with request that might trigger multiple tool calls
 	fmt.Println("Requesting data from multiple sources...")
-	response, err := agent.Run(ctx, sessionID, "Fetch the user profile from both the database and the cache, and also get the latest data from the API. The query for all should be 'user-123'.")
+	response, err := agent.RunSync(ctx, sessionID, "Fetch the user profile from both the database and the cache, and also get the latest data from the API. The query for all should be 'user-123'.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

@@ -136,7 +136,7 @@ func main() {
 		fmt.Printf("=== Question %d/%d ===\n", i+1, len(questions))
 		fmt.Printf("Q: %s\n\n", truncateString(question, 80))
 
-		response, err := agent.Run(ctx, sessionID, question)
+		response, err := agent.RunSync(ctx, sessionID, question)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}

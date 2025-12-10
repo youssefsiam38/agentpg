@@ -26,6 +26,9 @@ type EventType string
 // Event types that can be subscribed to.
 const (
 	EventRunStateChanged      EventType = "run_state_changed"
+	EventRunCreated           EventType = "run_created"
+	EventToolPending          EventType = "tool_pending"
+	EventRunToolsComplete     EventType = "run_tools_complete"
 	EventInstanceRegistered   EventType = "instance_registered"
 	EventInstanceDeregistered EventType = "instance_deregistered"
 	EventLeaderChanged        EventType = "leader_changed"
@@ -69,6 +72,9 @@ func DefaultConfig() *Config {
 // channelToEventType maps PostgreSQL channel names to event types.
 var channelToEventType = map[string]EventType{
 	driver.ChannelRunStateChanged:      EventRunStateChanged,
+	driver.ChannelRunCreated:           EventRunCreated,
+	driver.ChannelToolPending:          EventToolPending,
+	driver.ChannelRunToolsComplete:     EventRunToolsComplete,
 	driver.ChannelInstanceRegistered:   EventInstanceRegistered,
 	driver.ChannelInstanceDeregistered: EventInstanceDeregistered,
 	driver.ChannelLeaderChanged:        EventLeaderChanged,
@@ -77,6 +83,9 @@ var channelToEventType = map[string]EventType{
 // eventTypeToChannel maps event types to PostgreSQL channel names.
 var eventTypeToChannel = map[EventType]string{
 	EventRunStateChanged:      driver.ChannelRunStateChanged,
+	EventRunCreated:           driver.ChannelRunCreated,
+	EventToolPending:          driver.ChannelToolPending,
+	EventRunToolsComplete:     driver.ChannelRunToolsComplete,
 	EventInstanceRegistered:   driver.ChannelInstanceRegistered,
 	EventInstanceDeregistered: driver.ChannelInstanceDeregistered,
 	EventLeaderChanged:        driver.ChannelLeaderChanged,

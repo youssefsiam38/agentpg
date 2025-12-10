@@ -73,6 +73,21 @@ const (
 	// Payload contains the run ID.
 	ChannelRunStateChanged = "agentpg_run_state_changed"
 
+	// ChannelRunCreated is notified when a new run is created in pending state.
+	// Payload contains JSON: {"run_id": "...", "session_id": "...", "agent_id": "..."}
+	// Workers listen on this channel to pick up new runs.
+	ChannelRunCreated = "agentpg_run_created"
+
+	// ChannelToolPending is notified when a tool execution is pending.
+	// Payload contains JSON: {"tool_execution_id": "...", "run_id": "...", "tool_name": "..."}
+	// Tool workers listen on this channel to pick up tool executions.
+	ChannelToolPending = "agentpg_tool_pending"
+
+	// ChannelRunToolsComplete is notified when all tool executions for a run are complete.
+	// Payload contains JSON: {"run_id": "...", "completed_count": N, "failed_count": N}
+	// Workers listen on this to know when to send tool results back to Claude API.
+	ChannelRunToolsComplete = "agentpg_run_tools_complete"
+
 	// ChannelInstanceRegistered is notified when a new instance registers.
 	// Payload contains the instance ID.
 	ChannelInstanceRegistered = "agentpg_instance_registered"

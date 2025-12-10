@@ -21,6 +21,7 @@ import (
 	"github.com/youssefsiam38/agentpg/storage"
 	"github.com/youssefsiam38/agentpg/tool"
 	"github.com/youssefsiam38/agentpg/types"
+	"github.com/youssefsiam38/agentpg/worker"
 )
 
 // Version is the current AgentPG version
@@ -93,11 +94,15 @@ type Client[TTx any] struct {
 	config          *ClientConfig
 	instanceID      string
 
+	// Tool registry for all registered tools
+	toolRegistry *tool.Registry
+
 	// Background services
 	heartbeat *maintenance.Heartbeat
 	cleanup   *maintenance.Cleanup
 	elector   *leadership.Elector
 	notif     *notifier.Notifier
+	worker    *worker.Worker
 
 	// State
 	started  atomic.Bool
@@ -188,12 +193,20 @@ func NewClient[TTx any](drv driver.Driver[TTx], config *ClientConfig) (*Client[T
 		config.Hostname = hostname
 	}
 
+	// Create tool registry
+	toolRegistry := tool.NewRegistry()
+	for _, name := range ListRegisteredTools() {
+		t, _ := GetRegisteredTool(name)
+		_ = toolRegistry.Register(t) // Ignore errors for duplicates
+	}
+
 	c := &Client[TTx]{
 		driver:          drv,
 		store:           drv.GetStore(),
 		anthropicClient: anthropicClient,
 		config:          config,
 		instanceID:      instanceID,
+		toolRegistry:    toolRegistry,
 	}
 
 	return c, nil
@@ -260,6 +273,34 @@ func (c *Client[TTx]) Start(ctx context.Context) error {
 		}
 	}
 
+	// Start worker for async run processing
+	c.worker = worker.New(c.store, c.anthropicClient, c.toolRegistry, c.notif, &worker.Config{
+		InstanceID: c.instanceID,
+		OnError:    c.config.OnError,
+		OnRunComplete: func(runID string, state runstate.RunState) {
+			// Notify via notifier if available
+			if c.notif != nil && c.notif.IsRunning() {
+				payload := `{"run_id":"` + runID + `","state":"` + string(state) + `"}`
+				_ = c.notif.Notify(ctx, notifier.EventRunStateChanged, payload)
+			}
+		},
+	})
+
+	// Set up API call builder with global agent registry
+	agentProvider := &globalAgentProvider{}
+	apiBuilder := worker.NewAPICallBuilder(agentProvider, c.toolRegistry)
+	c.worker.SetAPICallBuilder(apiBuilder)
+
+	if err := c.worker.Start(ctx); err != nil {
+		if c.notif != nil {
+			_ = c.notif.Stop(ctx) // best-effort cleanup
+		}
+		_ = c.elector.Stop(ctx)   // best-effort cleanup
+		_ = c.heartbeat.Stop(ctx) // best-effort cleanup
+		c.started.Store(false)
+		return fmt.Errorf("failed to start worker: %w", err)
+	}
+
 	return nil
 }
 
@@ -276,6 +317,10 @@ func (c *Client[TTx]) Stop(ctx context.Context) error {
 	}
 
 	// Stop services in reverse order (best-effort, continue on errors)
+	if c.worker != nil && c.worker.IsRunning() {
+		_ = c.worker.Stop(ctx)
+	}
+
 	if c.cleanup != nil && c.cleanup.IsRunning() {
 		_ = c.cleanup.Stop(ctx)
 	}
@@ -480,19 +525,57 @@ func (h *AgentHandle[TTx]) Definition() *AgentDefinition {
 	return h.definition
 }
 
-// Run executes the agent with the given prompt within a session.
-// This creates a new run record and executes the agent's conversation loop.
+// Run creates a new run for the agent with the given prompt and returns immediately.
+// The run is processed asynchronously by the worker. Use WaitForRun() to block until completion.
 //
 // The run is tracked in the database with state transitions:
-// - running -> completed (on success)
-// - running -> failed (on error)
-// - running -> cancelled (on context cancellation)
-func (h *AgentHandle[TTx]) Run(ctx context.Context, sessionID, prompt string) (*Response, error) {
+// - pending -> pending_api (worker claims run)
+// - pending_api -> completed (on success)
+// - pending_api -> pending_tools (when tools need execution)
+// - pending_tools -> pending_api (when all tools complete)
+// - * -> failed (on error)
+// - * -> cancelled (on context cancellation)
+//
+// Returns the run ID immediately. The run will be processed by the worker.
+func (h *AgentHandle[TTx]) Run(ctx context.Context, sessionID, prompt string) (string, error) {
 	if !h.client.IsRunning() {
-		return nil, ErrClientNotStarted
+		return "", ErrClientNotStarted
 	}
 
-	// 1. Create run record
+	// Check if there's already a transaction in context
+	existingTx := driver.ExecutorFromContext(ctx)
+	if existingTx != nil {
+		// User provided a transaction - use it, they are responsible for commit
+		return h.runInContext(ctx, sessionID, prompt)
+	}
+
+	// No transaction in context - create one for atomicity
+	// The notification will only fire after commit, ensuring message is saved
+	// before any worker can process the run.
+	tx, err := h.client.driver.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	txCtx := driver.WithExecutor(ctx, tx)
+
+	runID, err := h.runInContext(txCtx, sessionID, prompt)
+	if err != nil {
+		tx.Rollback(ctx)
+		return "", err
+	}
+
+	// Commit - notification fires after this, ensuring message is saved
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return runID, nil
+}
+
+// runInContext performs the actual run creation within the given context.
+// This allows the run to be part of an existing transaction if one is in context.
+func (h *AgentHandle[TTx]) runInContext(ctx context.Context, sessionID, prompt string) (string, error) {
+	// Create run record first to get the runID
 	runID, err := h.client.store.CreateRun(ctx, &storage.CreateRunParams{
 		SessionID:  sessionID,
 		AgentName:  h.definition.Name,
@@ -500,60 +583,147 @@ func (h *AgentHandle[TTx]) Run(ctx context.Context, sessionID, prompt string) (*
 		InstanceID: h.client.instanceID,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create run: %w", err)
+		return "", fmt.Errorf("failed to create run: %w", err)
 	}
 
-	// 2. Create agent instance with hooks configured
-	agent, err := h.createConfiguredAgent()
+	// Save the user message with the run_id
+	userMsg := NewUserMessage(sessionID, prompt)
+	storageMsg := convert.ToStorageMessage(userMsg)
+	storageMsg.RunID = &runID // Link message to run
+	if err := h.client.store.SaveMessage(ctx, storageMsg); err != nil {
+		return "", fmt.Errorf("failed to save user message: %w", err)
+	}
+
+	// Save content blocks for the message
+	if len(storageMsg.ContentBlocks) > 0 {
+		if err := h.client.store.SaveContentBlocks(ctx, storageMsg.ContentBlocks); err != nil {
+			return "", fmt.Errorf("failed to save content blocks: %w", err)
+		}
+	}
+
+	return runID, nil
+}
+
+// RunSync executes the agent synchronously (blocks until completion).
+// This is a convenience wrapper around Run() + WaitForRun().
+func (h *AgentHandle[TTx]) RunSync(ctx context.Context, sessionID, prompt string) (*Response, error) {
+	runID, err := h.Run(ctx, sessionID, prompt)
 	if err != nil {
-		h.failRun(ctx, runID, err, "agent_creation_failed")
 		return nil, err
 	}
+	return h.WaitForRun(ctx, runID)
+}
 
-	// 3. Load session
-	if loadErr := agent.LoadSession(ctx, sessionID); loadErr != nil {
-		h.failRun(ctx, runID, loadErr, "session_load_failed")
-		return nil, loadErr
+// WaitForRun blocks until the run reaches a terminal state and returns the response.
+// Returns the final response or an error if the run failed.
+func (h *AgentHandle[TTx]) WaitForRun(ctx context.Context, runID string) (*Response, error) {
+	if !h.client.IsRunning() {
+		return nil, ErrClientNotStarted
 	}
 
-	// 4. Execute the agent
-	response, err := agent.Run(ctx, prompt)
+	// Poll until terminal state
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+			run, err := h.client.store.GetRun(ctx, runID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get run: %w", err)
+			}
+
+			if run.State.IsTerminal() {
+				return h.buildResponseFromRun(ctx, run)
+			}
+		}
+	}
+}
+
+// GetRunStatus returns the current status of a run.
+func (h *AgentHandle[TTx]) GetRunStatus(ctx context.Context, runID string) (*RunStatus, error) {
+	if !h.client.IsRunning() {
+		return nil, ErrClientNotStarted
+	}
+
+	run, err := h.client.store.GetRun(ctx, runID)
 	if err != nil {
-		// Check if context was cancelled
-		errorType := "execution_failed"
-		if ctx.Err() == context.Canceled {
-			errorType = "cancelled"
-		} else if ctx.Err() == context.DeadlineExceeded {
-			errorType = "timeout"
-		}
-		h.failRun(ctx, runID, err, errorType)
-		return nil, err
+		return nil, fmt.Errorf("failed to get run: %w", err)
 	}
 
-	// 5. Update run state to completed
-	responseText := ""
-	for _, block := range response.Message.Content {
-		if block.Type == ContentTypeText {
-			responseText += block.Text
+	return &RunStatus{
+		ID:             run.ID,
+		State:          run.State,
+		StopReason:     run.StopReason,
+		ResponseText:   run.ResponseText,
+		ErrorMessage:   run.ErrorMessage,
+		InputTokens:    run.InputTokens,
+		OutputTokens:   run.OutputTokens,
+		IterationCount: run.IterationCount,
+		CreatedAt:      run.StartedAt,
+		FinalizedAt:    run.FinalizedAt,
+	}, nil
+}
+
+// buildResponseFromRun builds a Response from a completed run.
+func (h *AgentHandle[TTx]) buildResponseFromRun(ctx context.Context, run *storage.Run) (*Response, error) {
+	// Check if run failed
+	if run.State == runstate.RunStateFailed {
+		errMsg := "run failed"
+		if run.ErrorMessage != nil {
+			errMsg = *run.ErrorMessage
+		}
+		return nil, fmt.Errorf("%s", errMsg)
+	}
+
+	if run.State == runstate.RunStateCancelled {
+		return nil, fmt.Errorf("run was cancelled")
+	}
+
+	// Get the last assistant message for this run
+	messages, err := h.client.store.GetRunMessages(ctx, run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get run messages: %w", err)
+	}
+
+	// Find the last assistant message
+	var lastAssistantMsg *storage.Message
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "assistant" {
+			lastAssistantMsg = messages[i]
+			break
 		}
 	}
-	stopReason := string(response.StopReason)
 
-	if err := h.client.store.UpdateRunState(ctx, runID, &storage.UpdateRunStateParams{
-		State:        runstate.RunStateCompleted,
-		ResponseText: &responseText,
-		StopReason:   &stopReason,
-		InputTokens:  response.Usage.InputTokens,
-		OutputTokens: response.Usage.OutputTokens,
-	}); err != nil {
-		// Log error but don't fail the response - the run completed successfully
-		if h.client.config.OnError != nil {
-			h.client.config.OnError(fmt.Errorf("failed to update run state: %w", err))
-		}
+	if lastAssistantMsg == nil {
+		return nil, fmt.Errorf("no assistant message found for run")
 	}
 
-	// Attach run ID to response
-	response.RunID = runID
+	// Load content blocks for the message
+	contentBlocks, err := h.client.store.GetMessageContentBlocks(ctx, lastAssistantMsg.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get content blocks: %w", err)
+	}
+	lastAssistantMsg.ContentBlocks = contentBlocks
+
+	// Convert to types.Message
+	msg := convert.FromStorageMessage(lastAssistantMsg)
+
+	// Build response
+	response := &Response{
+		RunID:   run.ID,
+		Message: msg,
+		Usage: &Usage{
+			InputTokens:  run.InputTokens,
+			OutputTokens: run.OutputTokens,
+		},
+	}
+
+	if run.StopReason != nil {
+		response.StopReason = *run.StopReason
+	}
 
 	return response, nil
 }
@@ -595,19 +765,6 @@ func (h *AgentHandle[TTx]) RunTx(ctx context.Context, tx TTx, sessionID string, 
 
 	// Execute with the provided transaction
 	return agent.RunTx(ctx, tx, prompt)
-}
-
-// failRun updates the run state to failed with error details.
-func (h *AgentHandle[TTx]) failRun(ctx context.Context, runID string, err error, errorType string) {
-	errMsg := err.Error()
-	updateErr := h.client.store.UpdateRunState(ctx, runID, &storage.UpdateRunStateParams{
-		State:        runstate.RunStateFailed,
-		ErrorMessage: &errMsg,
-		ErrorType:    &errorType,
-	})
-	if updateErr != nil && h.client.config.OnError != nil {
-		h.client.config.OnError(fmt.Errorf("failed to update run state: %w", updateErr))
-	}
 }
 
 // NewSession creates a new session for this agent.
@@ -675,6 +832,20 @@ func (h *AgentHandle[TTx]) RegisterTool(t tool.Tool) error {
 	if t == nil {
 		return fmt.Errorf("%w: tool is nil", ErrInvalidConfig)
 	}
+
+	// Register in client's tool registry so the worker can execute it
+	if err := h.client.toolRegistry.Register(t); err != nil {
+		// Ignore duplicate registration errors
+		if err.Error() != fmt.Sprintf("tool already registered: %s", t.Name()) {
+			return fmt.Errorf("failed to register tool in client registry: %w", err)
+		}
+	}
+
+	// Add tool name to the agent's definition so it's included in API calls
+	if err := AddToolToAgent(h.definition.Name, t.Name()); err != nil {
+		return fmt.Errorf("failed to add tool to agent: %w", err)
+	}
+
 	h.toolsMu.Lock()
 	defer h.toolsMu.Unlock()
 	h.additionalTools = append(h.additionalTools, t)
@@ -850,8 +1021,8 @@ func (a *agentHandleToolWrapper[TTx]) Execute(ctx context.Context, input json.Ra
 		a.sessionID = sessionID
 	}
 
-	// Run the nested agent
-	response, err := a.handle.Run(ctx, a.sessionID, params.Task)
+	// Run the nested agent synchronously
+	response, err := a.handle.RunSync(ctx, a.sessionID, params.Task)
 	if err != nil {
 		return "", err
 	}
@@ -958,4 +1129,27 @@ func (h *AgentHandle[TTx]) createConfiguredAgent() (*Agent[TTx], error) {
 	h.hooksMu.RUnlock()
 
 	return agent, nil
+}
+
+// =============================================================================
+// Global Agent Provider (implements worker.AgentDefinitionProvider)
+// =============================================================================
+
+// globalAgentProvider implements worker.AgentDefinitionProvider using the global registry.
+type globalAgentProvider struct{}
+
+// GetAgent returns an agent definition from the global registry.
+func (p *globalAgentProvider) GetAgent(name string) (worker.AgentDef, bool) {
+	def, ok := GetRegisteredAgent(name)
+	if !ok {
+		return worker.AgentDef{}, false
+	}
+	return worker.AgentDef{
+		Name:         def.Name,
+		Model:        def.Model,
+		SystemPrompt: def.SystemPrompt,
+		MaxTokens:    def.MaxTokens,
+		Temperature:  def.Temperature,
+		Tools:        def.Tools,
+	}, true
 }

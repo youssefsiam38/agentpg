@@ -327,7 +327,7 @@ func main() {
 		fmt.Printf("=== Query %d ===\n", i+1)
 		fmt.Printf("User: %s\n\n", query)
 
-		response, err := agent.Run(ctx, sessionID, query)
+		response, err := agent.RunSync(ctx, sessionID, query)
 		if err != nil {
 			log.Printf("Error: %v\n\n", err)
 			continue

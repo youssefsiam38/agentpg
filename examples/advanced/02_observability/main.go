@@ -283,7 +283,7 @@ func main() {
 		fmt.Printf("--- Request %d ---\n", i+1)
 		fmt.Printf("User: %s\n", prompt)
 
-		response, err := agent.Run(ctx, sessionID, prompt)
+		response, err := agent.RunSync(ctx, sessionID, prompt)
 		if err != nil {
 			log.Printf("Error: %v", err)
 			continue
