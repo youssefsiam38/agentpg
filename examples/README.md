@@ -4,9 +4,9 @@ This directory contains comprehensive examples demonstrating various features of
 
 ## Client API
 
-AgentPG provides a **Client API** for multi-instance deployment. The Client API provides:
+AgentPG provides a **Client API** for multi-instance deployment with per-client registration:
 
-- **Global Registration**: Register agents and tools at package init time
+- **Per-Client Registration**: Register agents and tools on each client instance
 - **Instance Management**: Automatic heartbeats and instance tracking
 - **Leader Election**: Coordinated cleanup via single leader
 - **Multi-Instance**: Run multiple instances for high availability
@@ -14,42 +14,30 @@ AgentPG provides a **Client API** for multi-instance deployment. The Client API 
 ### Recommended Pattern
 
 ```go
-// Register agents at init time
-func init() {
-    agentpg.MustRegister(&agentpg.AgentDefinition{
-        Name:         "chat",
-        Model:        "claude-sonnet-4-5-20250929",
-        SystemPrompt: "You are a helpful assistant",
-        Tools:        []string{"calculator"},
-    })
-    agentpg.MustRegisterTool(&CalculatorTool{})
-}
-
 func main() {
     // Create client
     client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
         APIKey: apiKey,
     })
+
+    // Register agents on client (no global state)
+    client.RegisterAgent(&agentpg.AgentDefinition{
+        Name:         "chat",
+        Model:        "claude-sonnet-4-5-20250929",
+        SystemPrompt: "You are a helpful assistant",
+    })
+
+    // Register tools on client
+    client.RegisterTool(&CalculatorTool{})
+
+    // Start client (begins background services)
     client.Start(ctx)
     defer client.Stop(ctx)
 
-    // Get agent handle and run
-    agent := client.Agent("chat")
-    sessionID, _ := agent.NewSession(ctx, "tenant1", "user1", nil, nil)
-    response, _ := agent.Run(ctx, sessionID, "Hello!")
+    // Create session and run
+    sessionID, _ := client.NewSession(ctx, "tenant1", "user1", nil, nil)
+    response, _ := client.RunSync(ctx, sessionID, "chat", "Hello!")
 }
-```
-
-### Legacy Pattern
-
-The legacy `agentpg.New()` pattern is still fully supported:
-
-```go
-agent, _ := agentpg.New(drv, agentpg.Config{
-    Client:       &client,
-    Model:        "claude-sonnet-4-5-20250929",
-    SystemPrompt: "You are a helpful assistant",
-})
 ```
 
 ---
@@ -73,16 +61,16 @@ export DATABASE_URL="postgresql://user:password@localhost:5432/agentpg"
 ## Example Categories
 
 ### basic/
-**Location**: `examples/basic/main.go`
+**Location**: `examples/basic/`
 
 **Client API** - The recommended pattern for new projects:
-- Global agent registration with `agentpg.MustRegister()`
-- Client creation with `agentpg.NewClient()`
-- Agent handles with `client.Agent()`
-- Session and run management
+- Per-client agent registration with `client.RegisterAgent()`
+- Per-client tool registration with `client.RegisterTool()`
+- Session and run management via client methods
 
 ```bash
-go run examples/basic/main.go
+go run examples/basic/01_simple_chat/main.go
+go run examples/basic/02_shared_tools/main.go
 ```
 
 ---
@@ -91,7 +79,7 @@ go run examples/basic/main.go
 **Location**: `examples/distributed/main.go`
 
 **Multi-Instance Deployment** - Full example with all features:
-- Global agent and tool registration
+- Per-client agent and tool registration
 - Client lifecycle (Start/Stop)
 - Leader election callbacks
 - Instance metadata
@@ -103,32 +91,16 @@ go run examples/distributed/main.go
 
 ---
 
-### legacy/
-**Location**: `examples/legacy/main.go`
+### database_sql/
+**Location**: `examples/database_sql/main.go`
 
-**Legacy API** - Direct agent creation:
-- Direct `agentpg.New()` pattern
-- Anthropic client setup
-- Functional options configuration
-- Simple single-instance usage
-
-```bash
-go run examples/legacy/main.go
-```
-
----
-
-### streaming/
-**Location**: `examples/streaming/main.go`
-
-Streaming architecture, tools, and hooks:
-- Demonstrates streaming-first design (all API calls use SSE internally)
-- Creating custom tools (calculator)
-- All 5 observability hooks
-- Automatic context compaction
+**database/sql Driver** - Using standard library:
+- Standard library database/sql package
+- Compatible with any database/sql driver (lib/pq, pgx stdlib)
+- Transaction support with RunTx
 
 ```bash
-go run examples/streaming/main.go
+go run examples/database_sql/main.go
 ```
 
 ---
@@ -158,7 +130,7 @@ Agent delegation and orchestration patterns.
 
 | Example | Description |
 |---------|-------------|
-| `01_basic_delegation/` | Basic `agent.AsToolFor()` usage - research agent delegated from main agent |
+| `01_basic_delegation/` | Basic agent delegation - research agent delegated from main agent using `Agents` field |
 | `02_specialist_agents/` | Multiple specialist agents (coder, researcher, analyst) with own tools |
 | `03_multi_level_hierarchy/` | 3-level hierarchy: manager -> team leads -> workers |
 
@@ -175,10 +147,10 @@ Context management and compaction strategies.
 
 | Example | Description |
 |---------|-------------|
-| `01_auto_compaction/` | `WithAutoCompaction`, `WithCompactionTrigger`, `WithCompactionTarget` |
-| `02_manual_compaction/` | Explicit compaction control, `WithCompactionPreserveN`, `WithSummarizerModel` |
+| `01_auto_compaction/` | Auto compaction via AgentDefinition.Config |
+| `02_manual_compaction/` | Explicit compaction control with `Compact()` method |
 | `03_custom_strategy/` | Implement custom `compaction.Strategy` interface |
-| `04_compaction_monitoring/` | `OnBeforeCompaction`, `OnAfterCompaction` hooks, metrics |
+| `04_compaction_monitoring/` | Compaction hooks and metrics |
 
 ```bash
 go run examples/context_compaction/01_auto_compaction/main.go
@@ -193,7 +165,7 @@ go run examples/context_compaction/04_compaction_monitoring/main.go
 **Location**: `examples/extended_context/main.go`
 
 Extended context window (1M tokens):
-- `WithExtendedContext(true)` configuration
+- Extended context via AgentDefinition.Config
 - Automatic fallback and retry logic
 - Processing very long documents
 
@@ -211,11 +183,11 @@ Production-ready patterns and integrations.
 | `01_multi_tenant/` | HTTP server, tenant isolation, session management per user |
 | `02_observability/` | All 5 hooks with structured logging, metrics simulation |
 | `03_cost_tracking/` | Token-to-cost calculation, per-session tracking, budget alerts |
-| `04_rate_limiting/` | `OnBeforeMessage` hook for rate limiting, token bucket pattern |
+| `04_rate_limiting/` | OnBeforeMessage hook for rate limiting, token bucket pattern |
 | `05_database_tool/` | Safe SQL query tool, SELECT-only validation, result formatting |
 | `06_http_api_tool/` | Generic HTTP client tool, timeout handling, response parsing |
 | `07_pii_filtering/` | PII detection with regex patterns, blocking/logging modes |
-| `08_error_recovery/` | `WithMaxRetries`, exponential backoff, graceful degradation |
+| `08_error_recovery/` | Error handling patterns, graceful degradation |
 
 ```bash
 go run examples/advanced/01_multi_tenant/main.go
@@ -234,18 +206,16 @@ go run examples/advanced/08_error_recovery/main.go
 
 | Feature | Example Location |
 |---------|------------------|
-| **Client API** | basic/, distributed/ |
-| **Global registration** | basic/, distributed/ |
+| **Per-Client Registration** | all examples |
 | **Multi-instance** | distributed/ |
 | **Leader election** | distributed/ |
-| **Legacy API** | legacy/ |
 | Agent creation & config | all examples |
 | Session management | basic/, advanced/01_multi_tenant |
 | Tool interface (struct) | custom_tools/01_struct_tool, distributed/ |
 | NewFuncTool | custom_tools/02_func_tool |
 | Schema validation | custom_tools/03_schema_validation |
 | Tool registry & executor | custom_tools/04_parallel_execution |
-| AsToolFor() | nested_agents/01_basic_delegation |
+| Agent delegation (Agents field) | nested_agents/01_basic_delegation |
 | Specialist agents | nested_agents/02_specialist_agents |
 | Multi-level hierarchy | nested_agents/03_multi_level_hierarchy |
 | Auto compaction | context_compaction/01_auto_compaction |
@@ -271,86 +241,83 @@ go run examples/advanced/08_error_recovery/main.go
 ```go
 client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
     APIKey:            apiKey,
-    InstanceID:        "instance-1",        // Auto-generated if not provided
-    Hostname:          "my-server",         // os.Hostname() if not provided
+    ID:                "instance-1",        // Auto-generated if not provided
+    Name:              "my-server",         // os.Hostname() if not provided
     Metadata:          map[string]any{...}, // Custom instance metadata
-    HeartbeatInterval: 30 * time.Second,    // Default: 30s
-    CleanupInterval:   1 * time.Minute,     // Default: 1m
-    StuckRunTimeout:   1 * time.Hour,       // Default: 1h
+    HeartbeatInterval: 15 * time.Second,    // Default: 15s
     LeaderTTL:         30 * time.Second,    // Default: 30s
+    StuckRunTimeout:   5 * time.Minute,     // Default: 5m
+    BatchPollInterval: 30 * time.Second,    // Default: 30s
+    RunPollInterval:   1 * time.Second,     // Default: 1s
+    ToolPollInterval:  500 * time.Millisecond, // Default: 500ms
+    MaxConcurrentRuns: 10,                  // Default: 10
+    MaxConcurrentTools: 50,                 // Default: 50
+    OnError:           func(err error) { ... },
     OnBecameLeader:    func() { ... },
     OnLostLeadership:  func() { ... },
-    OnError:           func(err error) { ... },
 })
 ```
 
 ### Agent Definition
 
 ```go
-agentpg.MustRegister(&agentpg.AgentDefinition{
+client.RegisterAgent(&agentpg.AgentDefinition{
     Name:         "chat",
     Description:  "A helpful chat agent",
     Model:        "claude-sonnet-4-5-20250929",
     SystemPrompt: "You are a helpful assistant",
-    Tools:        []string{"calculator", "weather"},
     MaxTokens:    &maxTokens,
     Temperature:  &temp,
-    Config:       map[string]any{...},
+    Config:       map[string]any{
+        "auto_compaction": true,
+        "extended_context": true,
+    },
 })
 ```
 
-### Legacy Options (agentpg.New)
+### Agent-as-Tool (Hierarchies)
 
-- `WithMaxTokens(n)` - Set maximum output tokens
-- `WithTemperature(t)` - Control response randomness (0.0-1.0)
-- `WithTopK(k)` - Top-k sampling parameter
-- `WithTopP(p)` - Nucleus sampling parameter
-- `WithStopSequences(...)` - Custom stop sequences
+```go
+// Register child agent first
+client.RegisterAgent(&agentpg.AgentDefinition{
+    Name:         "worker",
+    Model:        "claude-sonnet-4-5-20250929",
+    SystemPrompt: "You are a worker agent...",
+    // ... other config
+})
 
-### Compaction Options
-
-- `WithAutoCompaction(true)` - Enable automatic context management
-- `WithCompactionTrigger(0.85)` - Trigger threshold (% of context)
-- `WithCompactionTarget(0.5)` - Target utilization after compaction
-- `WithCompactionPreserveN(10)` - Always preserve last N messages
-- `WithCompactionProtectedTokens(40000)` - Protect last N tokens
-- `WithSummarizerModel("claude-3-haiku")` - Model for summarization
-
-### Extended Context
-
-- `WithExtendedContext(true)` - Enable 1M token context window
+// Register parent agent with Agents field to delegate to child
+client.RegisterAgent(&agentpg.AgentDefinition{
+    Name:         "manager",
+    Model:        "claude-sonnet-4-5-20250929",
+    SystemPrompt: "You are a manager agent...",
+    Agents:       []string{"worker"},  // worker becomes a callable tool for manager
+    // ... other config
+})
+```
 
 ---
 
 ## Database Schema
 
-AgentPG automatically manages the database schema. Tables created:
+AgentPG requires the database schema. Run the migration:
+
+```bash
+psql $DATABASE_URL -f storage/migrations/001_agentpg_migration.up.sql
+```
 
 ### Core Tables
 - `agentpg_sessions` - Stores conversation sessions with tenant isolation
-- `agentpg_messages` - Stores all messages with JSONB content and usage tracking
-- `agentpg_compaction_events` - Audit log of compaction operations
-- `agentpg_message_archive` - Archived messages from compaction
+- `agentpg_runs` - Agent run executions with hierarchy support
+- `agentpg_iterations` - Each batch API call within a run
+- `agentpg_messages` - Conversation messages
+- `agentpg_tool_executions` - Tool execution tracking
 
 ### Distributed Tables
 - `agentpg_instances` - Instance registration and heartbeats
 - `agentpg_leader` - Leader election state
-- `agentpg_runs` - Run tracking with state machine
 - `agentpg_agents` - Agent definitions
 - `agentpg_tools` - Tool definitions
-- `agentpg_instance_agents` - Instance-to-agent links
-- `agentpg_instance_tools` - Instance-to-tool links
-
----
-
-## Hooks for Observability
-
-All hooks are available for custom observability:
-- `OnBeforeMessage(func(ctx, messages []*types.Message) error)` - Before API call
-- `OnAfterMessage(func(ctx, response *types.Response) error)` - After API response
-- `OnToolCall(func(ctx, toolName, input, output string, err error) error)` - Tool execution
-- `OnBeforeCompaction(func(ctx, sessionID string, tokenCount int) error)` - Before compaction
-- `OnAfterCompaction(func(ctx, result *compaction.CompactionResult) error)` - After compaction
 
 ---
 
@@ -373,6 +340,4 @@ All hooks are available for custom observability:
 - Read the main [README](../README.md) for architecture details
 - Check out the [compaction](../compaction) package for context management
 - Explore the [tool](../tool) package for advanced tool patterns
-- Review the [hooks](../hooks) package for built-in observability hooks
-- See [docs/distributed.md](../docs/distributed.md) for multi-instance deployment
 - See [docs/](../docs/) for detailed documentation

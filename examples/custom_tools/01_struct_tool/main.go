@@ -3,7 +3,7 @@
 // This example shows:
 // - Implementing the tool.Tool interface with a struct
 // - Tools with internal state (API keys, configuration, mock data)
-// - Global tool registration with agentpg.MustRegisterTool
+// - Per-client tool registration with client.RegisterTool
 package main
 
 import (
@@ -150,23 +150,6 @@ func toLower(s string) string {
 	return string(result)
 }
 
-// Register tools and agents at package initialization.
-func init() {
-	// Register the weather tool globally
-	agentpg.MustRegisterTool(NewWeatherTool())
-
-	// Register the weather agent
-	maxTokens := 1024
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "weather-assistant",
-		Description:  "A helpful weather assistant",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful weather assistant. Use the get_weather tool to provide weather information when asked.",
-		Tools:        []string{"get_weather"},
-		MaxTokens:    &maxTokens,
-	})
-}
-
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -201,6 +184,24 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register the weather tool on this client
+	if err := client.RegisterTool(NewWeatherTool()); err != nil {
+		log.Fatalf("Failed to register tool: %v", err)
+	}
+
+	// Register the weather agent on this client
+	maxTokens := 1024
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "weather-assistant",
+		Description:  "A helpful weather assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful weather assistant. Use the get_weather tool to provide weather information when asked.",
+		Tools:        []string{"get_weather"},
+		MaxTokens:    &maxTokens,
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -213,14 +214,8 @@ func main() {
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
-	// Get the registered agent handle
-	agent := client.Agent("weather-assistant")
-	if agent == nil {
-		log.Fatal("Agent 'weather-assistant' not found in registry")
-	}
-
 	// Create a new session
-	sessionID, err := agent.NewSession(ctx, "1", "struct-tool-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, "1", "struct-tool-demo", nil, map[string]any{
 		"description": "Struct-based tool demonstration",
 	})
 	if err != nil {
@@ -231,7 +226,7 @@ func main() {
 
 	// Example 1: Basic weather query
 	fmt.Println("=== Example 1: Basic Weather Query ===")
-	response1, err := agent.RunSync(ctx, sessionID, "What's the weather like in Tokyo?")
+	response1, err := client.RunSync(ctx, sessionID, "weather-assistant", "What's the weather like in Tokyo?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -244,7 +239,7 @@ func main() {
 
 	// Example 2: Weather with unit preference
 	fmt.Println("\n=== Example 2: Weather with Fahrenheit ===")
-	response2, err := agent.RunSync(ctx, sessionID, "What's the temperature in New York in Fahrenheit?")
+	response2, err := client.RunSync(ctx, sessionID, "weather-assistant", "What's the temperature in New York in Fahrenheit?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -257,7 +252,7 @@ func main() {
 
 	// Example 3: Unknown city (generates random weather)
 	fmt.Println("\n=== Example 3: Unknown City ===")
-	response3, err := agent.RunSync(ctx, sessionID, "How's the weather in Reykjavik?")
+	response3, err := client.RunSync(ctx, sessionID, "weather-assistant", "How's the weather in Reykjavik?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

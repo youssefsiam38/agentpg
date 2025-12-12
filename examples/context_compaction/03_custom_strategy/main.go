@@ -1,9 +1,10 @@
-// Package main demonstrates the Client API with custom compaction strategy.
+// Package main demonstrates the per-client API with custom compaction strategy.
 //
 // This example shows:
 // - Implementing the compaction.Strategy interface
 // - Custom logic for preserving tool results
 // - How to integrate custom strategies with AgentPG
+// - Per-client agent registration
 package main
 
 import (
@@ -198,20 +199,6 @@ func (s *KeepToolResultsStrategy) createSummary(messages []*types.Message) strin
 	return sb.String()
 }
 
-// Register agent at package initialization.
-func init() {
-	maxTokens := 1024
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "custom-strategy-demo",
-		Description:  "Assistant for custom strategy demonstration",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful assistant.",
-		MaxTokens:    &maxTokens,
-		Config: map[string]any{
-			"auto_compaction": true,
-		},
-	})
-}
 
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
@@ -390,6 +377,21 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register agent on the client (per-client registration)
+	maxTokens := 1024
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "custom-strategy-demo",
+		Description:  "Assistant for custom strategy demonstration",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant.",
+		MaxTokens:    &maxTokens,
+		Config: map[string]any{
+			"auto_compaction": true,
+		},
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -402,13 +404,10 @@ func main() {
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
-	// Get the registered agent
-	agent := client.Agent("custom-strategy-demo")
-	if agent == nil {
-		log.Fatal("Agent 'custom-strategy-demo' not found in registry")
-	}
+	// To run the agent, use:
+	//   client.RunSync(ctx, sessionID, "custom-strategy-demo", prompt)
 
-	fmt.Println("\nAgent created with default compaction strategy.")
+	fmt.Println("\nAgent registered with default compaction strategy.")
 	fmt.Println("Custom strategies extend the same Strategy interface.")
 
 	fmt.Println("\n=== Demo Complete ===")

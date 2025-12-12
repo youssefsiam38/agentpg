@@ -1,9 +1,9 @@
-// Package main demonstrates sharing tools across multiple agents.
+// Package main demonstrates the Client API with multiple agents sharing tools.
 //
 // This example shows:
-// - Global tool registration with agentpg.MustRegisterTool()
-// - Referencing tools by name in AgentDefinition.Tools
-// - Different agents with different tool subsets
+// - Per-client registration of agents and tools
+// - Multiple agents sharing the same tool
+// - Multi-turn conversation
 package main
 
 import (
@@ -21,10 +21,6 @@ import (
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 	"github.com/youssefsiam38/agentpg/tool"
 )
-
-// =============================================================================
-// Shared Tools - Registered globally, used by multiple agents
-// =============================================================================
 
 // GetTimeTool - shared across all agents
 type GetTimeTool struct{}
@@ -103,49 +99,6 @@ func (t *WeatherTool) Execute(ctx context.Context, input json.RawMessage) (strin
 	return fmt.Sprintf("Weather in %s: 22°C, Partly Cloudy", params.City), nil
 }
 
-// =============================================================================
-// Global Registration - Tools registered once, referenced by name
-// =============================================================================
-
-func init() {
-	// Register tools globally (persisted to DB during client.Start())
-	agentpg.MustRegisterTool(&GetTimeTool{})
-	agentpg.MustRegisterTool(&CalculatorTool{})
-	agentpg.MustRegisterTool(&WeatherTool{})
-
-	maxTokens := 1024
-
-	// Agent 1: General Assistant - has ALL tools
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "general-assistant",
-		Description:  "General purpose assistant with all tools",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful general assistant. Be concise.",
-		MaxTokens:    &maxTokens,
-		Tools:        []string{"get_time", "calculator", "get_weather"}, // All 3 tools
-	})
-
-	// Agent 2: Math Tutor - only calculator and time
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "math-tutor",
-		Description:  "Math tutor with calculation abilities",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a math tutor. Help with calculations. Be concise.",
-		MaxTokens:    &maxTokens,
-		Tools:        []string{"calculator", "get_time"}, // Subset of tools
-	})
-
-	// Agent 3: Weather Bot - only weather and time
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "weather-bot",
-		Description:  "Weather information assistant",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a weather assistant. Provide weather info. Be concise.",
-		MaxTokens:    &maxTokens,
-		Tools:        []string{"get_weather", "get_time"}, // Different subset
-	})
-}
-
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -171,7 +124,7 @@ func main() {
 	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
 
-	// Create and start the client
+	// Create the AgentPG client
 	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
 		APIKey: apiKey,
 	})
@@ -179,6 +132,57 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register tools on the client (shared by all agents)
+	if err := client.RegisterTool(&GetTimeTool{}); err != nil {
+		log.Fatalf("Failed to register time tool: %v", err)
+	}
+	if err := client.RegisterTool(&CalculatorTool{}); err != nil {
+		log.Fatalf("Failed to register calculator tool: %v", err)
+	}
+	if err := client.RegisterTool(&WeatherTool{}); err != nil {
+		log.Fatalf("Failed to register weather tool: %v", err)
+	}
+
+	// Register agents on the client
+	maxTokens := 1024
+
+	// Agent 1: General Assistant - has access to all tools
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "general-assistant",
+		Description:  "General purpose assistant with all tools",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful general assistant. Be concise.",
+		Tools:        []string{"get_time", "calculator", "get_weather"}, // All tools
+		MaxTokens:    &maxTokens,
+	}); err != nil {
+		log.Fatalf("Failed to register general-assistant: %v", err)
+	}
+
+	// Agent 2: Math Tutor - only calculator
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "math-tutor",
+		Description:  "Math tutor with calculation abilities",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a math tutor. Help with calculations. Be concise.",
+		Tools:        []string{"calculator"}, // Only calculator
+		MaxTokens:    &maxTokens,
+	}); err != nil {
+		log.Fatalf("Failed to register math-tutor: %v", err)
+	}
+
+	// Agent 3: Weather Bot - only weather
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "weather-bot",
+		Description:  "Weather information assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a weather assistant. Provide weather info. Be concise.",
+		Tools:        []string{"get_weather"}, // Only weather
+		MaxTokens:    &maxTokens,
+	}); err != nil {
+		log.Fatalf("Failed to register weather-bot: %v", err)
+	}
+
+	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
 	}
@@ -192,60 +196,48 @@ func main() {
 	fmt.Println()
 
 	// =============================================================================
-	// Demo: Each agent has different tool access
+	// Demo: Each agent can use the shared tools
 	// =============================================================================
 
-	fmt.Println("=== Shared Tools Demo ===")
+	fmt.Println("=== Tools Demo ===")
 	fmt.Println()
-	fmt.Println("Tool assignments:")
-	fmt.Println("  general-assistant: get_time, calculator, get_weather")
-	fmt.Println("  math-tutor:        get_time, calculator")
-	fmt.Println("  weather-bot:       get_time, get_weather")
+	fmt.Println("Each agent has a specific set of tools defined in their Tools array.")
+	fmt.Println("- general-assistant: get_time, calculator, get_weather")
+	fmt.Println("- math-tutor: calculator only")
+	fmt.Println("- weather-bot: get_weather only")
 	fmt.Println()
 
 	// General Assistant - can do everything
 	fmt.Println("--- General Assistant (all tools) ---")
-	general := client.Agent("general-assistant")
-	if general == nil {
-		log.Fatal("Agent 'general-assistant' not found")
-	}
-	sid1, err := general.NewSession(ctx, "1", "demo", nil, nil)
+	sid1, err := client.NewSession(ctx, "1", "general-demo", nil, nil)
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
-	resp1, err := general.RunSync(ctx, sid1, "What time is it, what's 15*7, and what's the weather in Paris?")
+	resp1, err := client.RunSync(ctx, sid1, "general-assistant", "What time is it, what's 15*7, and what's the weather in Paris?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
 	printResponse(resp1)
 
-	// Math Tutor - can only do math and time
-	fmt.Println("--- Math Tutor (calculator + time) ---")
-	math := client.Agent("math-tutor")
-	if math == nil {
-		log.Fatal("Agent 'math-tutor' not found")
-	}
-	sid2, err := math.NewSession(ctx, "1", "demo", nil, nil)
+	// Math Tutor
+	fmt.Println("--- Math Tutor ---")
+	sid2, err := client.NewSession(ctx, "1", "math-demo", nil, nil)
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
-	resp2, err := math.RunSync(ctx, sid2, "What's 144 divided by 12?")
+	resp2, err := client.RunSync(ctx, sid2, "math-tutor", "What's 144 divided by 12?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
 	printResponse(resp2)
 
-	// Weather Bot - can only do weather and time
-	fmt.Println("--- Weather Bot (weather + time) ---")
-	weather := client.Agent("weather-bot")
-	if weather == nil {
-		log.Fatal("Agent 'weather-bot' not found")
-	}
-	sid3, err := weather.NewSession(ctx, "1", "demo", nil, nil)
+	// Weather Bot
+	fmt.Println("--- Weather Bot ---")
+	sid3, err := client.NewSession(ctx, "1", "weather-demo", nil, nil)
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
-	resp3, err := weather.RunSync(ctx, sid3, "What's the weather in Tokyo?")
+	resp3, err := client.RunSync(ctx, sid3, "weather-bot", "What's the weather in Tokyo?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

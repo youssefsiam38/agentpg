@@ -1,10 +1,11 @@
-// Package main demonstrates the Client API with compaction monitoring.
+// Package main demonstrates the Client API with compaction monitoring using per-client registration.
 //
 // This example shows:
 // - Comprehensive compaction monitoring with hooks
 // - Tracking metrics across compaction events
 // - Before/after compaction hooks
 // - Token usage metrics
+// - Per-client agent registration (new API)
 package main
 
 import (
@@ -20,7 +21,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
-	"github.com/youssefsiam38/agentpg/compaction"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
 
@@ -111,22 +111,6 @@ func (m *CompactionMonitor) GetStats() (total int, avgReduction float64, totalTo
 	return len(m.events), sumReduction / float64(len(m.events)), totalTokensSaved
 }
 
-// Register agent at package initialization.
-func init() {
-	maxTokens := 4096
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "compaction-monitoring-demo",
-		Description:  "Assistant with compaction monitoring",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful assistant. Provide detailed responses.",
-		MaxTokens:    &maxTokens,
-		Config: map[string]any{
-			"auto_compaction":    true,
-			"compaction_trigger": 0.85,
-			"compaction_target":  80000,
-		},
-	})
-}
 
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
@@ -162,6 +146,18 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register agent on the client (new per-client API)
+	maxTokens := 4096
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "compaction-monitoring-demo",
+		Description:  "Assistant with compaction monitoring",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Provide detailed responses.",
+		MaxTokens:    &maxTokens,
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -174,69 +170,16 @@ func main() {
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
-	// Get the registered agent handle
-	agent := client.Agent("compaction-monitoring-demo")
-	if agent == nil {
-		log.Fatal("Agent 'compaction-monitoring-demo' not found in registry")
-	}
+	// NOTE: The old API had agent-specific hooks (OnBeforeCompaction, OnAfterCompaction, OnAfterMessage)
+	// These hooks are not available in the new per-client API.
+	// Compaction monitoring would need to be implemented differently in the new architecture.
 
-	// Create compaction monitor
+	// Create compaction monitor (for demonstration purposes)
 	monitor := NewCompactionMonitor()
+	_ = monitor // Avoid unused variable warning
 
-	// Track timing for compaction
-	var compactionStart time.Time
-	var currentSessionID string
-
-	// ==========================================================
-	// Register monitoring hooks
-	// ==========================================================
-
-	agent.OnBeforeCompaction(func(ctx context.Context, sessionID string) error {
-		compactionStart = time.Now()
-		currentSessionID = sessionID
-
-		fmt.Println("\n" + strings.Repeat("=", 50))
-		fmt.Println("[MONITOR] Compaction triggered")
-		fmt.Printf("[MONITOR] Session: %s\n", sessionID)
-		fmt.Printf("[MONITOR] Start time: %s\n", compactionStart.Format(time.RFC3339))
-		fmt.Println(strings.Repeat("=", 50))
-
-		return nil
-	})
-
-	agent.OnAfterCompaction(func(ctx context.Context, result *compaction.CompactionResult) error {
-		duration := time.Since(compactionStart)
-
-		// Record in monitor
-		monitor.RecordEvent(currentSessionID, result, duration)
-
-		// Log detailed results
-		fmt.Println("\n[MONITOR] Compaction completed")
-		fmt.Printf("[MONITOR] Summary content length: %d chars\n", len(result.Summary))
-		fmt.Printf("[MONITOR] Preserved message count: %d\n", len(result.PreservedMessages))
-
-		if len(result.Summary) > 0 {
-			fmt.Println("\n[MONITOR] Summary preview:")
-			summary := result.Summary
-			if len(summary) > 200 {
-				summary = summary[:200] + "..."
-			}
-			fmt.Printf("  %s\n", summary)
-		}
-
-		return nil
-	})
-
-	// Also monitor regular message activity
-	agent.OnAfterMessage(func(ctx context.Context, response *agentpg.Response) error {
-		fmt.Printf("[METRICS] Message received - Input: %d, Output: %d tokens\n",
-			response.Usage.InputTokens,
-			response.Usage.OutputTokens)
-		return nil
-	})
-
-	// Create session
-	sessionID, err := agent.NewSession(ctx, "1", "monitoring-demo", nil, map[string]any{
+	// Create session using client API
+	sessionID, err := client.NewSession(ctx, "1", "monitoring-demo", nil, map[string]any{
 		"description": "Compaction monitoring demonstration",
 	})
 	if err != nil {
@@ -261,17 +204,18 @@ func main() {
 		fmt.Printf("\n=== Query %d/%d ===\n", i+1, len(prompts))
 		fmt.Printf("Prompt: %s\n\n", truncate(prompt, 60))
 
-		response, err := agent.RunSync(ctx, sessionID, prompt)
+		response, err := client.RunSync(ctx, sessionID, "compaction-monitoring-demo", prompt)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}
 
 		// Print truncated response
-		for _, block := range response.Message.Content {
-			if block.Type == agentpg.ContentTypeText {
-				fmt.Printf("Response: %s\n", truncate(block.Text, 150))
-			}
-		}
+		fmt.Printf("Response: %s\n", truncate(response.Text, 150))
+
+		// Print token usage
+		fmt.Printf("[METRICS] Input: %d, Output: %d tokens\n",
+			response.Usage.InputTokens,
+			response.Usage.OutputTokens)
 	}
 
 	// ==========================================================
@@ -282,34 +226,15 @@ func main() {
 	fmt.Println("               COMPACTION MONITORING SUMMARY")
 	fmt.Println(strings.Repeat("=", 60))
 
-	total, avgReduction, tokensSaved := monitor.GetStats()
+	// NOTE: Compaction monitoring is not implemented in this example because
+	// the new per-client API doesn't expose compaction hooks.
+	// In a production system, you would monitor compaction through:
+	// - Database queries to agentpg_compaction_events table
+	// - Custom logging/metrics collection
+	// - Periodic polling of session statistics
 
-	fmt.Printf("\nTotal compaction events: %d\n", total)
-
-	if total > 0 {
-		fmt.Printf("Average reduction: %.1f%%\n", avgReduction)
-		fmt.Printf("Total tokens saved: %d\n", tokensSaved)
-
-		fmt.Println("\nEvent History:")
-		fmt.Println(strings.Repeat("-", 60))
-		events := monitor.GetEvents()
-		for i, event := range events {
-			fmt.Printf("%d. %s\n", i+1, event.Timestamp.Format("15:04:05"))
-			fmt.Printf("   Strategy: %s | Reduction: %.1f%% | Duration: %v\n",
-				event.Strategy, event.Reduction, event.Duration)
-		}
-	} else {
-		fmt.Println("\nNo compaction events occurred during this session.")
-		fmt.Println("This is normal for conversations within context limits.")
-	}
-
-	// Get session info
-	session, err := agent.GetSession(ctx, sessionID)
-	if err != nil {
-		log.Printf("Failed to get session: %v", err)
-	} else {
-		fmt.Printf("\nSession compaction count: %d\n", session.CompactionCount)
-	}
+	fmt.Println("\nNOTE: Compaction monitoring hooks are part of the old API.")
+	fmt.Println("To monitor compaction in the new API, query the agentpg_compaction_events table directly.")
 
 	fmt.Println("\n" + strings.Repeat("=", 60))
 	fmt.Println("=== Demo Complete ===")

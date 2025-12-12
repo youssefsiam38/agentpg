@@ -1,9 +1,10 @@
-// Package main demonstrates the Client API with database query tool.
+// Package main demonstrates per-client registration with database query tool.
 //
 // This example shows:
 // - Safe database query tool with SQL injection protection
 // - Table whitelist and query validation
 // - Read-only query enforcement
+// - Per-client tool and agent registration
 package main
 
 import (
@@ -146,20 +147,6 @@ func (d *DatabaseQueryTool) Execute(ctx context.Context, input json.RawMessage) 
 	return fmt.Sprintf("Query returned %d row(s):\n%s", len(results), string(output)), nil
 }
 
-// Register agent at package initialization.
-func init() {
-	maxTokens := 1024
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:        "database-tool-demo",
-		Description: "Data analyst assistant with database access",
-		Model:       "claude-sonnet-4-5-20250929",
-		SystemPrompt: `You are a helpful data analyst assistant. You have access to a product database.
-Use the query_database tool to answer questions about products.
-The demo_products table has columns: id, name, category, price, stock, created_at.`,
-		MaxTokens: &maxTokens,
-	})
-}
-
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -245,6 +232,27 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register database tool with allowed tables
+	dbTool := NewDatabaseQueryTool(pool, []string{"demo_products"})
+	if err := client.RegisterTool(dbTool); err != nil {
+		log.Fatalf("Failed to register tool: %v", err)
+	}
+
+	// Register agent with database tool access
+	maxTokens := 1024
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:        "database-tool-demo",
+		Description: "Data analyst assistant with database access",
+		Model:       "claude-sonnet-4-5-20250929",
+		SystemPrompt: `You are a helpful data analyst assistant. You have access to a product database.
+Use the query_database tool to answer questions about products.
+The demo_products table has columns: id, name, category, price, stock, created_at.`,
+		MaxTokens: &maxTokens,
+		Tools:     []string{"query_database"},
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -257,20 +265,8 @@ func main() {
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
-	// Get the agent
-	agent := client.Agent("database-tool-demo")
-	if agent == nil {
-		log.Fatal("Agent 'database-tool-demo' not found")
-	}
-
-	// Register database tool with allowed tables (runtime registration for stateful tool)
-	dbTool := NewDatabaseQueryTool(pool, []string{"demo_products"})
-	if err := agent.RegisterTool(dbTool); err != nil {
-		log.Fatalf("Failed to register tool: %v", err)
-	}
-
 	// Create session
-	sessionID, err := agent.NewSession(ctx, "1", "db-tool-demo", nil, nil)
+	sessionID, err := client.NewSession(ctx, "1", "db-tool-demo", nil, nil)
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
@@ -290,7 +286,7 @@ func main() {
 		fmt.Printf("=== Query %d ===\n", i+1)
 		fmt.Printf("User: %s\n\n", query)
 
-		response, err := agent.RunSync(ctx, sessionID, query)
+		response, err := client.RunSync(ctx, sessionID, "database-tool-demo", query)
 		if err != nil {
 			log.Printf("Error: %v\n\n", err)
 			continue

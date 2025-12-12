@@ -4,6 +4,7 @@
 // - Per-tenant session management
 // - HTTP API integration pattern
 // - Session caching and reuse
+// - Per-client agent registration (no global state)
 package main
 
 import (
@@ -17,73 +18,54 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
 
-// Register agent at package initialization.
-func init() {
-	maxTokens := 1024
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "multi-tenant-assistant",
-		Description:  "Multi-tenant assistant",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful assistant. Be concise and helpful.",
-		MaxTokens:    &maxTokens,
-		Config: map[string]any{
-			"auto_compaction": true,
-		},
-	})
-}
-
 // TenantManager manages sessions per tenant
 type TenantManager struct {
 	mu       sync.RWMutex
-	client   *agentpg.Client[pgx.Tx]
-	sessions map[string]string // tenantID:userID -> sessionID
+	client   *agentpg.Client[any]
+	sessions map[string]uuid.UUID // tenantID:userID -> sessionID
 }
 
-func NewTenantManager(client *agentpg.Client[pgx.Tx]) *TenantManager {
+func NewTenantManager(client *agentpg.Client[any]) *TenantManager {
 	return &TenantManager{
 		client:   client,
-		sessions: make(map[string]string),
+		sessions: make(map[string]uuid.UUID),
 	}
 }
 
-func (tm *TenantManager) GetOrCreateSession(ctx context.Context, tenantID, userID string) (string, *agentpg.AgentHandle[pgx.Tx], error) {
+func (tm *TenantManager) GetOrCreateSession(ctx context.Context, tenantID, userID string) (uuid.UUID, error) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
 	key := fmt.Sprintf("%s:%s", tenantID, userID)
-	agent := tm.client.Agent("multi-tenant-assistant")
-	if agent == nil {
-		return "", nil, fmt.Errorf("agent not found")
-	}
 
-	// Check if session exists
+	// Check if session exists in cache
 	if sessionID, exists := tm.sessions[key]; exists {
 		// Verify session still exists
-		_, err := agent.GetSession(ctx, sessionID)
+		_, err := tm.client.GetSession(ctx, sessionID)
 		if err == nil {
-			return sessionID, agent, nil
+			return sessionID, nil
 		}
 		// Session expired, remove from cache
 		delete(tm.sessions, key)
 	}
 
 	// Create new session
-	sessionID, err := agent.NewSession(ctx, tenantID, fmt.Sprintf("user-%s", userID), nil, map[string]any{
+	sessionID, err := tm.client.NewSession(ctx, tenantID, fmt.Sprintf("user-%s", userID), nil, map[string]any{
 		"tenant_id": tenantID,
 		"user_id":   userID,
 	})
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to create session: %w", err)
+		return uuid.Nil, fmt.Errorf("failed to create session: %w", err)
 	}
 
 	tm.sessions[key] = sessionID
-	return sessionID, agent, nil
+	return sessionID, nil
 }
 
 // ChatRequest represents the API request body
@@ -140,6 +122,21 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register agent on the client (per-client, no global state)
+	maxTokens := 1024
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "multi-tenant-assistant",
+		Description:  "Multi-tenant assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Be concise and helpful.",
+		MaxTokens:    &maxTokens,
+		Config: map[string]any{
+			"auto_compaction": true,
+		},
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -188,7 +185,7 @@ func main() {
 		}
 
 		// Get or create session
-		sessionID, agent, err := tm.GetOrCreateSession(r.Context(), tenantID, userID)
+		sessionID, err := tm.GetOrCreateSession(r.Context(), tenantID, userID)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -197,7 +194,7 @@ func main() {
 		}
 
 		// Run agent
-		response, err := agent.RunSync(r.Context(), sessionID, req.Message)
+		response, err := tm.client.RunSync(r.Context(), sessionID, "multi-tenant-assistant", req.Message)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -216,7 +213,7 @@ func main() {
 
 		resp := ChatResponse{
 			Response:  responseText,
-			SessionID: sessionID,
+			SessionID: sessionID.String(),
 		}
 		resp.Tokens.Input = response.Usage.InputTokens
 		resp.Tokens.Output = response.Usage.OutputTokens
@@ -271,13 +268,13 @@ func main() {
 		for _, msg := range tenant.messages {
 			fmt.Printf("User: %s\n", msg)
 
-			sessionID, agent, err := tm.GetOrCreateSession(ctx, tenant.tenantID, tenant.userID)
+			sessionID, err := tm.GetOrCreateSession(ctx, tenant.tenantID, tenant.userID)
 			if err != nil {
 				log.Printf("Error: %v", err)
 				continue
 			}
 
-			response, err := agent.RunSync(ctx, sessionID, msg)
+			response, err := tm.client.RunSync(ctx, sessionID, "multi-tenant-assistant", msg)
 
 			if err != nil {
 				log.Printf("Error: %v", err)
@@ -295,7 +292,7 @@ func main() {
 			}
 
 			fmt.Printf("Session: %s... | Tokens: %d in, %d out\n\n",
-				sessionID[:8], response.Usage.InputTokens, response.Usage.OutputTokens)
+				sessionID.String()[:8], response.Usage.InputTokens, response.Usage.OutputTokens)
 		}
 	}
 

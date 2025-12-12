@@ -4,7 +4,7 @@
 // - Using the 1M token extended context window
 // - Configuring extended context via AgentDefinition.Config
 // - Processing very long documents
-// - Automatic fallback and retry logic
+// - Per-client agent registration
 package main
 
 import (
@@ -90,22 +90,6 @@ func generateLongDocument(sections int) string {
 	return sb.String()
 }
 
-// Register agents at package initialization.
-func init() {
-	maxTokens := 4096
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "extended-context-demo",
-		Description:  "Document analysis with extended context support",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a document analysis assistant. You can process very long documents and answer questions about them accurately.",
-		MaxTokens:    &maxTokens,
-		Config: map[string]any{
-			"extended_context": true,  // Enable 1M token support
-			"auto_compaction":  false, // Disable compaction - rely on extended context
-		},
-	})
-}
-
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -147,6 +131,22 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register agent with extended context enabled
+	maxTokens := 4096
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "extended-context-demo",
+		Description:  "Document analysis with extended context support",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a document analysis assistant. You can process very long documents and answer questions about them accurately.",
+		MaxTokens:    &maxTokens,
+		Config: map[string]any{
+			"extended_context": true,  // Enable 1M token support
+			"auto_compaction":  false, // Disable compaction - rely on extended context
+		},
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -160,12 +160,6 @@ func main() {
 	fmt.Printf("Client started (instance ID: %s)\n", client.InstanceID())
 	fmt.Println()
 
-	// Get the registered agent handle
-	agent := client.Agent("extended-context-demo")
-	if agent == nil {
-		log.Fatal("Agent 'extended-context-demo' not found in registry")
-	}
-
 	fmt.Println("Configuration:")
 	fmt.Println("- Extended context: ENABLED")
 	fmt.Println("- Auto-compaction: DISABLED (relying on 1M context)")
@@ -173,7 +167,7 @@ func main() {
 	fmt.Println()
 
 	// Create session
-	sessionID, err := agent.NewSession(ctx, "1", "extended-context-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, "1", "extended-context-demo", nil, map[string]any{
 		"description": "Extended context demonstration",
 	})
 	if err != nil {
@@ -190,7 +184,7 @@ func main() {
 	fmt.Println()
 
 	// Generate a document (adjust sections for desired length)
-	// Each section is roughly 2-3KB, so 20 sections ≈ 50KB of text
+	// Each section is roughly 2-3KB, so 20 sections ~ 50KB of text
 	document := generateLongDocument(20)
 
 	fmt.Printf("Generated document: %d characters (~%d tokens estimated)\n",
@@ -207,7 +201,7 @@ Please confirm you've received the document and provide a brief summary of its s
 
 	fmt.Println("\nSubmitting document for analysis...")
 
-	response1, err := agent.RunSync(ctx, sessionID, prompt)
+	response1, err := client.RunSync(ctx, sessionID, "extended-context-demo", prompt)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -244,7 +238,7 @@ Please confirm you've received the document and provide a brief summary of its s
 	for i, question := range questions {
 		fmt.Printf("Question %d: %s\n", i+1, question)
 
-		response, err := agent.RunSync(ctx, sessionID, question)
+		response, err := client.RunSync(ctx, sessionID, "extended-context-demo", question)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}

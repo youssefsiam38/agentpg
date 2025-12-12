@@ -1,9 +1,15 @@
-// Package main demonstrates the Client API with PII filtering.
+// Package main demonstrates the per-client API with PII filtering.
 //
 // This example shows:
 // - PII detection with regex patterns
-// - Message blocking, redaction, and warning modes
+// - Message blocking, redaction, and warning modes (via custom validation)
 // - Audit logging for compliance
+//
+// Note: The hook-based filtering (OnBeforeMessage) is part of the legacy API.
+// In the new per-client API, PII filtering should be implemented as:
+// - Pre-validation before calling client.Run()
+// - Custom tools that validate input
+// - Middleware/wrapper functions
 package main
 
 import (
@@ -21,7 +27,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
-	"github.com/youssefsiam38/agentpg/types"
 )
 
 // PIIFilter detects and blocks messages containing sensitive data
@@ -124,17 +129,6 @@ func (e *ErrPIIDetected) Error() string {
 	return fmt.Sprintf("message blocked: contains sensitive data (%s)", strings.Join(e.Types, ", "))
 }
 
-// Register agent at package initialization.
-func init() {
-	maxTokens := 1024
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "pii-filtering-demo",
-		Description:  "Assistant with PII filtering",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful assistant. Never ask for or store sensitive personal information.",
-		MaxTokens:    &maxTokens,
-	})
-}
 
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
@@ -188,6 +182,18 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register agent on the client
+	maxTokens := 1024
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "pii-filtering-demo",
+		Description:  "Assistant with PII filtering",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Never ask for or store sensitive personal information.",
+		MaxTokens:    &maxTokens,
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -200,63 +206,17 @@ func main() {
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
-	// Get the agent
-	agent := client.Agent("pii-filtering-demo")
-	if agent == nil {
-		log.Fatal("Agent 'pii-filtering-demo' not found")
-	}
-
 	// ==========================================================
-	// Register PII filtering hook
+	// NOTE: Hook-based filtering (OnBeforeMessage) is not available
+	// in the new per-client API. Instead, we validate messages
+	// before calling client.Run() or client.RunSync().
 	// ==========================================================
-
-	var currentSessionID string
-
-	agent.OnBeforeMessage(func(ctx context.Context, messages []*types.Message) error {
-		// Extract the last user message text for PII checking
-		var lastPrompt string
-		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].Role == types.RoleUser {
-				for _, block := range messages[i].Content {
-					if block.Type == types.ContentTypeText {
-						lastPrompt = block.Text
-						break
-					}
-				}
-				break
-			}
-		}
-
-		detected, _ := piiFilter.Check(lastPrompt)
-
-		if len(detected) > 0 {
-			piiFilter.Record(currentSessionID, detected, lastPrompt)
-
-			fmt.Printf("  [PII BLOCKED] Detected: %s\n", strings.Join(detected, ", "))
-
-			switch piiFilter.mode {
-			case ModeBlock:
-				return &ErrPIIDetected{Types: detected}
-			case ModeRedact:
-				// In redact mode, we'd modify the prompt
-				// This requires returning the cleaned version
-				fmt.Println("  [PII REDACTED] Message will be sent with redactions")
-				return nil
-			case ModeWarn:
-				fmt.Println("  [PII WARNING] Message allowed but logged")
-				return nil
-			}
-		}
-
-		return nil
-	})
 
 	// Create session
-	sessionID, err := agent.NewSession(ctx, "1", "pii-filter-demo", nil, nil)
+	sessionID, err := client.NewSession(ctx, "1", "pii-filter-demo", nil, nil)
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
-	currentSessionID = sessionID
 	fmt.Printf("Session: %s\n\n", sessionID[:8]+"...")
 
 	// ==========================================================
@@ -312,7 +272,36 @@ func main() {
 		fmt.Printf("Test %d: %s\n", i+1, test.description)
 		fmt.Printf("  Message: %s\n", truncate(test.message, 50))
 
-		response, err := agent.RunSync(ctx, sessionID, test.message)
+		// Pre-validate message for PII (replaces OnBeforeMessage hook)
+		detected, _ := piiFilter.Check(test.message)
+
+		var response *agentpg.Response
+		var err error
+
+		if len(detected) > 0 {
+			// Record the blocked attempt
+			piiFilter.Record(sessionID, detected, test.message)
+			fmt.Printf("  [PII BLOCKED] Detected: %s\n", strings.Join(detected, ", "))
+
+			// Create error based on filter mode
+			switch piiFilter.mode {
+			case ModeBlock:
+				err = &ErrPIIDetected{Types: detected}
+			case ModeRedact:
+				fmt.Println("  [PII REDACTED] Would send with redactions (not implemented)")
+				// In a real implementation, send the redacted version
+				err = &ErrPIIDetected{Types: detected}
+			case ModeWarn:
+				fmt.Println("  [PII WARNING] Allowing message with warning")
+				// Allow the message to proceed
+				response, err = client.RunSync(ctx, sessionID, "pii-filtering-demo", test.message)
+			}
+		} else {
+			// No PII detected, proceed normally
+			response, err = client.RunSync(ctx, sessionID, "pii-filtering-demo", test.message)
+		}
+
+		// Handle result
 		if err != nil {
 			if _, ok := err.(*ErrPIIDetected); ok {
 				fmt.Printf("  Result: BLOCKED (as expected: %v)\n", test.shouldBlock)
