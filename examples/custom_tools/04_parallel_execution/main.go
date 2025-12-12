@@ -4,7 +4,7 @@
 // - Standalone tool.Registry management
 // - tool.Executor with sequential vs parallel execution
 // - ExecuteParallel and ExecuteBatch methods
-// - Integration with AgentPG client
+// - Integration with AgentPG client using per-client registration
 package main
 
 import (
@@ -154,17 +154,6 @@ func (d *DataFetchTool) GetCallLog() []string {
 	return result
 }
 
-// Register agent (tools will be registered at runtime)
-func init() {
-	maxTokens := 2048
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "data-processor",
-		Description:  "A data processing assistant",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a data processing assistant. Use the available tools to fetch and process data. When asked to fetch from multiple sources, call the tools efficiently.",
-		MaxTokens:    &maxTokens,
-	})
-}
 
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
@@ -296,6 +285,25 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register data fetch tool on client
+	dataFetcher := NewDataFetchTool()
+	if err := client.RegisterTool(dataFetcher); err != nil {
+		log.Fatalf("Failed to register tool: %v", err)
+	}
+
+	// Register agent on client
+	maxTokens := 2048
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "data-processor",
+		Description:  "A data processing assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a data processing assistant. Use the available tools to fetch and process data. When asked to fetch from multiple sources, call the tools efficiently.",
+		MaxTokens:    &maxTokens,
+		Tools:        []string{"fetch_data"},
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -308,20 +316,8 @@ func main() {
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
-	// Get the registered agent handle
-	agent := client.Agent("data-processor")
-	if agent == nil {
-		log.Fatal("Agent 'data-processor' not found in registry")
-	}
-
-	// Register data fetch tool at runtime
-	dataFetcher := NewDataFetchTool()
-	if err := agent.RegisterTool(dataFetcher); err != nil {
-		log.Fatalf("Failed to register tool: %v", err)
-	}
-
 	// Create session
-	sessionID, err := agent.NewSession(ctx, "1", "parallel-execution-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, "1", "parallel-execution-demo", nil, map[string]any{
 		"description": "Parallel execution demonstration",
 	})
 	if err != nil {
@@ -332,7 +328,7 @@ func main() {
 
 	// Run agent with request that might trigger multiple tool calls
 	fmt.Println("Requesting data from multiple sources...")
-	response, err := agent.RunSync(ctx, sessionID, "Fetch the user profile from both the database and the cache, and also get the latest data from the API. The query for all should be 'user-123'.")
+	response, err := client.RunSync(ctx, sessionID, "data-processor", "Fetch the user profile from both the database and the cache, and also get the latest data from the API. The query for all should be 'user-123'.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

@@ -4,7 +4,7 @@
 // - All PropertyDef constraint types (Enum, Min/Max, MinLength/MaxLength)
 // - Array types with Items schema
 // - Nested objects with Properties
-// - Runtime tool registration for stateful tools
+// - Per-client tool and agent registration for stateful tools
 package main
 
 import (
@@ -279,20 +279,6 @@ func (l *ListTasksTool) Execute(ctx context.Context, input json.RawMessage) (str
 	return sb.String(), nil
 }
 
-// Register the agent (without tools - they will be registered at runtime)
-func init() {
-	maxTokens := 1024
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "task-manager",
-		Description:  "A task management assistant",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a task management assistant. Help users create and manage tasks using the available tools.",
-		// Note: Tools are not listed here because they share state and
-		// need to be registered at runtime. Use agent.RegisterTool() instead.
-		MaxTokens: &maxTokens,
-	})
-}
-
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -327,6 +313,25 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Create and register tools (note: TaskTool is shared for state)
+	// This demonstrates per-client registration for stateful tools
+	taskTool := NewTaskTool()
+	listTool := NewListTasksTool(taskTool)
+
+	client.RegisterTool(taskTool)
+	client.RegisterTool(listTool)
+
+	// Register the agent with its tools
+	maxTokens := 1024
+	client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "task-manager",
+		Description:  "A task management assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a task management assistant. Help users create and manage tasks using the available tools.",
+		Tools:        []string{"create_task", "list_tasks"},
+		MaxTokens:    &maxTokens,
+	})
+
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -339,26 +344,8 @@ func main() {
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
-	// Get the registered agent handle
-	agent := client.Agent("task-manager")
-	if agent == nil {
-		log.Fatal("Agent 'task-manager' not found in registry")
-	}
-
-	// Create and register tools at runtime (note: TaskTool is shared for state)
-	// This is necessary when tools share state that can't be global
-	taskTool := NewTaskTool()
-	listTool := NewListTasksTool(taskTool)
-
-	if err := agent.RegisterTool(taskTool); err != nil {
-		log.Fatalf("Failed to register task tool: %v", err)
-	}
-	if err := agent.RegisterTool(listTool); err != nil {
-		log.Fatalf("Failed to register list tool: %v", err)
-	}
-
 	// Create session
-	sessionID, err := agent.NewSession(ctx, "1", "schema-validation-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, "1", "schema-validation-demo", nil, map[string]any{
 		"description": "Schema validation demonstration",
 	})
 	if err != nil {
@@ -369,7 +356,7 @@ func main() {
 
 	// Example 1: Create task with all fields
 	fmt.Println("=== Example 1: Full Task Creation ===")
-	response1, err := agent.RunSync(ctx, sessionID, `Create a high priority task called "Implement user authentication" with score 85, tags ["security", "backend", "urgent"], and assign it to John Smith (john@example.com). Add a description about implementing OAuth2.`)
+	response1, err := client.RunSync(ctx, sessionID, "task-manager", `Create a high priority task called "Implement user authentication" with score 85, tags ["security", "backend", "urgent"], and assign it to John Smith (john@example.com). Add a description about implementing OAuth2.`)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -382,7 +369,7 @@ func main() {
 
 	// Example 2: Create minimal task (only required fields)
 	fmt.Println("\n=== Example 2: Minimal Task ===")
-	response2, err := agent.RunSync(ctx, sessionID, `Create a low priority task called "Update documentation"`)
+	response2, err := client.RunSync(ctx, sessionID, "task-manager", `Create a low priority task called "Update documentation"`)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -395,7 +382,7 @@ func main() {
 
 	// Example 3: Create critical task with array of tags
 	fmt.Println("\n=== Example 3: Critical Task with Tags ===")
-	response3, err := agent.RunSync(ctx, sessionID, `Create a critical priority task "Fix production database issue" with score 100 and tags ["production", "database", "emergency"]`)
+	response3, err := client.RunSync(ctx, sessionID, "task-manager", `Create a critical priority task "Fix production database issue" with score 100 and tags ["production", "database", "emergency"]`)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -408,7 +395,7 @@ func main() {
 
 	// Example 4: List all tasks
 	fmt.Println("\n=== Example 4: List All Tasks ===")
-	response4, err := agent.RunSync(ctx, sessionID, "Show me all the tasks we've created")
+	response4, err := client.RunSync(ctx, sessionID, "task-manager", "Show me all the tasks we've created")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -421,7 +408,7 @@ func main() {
 
 	// Example 5: Filter by priority
 	fmt.Println("\n=== Example 5: Filter by Priority ===")
-	response5, err := agent.RunSync(ctx, sessionID, "List only the critical priority tasks")
+	response5, err := client.RunSync(ctx, sessionID, "task-manager", "List only the critical priority tasks")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

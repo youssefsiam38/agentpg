@@ -1,9 +1,10 @@
-// Package main demonstrates the Client API with cost tracking.
+// Package main demonstrates the Client API with cost tracking using per-client registration.
 //
 // This example shows:
 // - Token usage tracking per session
 // - Budget management and alerts
 // - Cost calculation based on pricing
+// - Per-client agent registration (new API)
 package main
 
 import (
@@ -148,18 +149,6 @@ func (ct *CostTracker) Report() {
 		ct.totalSpent, ct.totalBudget, ct.totalSpent/ct.totalBudget*100)
 }
 
-// Register agent at package initialization.
-func init() {
-	maxTokens := 512
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "cost-tracking-demo",
-		Description:  "Assistant with cost tracking",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful assistant. Be concise.",
-		MaxTokens:    &maxTokens,
-	})
-}
-
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -219,7 +208,22 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Start the client
+	// ==========================================================
+	// Register agent on client (new per-client API)
+	// ==========================================================
+
+	maxTokens := 512
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "cost-tracking-demo",
+		Description:  "Assistant with cost tracking",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Be concise.",
+		MaxTokens:    &maxTokens,
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
+	// Start the client (after registrations)
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
 	}
@@ -231,34 +235,13 @@ func main() {
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
-	// Get the agent
-	agent := client.Agent("cost-tracking-demo")
-	if agent == nil {
-		log.Fatal("Agent 'cost-tracking-demo' not found")
-	}
-
 	// ==========================================================
-	// Register cost tracking hook
+	// NOTE: Hooks (OnAfterMessage) are part of the old Agent API
+	// In the new per-client API, cost tracking is done manually
+	// after each RunSync call by inspecting the Response.Usage
 	// ==========================================================
 
 	var currentSessionID string
-
-	agent.OnAfterMessage(func(ctx context.Context, response *agentpg.Response) error {
-		cost, warnings := costTracker.RecordUsage(
-			currentSessionID,
-			response.Usage.InputTokens,
-			response.Usage.OutputTokens,
-		)
-
-		fmt.Printf("  [Cost] $%.6f (in: %d, out: %d tokens)\n",
-			cost, response.Usage.InputTokens, response.Usage.OutputTokens)
-
-		for _, warning := range warnings {
-			fmt.Printf("  [WARNING] %s\n", warning)
-		}
-
-		return nil
-	})
 
 	// ==========================================================
 	// Demo: Multiple sessions
@@ -288,7 +271,8 @@ func main() {
 	for _, sess := range sessions {
 		fmt.Printf("=== %s ===\n", sess.name)
 
-		sessionID, err := agent.NewSession(ctx, "1", sess.name, nil, nil)
+		// Use client.NewSession (new API)
+		sessionID, err := client.NewSession(ctx, "1", sess.name, nil, nil)
 		if err != nil {
 			log.Fatalf("Failed to create session: %v", err)
 		}
@@ -297,11 +281,19 @@ func main() {
 		for _, prompt := range sess.prompts {
 			fmt.Printf("\nUser: %s\n", prompt)
 
-			response, err := agent.RunSync(ctx, sessionID, prompt)
+			// Use client.RunSync with agent name (new API)
+			response, err := client.RunSync(ctx, sessionID, "cost-tracking-demo", prompt)
 			if err != nil {
 				log.Printf("Error: %v", err)
 				continue
 			}
+
+			// Track costs manually (replaces hook)
+			cost, warnings := costTracker.RecordUsage(
+				currentSessionID,
+				response.Usage.InputTokens,
+				response.Usage.OutputTokens,
+			)
 
 			for _, block := range response.Message.Content {
 				if block.Type == agentpg.ContentTypeText {
@@ -311,6 +303,13 @@ func main() {
 					}
 					fmt.Printf("Agent: %s\n", text)
 				}
+			}
+
+			fmt.Printf("  [Cost] $%.6f (in: %d, out: %d tokens)\n",
+				cost, response.Usage.InputTokens, response.Usage.OutputTokens)
+
+			for _, warning := range warnings {
+				fmt.Printf("  [WARNING] %s\n", warning)
 			}
 		}
 

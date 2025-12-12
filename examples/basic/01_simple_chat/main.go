@@ -1,12 +1,10 @@
 // Package main demonstrates the basic usage of AgentPG.
 //
-// This example shows the recommended Client API.
+// This example shows the recommended Client API with per-client registration.
 // The Client API provides:
-// - Global agent/tool registration
+// - Per-client agent/tool registration (no global state)
 // - Automatic instance management
 // - Multi-instance coordination
-//
-// For the legacy API (direct Agent creation), see examples/legacy/main.go
 package main
 
 import (
@@ -19,17 +17,6 @@ import (
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
-
-// Register agents at package initialization (before main runs).
-// This is the recommended pattern for multi-instance deployments.
-func init() {
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "assistant",
-		Description:  "A helpful coding assistant",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful coding assistant. Be concise and accurate.",
-	})
-}
 
 func main() {
 	ctx := context.Background()
@@ -63,6 +50,16 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register agent on the client (per-client registration, no global state)
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "assistant",
+		Description:  "A helpful coding assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful coding assistant. Be concise and accurate.",
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
 	// Start the client (registers instance, starts background services)
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -71,15 +68,9 @@ func main() {
 
 	fmt.Printf("AgentPG client started (instance: %s)\n\n", client.InstanceID())
 
-	// Get a handle to the registered agent
-	agent := client.Agent("assistant")
-	if agent == nil {
-		log.Fatal("Agent 'assistant' not found - ensure it was registered in init()")
-	}
-
 	// Create a new session
 	// Parameters: tenantID, userIdentifier, parentSessionID, metadata
-	sessionID, err := agent.NewSession(ctx, "tenant-1", "example-user", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, "tenant-1", "example-user", nil, map[string]any{
 		"description": "Basic example session",
 	})
 	if err != nil {
@@ -89,7 +80,8 @@ func main() {
 	fmt.Printf("Created session: %s\n\n", sessionID)
 
 	// Run the agent with a prompt
-	response, err := agent.RunSync(ctx, sessionID, "Explain what the AgentPG package does in 3 sentences.")
+	// Parameters: ctx, sessionID, agentName, prompt
+	response, err := client.RunSync(ctx, sessionID, "assistant", "Explain what the AgentPG package does in 3 sentences.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

@@ -1,9 +1,9 @@
-// Package main demonstrates the Client API with rate limiting.
+// Package main demonstrates the Client API with rate limiting using per-client registration.
 //
 // This example shows:
 // - Token bucket rate limiting
 // - Per-tenant rate limits
-// - Hook-based rate limit enforcement
+// - Rate limit enforcement before agent execution
 package main
 
 import (
@@ -20,7 +20,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
-	"github.com/youssefsiam38/agentpg/types"
 )
 
 // RateLimiter implements a token bucket rate limiter
@@ -111,18 +110,6 @@ func (rl *RateLimiter) GetStats(tenantID string) (available float64, capacity fl
 // ErrRateLimited is returned when rate limit is exceeded
 var ErrRateLimited = errors.New("rate limit exceeded")
 
-// Register agent at package initialization.
-func init() {
-	maxTokens := 256
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "rate-limiting-demo",
-		Description:  "Assistant with rate limiting",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful assistant. Be very brief.",
-		MaxTokens:    &maxTokens,
-	})
-}
-
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -172,6 +159,18 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register agent on the client
+	maxTokens := 256
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "rate-limiting-demo",
+		Description:  "Assistant with rate limiting",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Be very brief.",
+		MaxTokens:    &maxTokens,
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -184,19 +183,22 @@ func main() {
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
-	// Get the agent
-	agent := client.Agent("rate-limiting-demo")
-	if agent == nil {
-		log.Fatal("Agent 'rate-limiting-demo' not found")
-	}
-
 	// ==========================================================
-	// Register rate limiting hook
+	// Rate limiting logic (Note: Hooks are part of old API)
+	// ==========================================================
+	// In the new per-client API, rate limiting would be implemented differently:
+	// - As middleware wrapping client.RunSync()
+	// - In a custom tool that checks limits
+	// - In application logic before calling RunSync()
+	// - Using database constraints/triggers
+	//
+	// For this demo, we'll apply rate limiting before each RunSync call
 	// ==========================================================
 
 	currentTenantID := "tenant-1"
 
-	agent.OnBeforeMessage(func(ctx context.Context, messages []*types.Message) error {
+	// Helper function that applies rate limiting
+	rateLimitedRunSync := func(ctx context.Context, sessionID, agentName, prompt string) (*agentpg.Response, error) {
 		allowed, waitTime := rateLimiter.Allow(currentTenantID)
 
 		available, capacity := rateLimiter.GetStats(currentTenantID)
@@ -204,15 +206,15 @@ func main() {
 
 		if !allowed {
 			fmt.Printf("BLOCKED - wait %v\n", waitTime)
-			return fmt.Errorf("%w: retry after %v", ErrRateLimited, waitTime)
+			return nil, fmt.Errorf("%w: retry after %v", ErrRateLimited, waitTime)
 		}
 
 		fmt.Printf("ALLOWED\n")
-		return nil
-	})
+		return client.RunSync(ctx, sessionID, agentName, prompt)
+	}
 
 	// Create session
-	sessionID, err := agent.NewSession(ctx, "1", "rate-limit-demo", nil, nil)
+	sessionID, err := client.NewSession(ctx, "tenant-1", "rate-limit-demo", nil, nil)
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
@@ -239,7 +241,7 @@ func main() {
 	for i, prompt := range prompts {
 		fmt.Printf("Request %d: %s\n", i+1, prompt)
 
-		response, err := agent.RunSync(ctx, sessionID, prompt)
+		response, err := rateLimitedRunSync(ctx, sessionID, "rate-limiting-demo", prompt)
 		if err != nil {
 			if errors.Is(err, ErrRateLimited) {
 				fmt.Printf("  Result: Rate limited!\n\n")
@@ -277,7 +279,7 @@ func main() {
 	fmt.Println()
 
 	fmt.Println("=== Final Request After Wait ===")
-	response, err := agent.RunSync(ctx, sessionID, "Say goodbye")
+	response, err := rateLimitedRunSync(ctx, sessionID, "rate-limiting-demo", "Say goodbye")
 	if err != nil {
 		log.Printf("Error: %v", err)
 	} else {
@@ -317,8 +319,11 @@ func main() {
 	fmt.Println("=== Rate Limiting Patterns ===")
 	fmt.Println("1. Per-tenant isolation: Each tenant has own limits")
 	fmt.Println("2. Token bucket: Allows bursts while enforcing rate")
-	fmt.Println("3. Hook-based: Clean separation from business logic")
+	fmt.Println("3. Application-level: Rate checking before agent execution")
 	fmt.Println("4. Graceful rejection: Return retry-after duration")
+	fmt.Println()
+	fmt.Println("Note: In the new per-client API, rate limiting is implemented")
+	fmt.Println("as application-level middleware rather than agent hooks.")
 	fmt.Println()
 	fmt.Println("=== Demo Complete ===")
 }

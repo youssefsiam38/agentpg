@@ -1,10 +1,11 @@
-// Package main demonstrates the Client API for multi-instance deployment.
+// Package main demonstrates the Client API with distributed workers.
 //
-// This example shows how to use the new Client API that provides:
-// - Global agent and tool registration
-// - Instance management with heartbeats
-// - Leader election for cleanup coordination
-// - Real-time events via PostgreSQL LISTEN/NOTIFY
+// This example shows:
+// - Per-client registration of agents and tools
+// - Client lifecycle management (Start/Stop)
+// - Leader election callbacks
+// - Instance metadata
+// - Multi-instance deployment pattern
 package main
 
 import (
@@ -86,30 +87,6 @@ func (t *CalculatorTool) Execute(ctx context.Context, input json.RawMessage) (st
 	return fmt.Sprintf("%.2f", result), nil
 }
 
-// Register agents and tools at package initialization.
-// This happens before main() runs and sets up the global registry.
-func init() {
-	// Register the calculator tool globally
-	agentpg.MustRegisterTool(&CalculatorTool{})
-
-	// Register the chat agent globally
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "chat",
-		Description:  "General purpose chat agent with math capabilities",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful assistant. Use the calculator tool when asked to perform math operations.",
-		Tools:        []string{"calculator"},
-	})
-
-	// Register a simple agent without tools
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "simple",
-		Description:  "Simple chat agent without tools",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a concise assistant. Answer in 2-3 sentences maximum.",
-	})
-}
-
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -141,8 +118,8 @@ func main() {
 		APIKey: apiKey,
 
 		// Instance identification (optional - auto-generated if not provided)
-		// InstanceID: "instance-1",
-		// Hostname:   "my-server-1",
+		// ID: "instance-1",
+		// Name: "my-server-1",
 
 		// Metadata for this instance (useful for debugging/monitoring)
 		Metadata: map[string]any{
@@ -150,11 +127,19 @@ func main() {
 			"region":      "us-east-1",
 		},
 
-		// Background service intervals (these are defaults, shown for clarity)
-		HeartbeatInterval: 30 * time.Second, // How often to send heartbeats
-		CleanupInterval:   1 * time.Minute,  // How often leader runs cleanup
-		StuckRunTimeout:   1 * time.Hour,    // When to consider a run stuck
-		LeaderTTL:         30 * time.Second, // Leader lease duration
+		// Concurrency settings
+		MaxConcurrentRuns:  10,
+		MaxConcurrentTools: 50,
+
+		// Polling intervals
+		BatchPollInterval: 30 * time.Second,
+		RunPollInterval:   1 * time.Second,
+		ToolPollInterval:  500 * time.Millisecond,
+
+		// Instance health
+		HeartbeatInterval: 15 * time.Second,
+		LeaderTTL:         30 * time.Second,
+		StuckRunTimeout:   5 * time.Minute,
 
 		// Callbacks for observability
 		OnError: func(err error) {
@@ -171,6 +156,32 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register the calculator tool on the client
+	if err := client.RegisterTool(&CalculatorTool{}); err != nil {
+		log.Fatalf("Failed to register tool: %v", err)
+	}
+
+	// Register agents on the client
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "chat",
+		Description:  "General purpose chat agent with math capabilities",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Use the calculator tool when asked to perform math operations.",
+		Tools:        []string{"calculator"}, // Agent has access to calculator tool
+	}); err != nil {
+		log.Fatalf("Failed to register chat agent: %v", err)
+	}
+
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "simple",
+		Description:  "Simple chat agent without tools",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a concise assistant. Answer in 2-3 sentences maximum.",
+		// No Tools field = no tool access
+	}); err != nil {
+		log.Fatalf("Failed to register simple agent: %v", err)
+	}
+
 	// Start the client (registers instance, starts heartbeat, leader election)
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -183,16 +194,9 @@ func main() {
 	}()
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
-	log.Printf("Is leader: %v", client.IsLeader())
-
-	// Get the registered agent handle
-	chatAgent := client.Agent("chat")
-	if chatAgent == nil {
-		log.Fatal("Agent 'chat' not found in registry")
-	}
 
 	// Create a new session
-	sessionID, err := chatAgent.NewSession(ctx, "tenant1", "user-123", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, "tenant1", "user-123", nil, map[string]any{
 		"source": "distributed-example",
 	})
 	if err != nil {
@@ -202,7 +206,7 @@ func main() {
 
 	// Run the agent with a math question
 	log.Println("\n--- Running agent with math question ---")
-	response, err := chatAgent.RunSync(ctx, sessionID, "What is 42 * 17?")
+	response, err := client.RunSync(ctx, sessionID, "chat", "What is 42 * 17?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -221,7 +225,7 @@ func main() {
 
 	// Continue the conversation
 	log.Println("\n--- Continuing conversation ---")
-	response, err = chatAgent.RunSync(ctx, sessionID, "Now divide that result by 7")
+	response, err = client.RunSync(ctx, sessionID, "chat", "Now divide that result by 7")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -236,8 +240,6 @@ func main() {
 	// Show client status
 	fmt.Printf("\n--- Client Status ---\n")
 	fmt.Printf("Instance ID: %s\n", client.InstanceID())
-	fmt.Printf("Is Running: %v\n", client.IsRunning())
-	fmt.Printf("Is Leader: %v\n", client.IsLeader())
 
 	// The client will be stopped by the defer above
 	// In a real application, you would wait for shutdown signals:

@@ -1,9 +1,10 @@
-// Package main demonstrates the Client API with HTTP API tool.
+// Package main demonstrates the Client API with HTTP API tool using per-client registration.
 //
 // This example shows:
 // - HTTP API tool with host whitelist
 // - Response size limits and timeouts
 // - Mock API server for demonstration
+// - Per-client agent and tool registration
 package main
 
 import (
@@ -205,24 +206,6 @@ func (m *MockWeatherAPI) Stop() {
 	m.server.Close()
 }
 
-// Register agent at package initialization.
-func init() {
-	maxTokens := 1024
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:        "http-tool-demo",
-		Description: "Weather assistant with HTTP API access",
-		Model:       "claude-sonnet-4-5-20250929",
-		SystemPrompt: `You are a helpful weather assistant. You have access to a weather API.
-
-Use the http_request tool to:
-- Get weather for a city: http://localhost:8888/weather?city=CityName
-- List available cities: http://localhost:8888/cities
-
-Always use the API to get real data before answering weather questions.`,
-		MaxTokens: &maxTokens,
-	})
-}
-
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -278,6 +261,35 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register HTTP tool with allowed hosts
+	httpTool := NewHTTPAPITool(
+		[]string{"localhost:8888"},
+		10*time.Second,
+	)
+	httpTool.SetDefaultHeader("User-Agent", "AgentPG-Demo/1.0")
+	if err := client.RegisterTool(httpTool); err != nil {
+		log.Fatalf("Failed to register tool: %v", err)
+	}
+
+	// Register agent with tool access
+	maxTokens := 1024
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:        "http-tool-demo",
+		Description: "Weather assistant with HTTP API access",
+		Model:       "claude-sonnet-4-5-20250929",
+		SystemPrompt: `You are a helpful weather assistant. You have access to a weather API.
+
+Use the http_request tool to:
+- Get weather for a city: http://localhost:8888/weather?city=CityName
+- List available cities: http://localhost:8888/cities
+
+Always use the API to get real data before answering weather questions.`,
+		MaxTokens: &maxTokens,
+		Tools:     []string{"http_request"},
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -290,24 +302,8 @@ func main() {
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
-	// Get the agent
-	agent := client.Agent("http-tool-demo")
-	if agent == nil {
-		log.Fatal("Agent 'http-tool-demo' not found")
-	}
-
-	// Register HTTP tool with allowed hosts (runtime registration for stateful tool)
-	httpTool := NewHTTPAPITool(
-		[]string{"localhost:8888"},
-		10*time.Second,
-	)
-	httpTool.SetDefaultHeader("User-Agent", "AgentPG-Demo/1.0")
-	if err := agent.RegisterTool(httpTool); err != nil {
-		log.Fatalf("Failed to register tool: %v", err)
-	}
-
 	// Create session
-	sessionID, err := agent.NewSession(ctx, "1", "http-tool-demo", nil, nil)
+	sessionID, err := client.NewSession(ctx, "1", "http-tool-demo", nil, nil)
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
@@ -327,7 +323,7 @@ func main() {
 		fmt.Printf("=== Query %d ===\n", i+1)
 		fmt.Printf("User: %s\n\n", query)
 
-		response, err := agent.RunSync(ctx, sessionID, query)
+		response, err := client.RunSync(ctx, sessionID, "http-tool-demo", query)
 		if err != nil {
 			log.Printf("Error: %v\n\n", err)
 			continue

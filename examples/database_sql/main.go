@@ -2,8 +2,8 @@
 //
 // This example shows:
 // - Using the standard library database/sql package instead of pgx
-// - Global agent registration in init()
-// - Manual transaction support with RunTx
+// - Per-client agent registration
+// - Transaction support with RunTx and NewSessionTx
 // - Compatible with any database/sql driver (lib/pq, pgx stdlib, etc.)
 package main
 
@@ -20,18 +20,6 @@ import (
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/databasesql"
 )
-
-// Register agents at package initialization.
-func init() {
-	maxTokens := 1024
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "database-sql-demo",
-		Description:  "Demonstrates database/sql driver usage",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful assistant. Keep responses concise.",
-		MaxTokens:    &maxTokens,
-	})
-}
 
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
@@ -88,6 +76,18 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register agent on the client
+	maxTokens := 1024
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "database-sql-demo",
+		Description:  "Demonstrates database/sql driver usage",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Keep responses concise.",
+		MaxTokens:    &maxTokens,
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -101,20 +101,11 @@ func main() {
 	fmt.Printf("Client started (instance ID: %s)\n", client.InstanceID())
 	fmt.Println()
 
-	// Get the registered agent handle
-	agent := client.Agent("database-sql-demo")
-	if agent == nil {
-		log.Fatal("Agent 'database-sql-demo' not found in registry")
-	}
-
-	fmt.Println("Agent handle acquired with database/sql driver")
-	fmt.Println()
-
 	// ==========================================================
 	// Create session
 	// ==========================================================
 
-	sessionID, err := agent.NewSession(ctx, "tenant-1", "database-sql-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, "tenant-1", "database-sql-demo", nil, map[string]any{
 		"driver": "database/sql",
 	})
 	if err != nil {
@@ -137,7 +128,7 @@ func main() {
 		fmt.Printf("=== Message %d ===\n", i+1)
 		fmt.Printf("User: %s\n", prompt)
 
-		response, err := agent.RunSync(ctx, sessionID, prompt)
+		response, err := client.RunSync(ctx, sessionID, "database-sql-demo", prompt)
 		if err != nil {
 			log.Printf("Error: %v\n\n", err)
 			continue
@@ -167,16 +158,33 @@ func main() {
 		log.Fatalf("Failed to begin transaction: %v", err)
 	}
 
-	// Run agent within the transaction
-	response, err := agent.RunTx(ctx, tx, sessionID, "What's a fun fact about Tokyo?")
+	// Create a new session within the transaction
+	sessionID2, err := client.NewSessionTx(ctx, tx, "tenant-1", "tx-demo", nil, map[string]any{
+		"description": "Transaction demo session",
+	})
 	if err != nil {
 		tx.Rollback()
-		log.Fatalf("Failed to run agent in transaction: %v", err)
+		log.Fatalf("Failed to create session in transaction: %v", err)
+	}
+
+	// Create a run within the transaction
+	runID, err := client.RunTx(ctx, tx, sessionID2, "database-sql-demo", "What's a fun fact about Tokyo?")
+	if err != nil {
+		tx.Rollback()
+		log.Fatalf("Failed to create run in transaction: %v", err)
 	}
 
 	// Commit the transaction
 	if err := tx.Commit(); err != nil {
 		log.Fatalf("Failed to commit transaction: %v", err)
+	}
+
+	fmt.Printf("Created session %s and run %s in transaction\n", sessionID2[:8]+"...", runID[:8]+"...")
+
+	// Wait for the run to complete (after transaction is committed)
+	response, err := client.WaitForRun(ctx, runID)
+	if err != nil {
+		log.Fatalf("Failed to wait for run: %v", err)
 	}
 
 	fmt.Println("User: What's a fun fact about Tokyo?")
@@ -196,15 +204,16 @@ func main() {
 	fmt.Println("The database/sql driver provides:")
 	fmt.Println("1. Compatibility with any database/sql driver (lib/pq, pgx stdlib, etc.)")
 	fmt.Println("2. Same API as pgxv5 driver - just swap the driver creation")
-	fmt.Println("3. Full transaction support with savepoint-based nesting")
+	fmt.Println("3. Full transaction support with NewSessionTx and RunTx")
 	fmt.Println("4. Standard library compatibility for existing codebases")
 	fmt.Println()
 	fmt.Println("Client API Usage:")
 	fmt.Println("  db, _ := sql.Open(\"postgres\", dbURL)")
 	fmt.Println("  drv := databasesql.New(db)")
 	fmt.Println("  client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{APIKey: apiKey})")
+	fmt.Println("  client.RegisterAgent(&agentpg.AgentDefinition{...})")
 	fmt.Println("  client.Start(ctx)")
-	fmt.Println("  agent := client.Agent(\"my-agent\")")
+	fmt.Println("  response, _ := client.RunSync(ctx, sessionID, \"agent-name\", prompt)")
 	fmt.Println()
 	fmt.Println("=== Demo Complete ===")
 }

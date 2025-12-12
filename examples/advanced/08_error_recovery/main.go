@@ -1,4 +1,4 @@
-// Package main demonstrates the Client API with error recovery.
+// Package main demonstrates the Client API with error recovery using per-client registration.
 //
 // This example shows:
 // - Error classification (transient, rate limit, permanent)
@@ -195,18 +195,6 @@ func (u *UnreliableTool) Execute(ctx context.Context, input json.RawMessage) (st
 	return fmt.Sprintf("API response for '%s': Success! Data retrieved.", params.Query), nil
 }
 
-// Register agent at package initialization.
-func init() {
-	maxTokens := 1024
-	agentpg.MustRegister(&agentpg.AgentDefinition{
-		Name:         "error-recovery-demo",
-		Description:  "Assistant with error recovery",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful assistant. Use the unreliable_api tool when asked to fetch data. If the tool fails, try again or explain the issue.",
-		MaxTokens:    &maxTokens,
-	})
-}
-
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -298,6 +286,25 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register agent on the client
+	maxTokens := 1024
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "error-recovery-demo",
+		Description:  "Assistant with error recovery",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Use the unreliable_api tool when asked to fetch data. If the tool fails, try again or explain the issue.",
+		MaxTokens:    &maxTokens,
+		Tools:        []string{"unreliable_api"},
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
+	// Register unreliable tool (50% failure rate for demo)
+	unreliableTool := NewUnreliableTool(0.5)
+	if err := client.RegisterTool(unreliableTool); err != nil {
+		log.Fatalf("Failed to register tool: %v", err)
+	}
+
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -310,31 +317,14 @@ func main() {
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
-	// Get the agent
-	agent := client.Agent("error-recovery-demo")
-	if agent == nil {
-		log.Fatal("Agent 'error-recovery-demo' not found")
-	}
+	// NOTE: The following features are part of the old per-agent API and are not available in the new per-client API:
+	// - agent.OnToolCall() hook for tracking tool calls
+	// You can track tool execution state by querying agentpg_tool_executions table directly if needed.
 
-	// Register unreliable tool (50% failure rate for demo)
-	unreliableTool := NewUnreliableTool(0.5)
-	if err := agent.RegisterTool(unreliableTool); err != nil {
-		log.Fatalf("Failed to register tool: %v", err)
-	}
-
-	// Add error tracking hook
 	var errorCount int
-	agent.OnToolCall(func(ctx context.Context, toolName string, input json.RawMessage, output string, toolErr error) error {
-		status := "success"
-		if toolErr != nil {
-			status = "error: " + toolErr.Error()
-		}
-		fmt.Printf("  [Hook] Tool called: %s (%s)\n", toolName, status)
-		return nil
-	})
 
 	// Create session
-	sessionID, err := agent.NewSession(ctx, "1", "error-recovery-demo", nil, nil)
+	sessionID, err := client.NewSession(ctx, "1", "error-recovery-demo", nil, nil)
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
@@ -360,7 +350,7 @@ func main() {
 		}
 
 		response, err = WithRetry(ctx, retryConfig, func() (*agentpg.Response, error) {
-			return agent.RunSync(ctx, sessionID, prompt)
+			return client.RunSync(ctx, sessionID, "error-recovery-demo", prompt)
 		})
 
 		if err != nil {
