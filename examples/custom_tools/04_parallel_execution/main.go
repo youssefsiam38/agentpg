@@ -1,10 +1,10 @@
-// Package main demonstrates the Client API with tool registry and executor.
+// Package main demonstrates tool usage with AgentPG.
 //
 // This example shows:
-// - Standalone tool.Registry management
-// - tool.Executor with sequential vs parallel execution
-// - ExecuteParallel and ExecuteBatch methods
-// - Integration with AgentPG client using per-client registration
+// - Creating custom tools with the tool.Tool interface
+// - Registering tools on the AgentPG client
+// - How Claude can call multiple tools in a single response
+// - Tracking tool execution through call logs
 package main
 
 import (
@@ -23,53 +23,6 @@ import (
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 	"github.com/youssefsiam38/agentpg/tool"
 )
-
-// SimpleTool is a minimal tool for demonstration
-type SimpleTool struct {
-	name        string
-	description string
-	delay       time.Duration
-	result      string
-}
-
-func NewSimpleTool(name, description string, delay time.Duration, result string) *SimpleTool {
-	return &SimpleTool{
-		name:        name,
-		description: description,
-		delay:       delay,
-		result:      result,
-	}
-}
-
-func (s *SimpleTool) Name() string        { return s.name }
-func (s *SimpleTool) Description() string { return s.description }
-
-func (s *SimpleTool) InputSchema() tool.ToolSchema {
-	return tool.ToolSchema{
-		Type: "object",
-		Properties: map[string]tool.PropertyDef{
-			"input": {
-				Type:        "string",
-				Description: "Input for the tool",
-			},
-		},
-		Required: []string{"input"},
-	}
-}
-
-func (s *SimpleTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
-	var params struct {
-		Input string `json:"input"`
-	}
-	if err := json.Unmarshal(input, &params); err != nil {
-		return "", err
-	}
-
-	// Simulate work
-	time.Sleep(s.delay)
-
-	return fmt.Sprintf("[%s] Processed '%s': %s", s.name, params.Input, s.result), nil
-}
 
 // DataFetchTool simulates fetching data from different sources
 type DataFetchTool struct {
@@ -115,13 +68,13 @@ func (d *DataFetchTool) Execute(ctx context.Context, input json.RawMessage) (str
 		return "", err
 	}
 
-	// Log the call
+	// Log the call with timestamp
 	d.mu.Lock()
 	d.callLog = append(d.callLog, fmt.Sprintf("%s:%s", params.Source, params.Query))
 	d.fetchLog = append(d.fetchLog, time.Now())
 	d.mu.Unlock()
 
-	// Simulate different fetch times
+	// Simulate different fetch times based on source
 	var delay time.Duration
 	switch params.Source {
 	case "cache":
@@ -154,6 +107,13 @@ func (d *DataFetchTool) GetCallLog() []string {
 	return result
 }
 
+func (d *DataFetchTool) GetFetchTimes() []time.Time {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	result := make([]time.Time, len(d.fetchLog))
+	copy(result, d.fetchLog)
+	return result
+}
 
 func main() {
 	// Create a context that cancels on SIGINT/SIGTERM
@@ -178,102 +138,6 @@ func main() {
 	}
 	defer pool.Close()
 
-	// ==========================================================
-	// Part 1: Demonstrate tool.Registry management
-	// ==========================================================
-	fmt.Println("=== Part 1: Registry Management ===")
-	fmt.Println()
-
-	// Create a standalone registry
-	registry := tool.NewRegistry()
-
-	// Register individual tools
-	tool1 := NewSimpleTool("analyzer", "Analyze data", 10*time.Millisecond, "analysis complete")
-	tool2 := NewSimpleTool("transformer", "Transform data", 15*time.Millisecond, "transformation done")
-	tool3 := NewSimpleTool("validator", "Validate data", 5*time.Millisecond, "validation passed")
-
-	if err := registry.Register(tool1); err != nil {
-		log.Fatalf("Failed to register tool: %v", err)
-	}
-
-	// Register multiple tools at once
-	if err := registry.RegisterAll([]tool.Tool{tool2, tool3}); err != nil {
-		log.Fatalf("Failed to register tools: %v", err)
-	}
-
-	// Registry operations
-	fmt.Printf("Tool count: %d\n", registry.Count())
-	fmt.Printf("Has 'analyzer': %v\n", registry.Has("analyzer"))
-	fmt.Printf("Has 'unknown': %v\n", registry.Has("unknown"))
-	fmt.Printf("Registered tools: %v\n", registry.List())
-
-	// Get specific tool
-	if t, ok := registry.Get("analyzer"); ok {
-		fmt.Printf("Got tool: %s - %s\n", t.Name(), t.Description())
-	}
-
-	// ==========================================================
-	// Part 2: Demonstrate tool.Executor with different modes
-	// ==========================================================
-	fmt.Println()
-	fmt.Println("=== Part 2: Executor Modes ===")
-	fmt.Println()
-
-	executor := tool.NewExecutor(registry)
-	executor.SetDefaultTimeout(5 * time.Second)
-
-	// Prepare tool calls
-	calls := []tool.ToolCallRequest{
-		{ID: "call-1", ToolName: "analyzer", Input: json.RawMessage(`{"input": "test1"}`)},
-		{ID: "call-2", ToolName: "transformer", Input: json.RawMessage(`{"input": "test2"}`)},
-		{ID: "call-3", ToolName: "validator", Input: json.RawMessage(`{"input": "test3"}`)},
-	}
-
-	// Sequential execution
-	fmt.Println("Sequential execution:")
-	start := time.Now()
-	seqResults := executor.ExecuteMultiple(ctx, calls)
-	seqDuration := time.Since(start)
-
-	for i, r := range seqResults {
-		if r.Error != nil {
-			fmt.Printf("  %s: Error - %v\n", calls[i].ID, r.Error)
-		} else {
-			fmt.Printf("  %s: %s (%.0fms)\n", calls[i].ID, r.Output, float64(r.Duration.Microseconds())/1000)
-		}
-	}
-	fmt.Printf("  Total time: %.0fms\n", float64(seqDuration.Microseconds())/1000)
-
-	// Parallel execution
-	fmt.Println("\nParallel execution:")
-	start = time.Now()
-	parResults := executor.ExecuteParallel(ctx, calls)
-	parDuration := time.Since(start)
-
-	for i, r := range parResults {
-		if r.Error != nil {
-			fmt.Printf("  %s: Error - %v\n", calls[i].ID, r.Error)
-		} else {
-			fmt.Printf("  %s: %s (%.0fms)\n", calls[i].ID, r.Output, float64(r.Duration.Microseconds())/1000)
-		}
-	}
-	fmt.Printf("  Total time: %.0fms\n", float64(parDuration.Microseconds())/1000)
-	fmt.Printf("  Speedup: %.2fx faster\n", float64(seqDuration)/float64(parDuration))
-
-	// Batch execution (respects parallel flag)
-	fmt.Println("\nBatch execution (parallel=true):")
-	start = time.Now()
-	batchResults := executor.ExecuteBatch(ctx, calls, true) // parallel=true
-	batchDuration := time.Since(start)
-	fmt.Printf("  Processed %d calls in %.0fms\n", len(batchResults), float64(batchDuration.Microseconds())/1000)
-
-	// ==========================================================
-	// Part 3: Use with AgentPG
-	// ==========================================================
-	fmt.Println()
-	fmt.Println("=== Part 3: AgentPG Integration ===")
-	fmt.Println()
-
 	// Create driver
 	drv := pgxv5.New(pool)
 
@@ -297,7 +161,7 @@ func main() {
 		Name:         "data-processor",
 		Description:  "A data processing assistant",
 		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a data processing assistant. Use the available tools to fetch and process data. When asked to fetch from multiple sources, call the tools efficiently.",
+		SystemPrompt: "You are a data processing assistant. Use the available tools to fetch and process data. When asked to fetch from multiple sources, call all the fetch_data tools in parallel (in the same response) to be efficient.",
 		MaxTokens:    &maxTokens,
 		Tools:        []string{"fetch_data"},
 	}); err != nil {
@@ -314,11 +178,13 @@ func main() {
 		}
 	}()
 
+	fmt.Println("=== AgentPG Tool Execution Demo ===")
+	fmt.Println()
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
 	// Create session
 	sessionID, err := client.NewSession(ctx, "1", "parallel-execution-demo", nil, map[string]any{
-		"description": "Parallel execution demonstration",
+		"description": "Tool execution demonstration",
 	})
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
@@ -326,24 +192,58 @@ func main() {
 
 	fmt.Printf("Created session: %s\n\n", sessionID)
 
-	// Run agent with request that might trigger multiple tool calls
+	// Run agent with request that triggers multiple tool calls
+	// Claude may call fetch_data multiple times in a single response
 	fmt.Println("Requesting data from multiple sources...")
-	response, err := client.RunSync(ctx, sessionID, "data-processor", "Fetch the user profile from both the database and the cache, and also get the latest data from the API. The query for all should be 'user-123'.")
+	fmt.Println("(Claude may call the tool multiple times in parallel)")
+	fmt.Println()
+
+	start := time.Now()
+	response, err := client.RunSync(ctx, sessionID, "data-processor",
+		"Fetch the user profile from the database, the cache, and the API. The query for all should be 'user-123'. Call all three fetch_data tools in your response.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
+	totalDuration := time.Since(start)
 
+	fmt.Println("=== Agent Response ===")
 	for _, block := range response.Message.Content {
 		if block.Type == agentpg.ContentTypeText {
 			fmt.Println(block.Text)
 		}
 	}
 
-	// Show call log
-	fmt.Println("\n=== Tool Call Log ===")
-	for i, call := range dataFetcher.GetCallLog() {
-		fmt.Printf("%d. %s\n", i+1, call)
+	// Show execution statistics
+	fmt.Println()
+	fmt.Println("=== Execution Statistics ===")
+	fmt.Printf("Total time: %v\n", totalDuration)
+	fmt.Printf("Iterations: %d\n", response.IterationCount)
+	fmt.Printf("Tool iterations: %d\n", response.ToolIterations)
+	fmt.Printf("Input tokens: %d\n", response.Usage.InputTokens)
+	fmt.Printf("Output tokens: %d\n", response.Usage.OutputTokens)
+
+	// Show call log to demonstrate parallel execution
+	fmt.Println()
+	fmt.Println("=== Tool Call Log ===")
+	callLog := dataFetcher.GetCallLog()
+	fetchTimes := dataFetcher.GetFetchTimes()
+
+	if len(callLog) > 0 {
+		firstCall := fetchTimes[0]
+		for i, call := range callLog {
+			offset := fetchTimes[i].Sub(firstCall)
+			fmt.Printf("%d. %s (started at +%v)\n", i+1, call, offset)
+		}
+
+		// If all calls started within a short window, they were parallel
+		if len(fetchTimes) > 1 {
+			lastOffset := fetchTimes[len(fetchTimes)-1].Sub(firstCall)
+			if lastOffset < 50*time.Millisecond {
+				fmt.Println("\nNote: All tool calls started within 50ms - executed in parallel!")
+			}
+		}
 	}
 
-	fmt.Println("\n=== Demo Complete ===")
+	fmt.Println()
+	fmt.Println("=== Demo Complete ===")
 }

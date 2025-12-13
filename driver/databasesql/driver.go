@@ -1,17 +1,74 @@
 // Package databasesql provides a database/sql driver implementation for AgentPG.
-//
-// This driver enables AgentPG to work with any database/sql compatible driver
-// (lib/pq, pgx/stdlib, etc.). It supports nested transactions via savepoints.
-//
-// Usage:
-//
-//	import (
-//	    "database/sql"
-//	    _ "github.com/lib/pq"
-//	    "github.com/youssefsiam38/agentpg/driver/databasesql"
-//	)
-//
-//	db, _ := sql.Open("postgres", databaseURL)
-//	drv := databasesql.New(db)
-//	agent, _ := agentpg.New(drv, agentpg.Config{...})
 package databasesql
+
+import (
+	"context"
+	"database/sql"
+
+	"github.com/youssefsiam38/agentpg/driver"
+)
+
+// Driver implements driver.Driver using database/sql.
+type Driver struct {
+	db       *sql.DB
+	store    *Store
+	listener *Listener
+	connStr  string
+}
+
+// New creates a new database/sql driver using the provided connection.
+// The connStr is required for creating listener connections.
+func New(db *sql.DB, connStr string) *Driver {
+	store := &Store{db: db}
+	return &Driver{
+		db:      db,
+		store:   store,
+		connStr: connStr,
+	}
+}
+
+// Store returns the store interface for database operations.
+func (d *Driver) Store() driver.Store[*sql.Tx] {
+	return d.store
+}
+
+// Listener returns the listener for LISTEN/NOTIFY.
+// Uses lib/pq for LISTEN/NOTIFY support.
+func (d *Driver) Listener() driver.Listener {
+	if d.listener == nil {
+		d.listener = NewListener(d.connStr)
+	}
+	return d.listener
+}
+
+// BeginTx starts a new transaction.
+func (d *Driver) BeginTx(ctx context.Context) (*sql.Tx, error) {
+	return d.db.BeginTx(ctx, nil)
+}
+
+// CommitTx commits a transaction.
+func (d *Driver) CommitTx(ctx context.Context, tx *sql.Tx) error {
+	return tx.Commit()
+}
+
+// RollbackTx rolls back a transaction.
+func (d *Driver) RollbackTx(ctx context.Context, tx *sql.Tx) error {
+	return tx.Rollback()
+}
+
+// Close closes the driver and releases resources.
+func (d *Driver) Close() error {
+	if d.listener != nil {
+		d.listener.Close()
+	}
+	// Note: We don't close the db as it was provided externally
+	return nil
+}
+
+// DB returns the underlying database connection.
+func (d *Driver) DB() *sql.DB {
+	return d.db
+}
+
+// Compile-time check
+var _ driver.Driver[*sql.Tx] = (*Driver)(nil)

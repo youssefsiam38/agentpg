@@ -121,12 +121,6 @@ func main() {
 		// ID: "instance-1",
 		// Name: "my-server-1",
 
-		// Metadata for this instance (useful for debugging/monitoring)
-		Metadata: map[string]any{
-			"environment": "development",
-			"region":      "us-east-1",
-		},
-
 		// Concurrency settings
 		MaxConcurrentRuns:  10,
 		MaxConcurrentTools: 50,
@@ -140,17 +134,6 @@ func main() {
 		HeartbeatInterval: 15 * time.Second,
 		LeaderTTL:         30 * time.Second,
 		StuckRunTimeout:   5 * time.Minute,
-
-		// Callbacks for observability
-		OnError: func(err error) {
-			log.Printf("[ERROR] Background service error: %v", err)
-		},
-		OnBecameLeader: func() {
-			log.Println("[LEADER] This instance became the leader")
-		},
-		OnLostLeadership: func() {
-			log.Println("[LEADER] This instance lost leadership")
-		},
 	})
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)

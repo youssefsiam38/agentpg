@@ -65,8 +65,8 @@ func main() {
 	// Create driver and client
 	// ==========================================================
 
-	// Create the database/sql driver
-	drv := databasesql.New(db)
+	// Create the database/sql driver (requires connection string for LISTEN/NOTIFY)
+	drv := databasesql.New(db, dbURL)
 
 	// Create the AgentPG client
 	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
@@ -179,7 +179,7 @@ func main() {
 		log.Fatalf("Failed to commit transaction: %v", err)
 	}
 
-	fmt.Printf("Created session %s and run %s in transaction\n", sessionID2[:8]+"...", runID[:8]+"...")
+	fmt.Printf("Created session %s and run %s in transaction\n", sessionID2.String()[:8]+"...", runID.String()[:8]+"...")
 
 	// Wait for the run to complete (after transaction is committed)
 	response, err := client.WaitForRun(ctx, runID)

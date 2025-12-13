@@ -1,169 +1,183 @@
 package agentpg
 
 import (
+	"os"
 	"time"
+
+	"github.com/google/uuid"
 )
 
-// =============================================================================
-// MODEL CONFIGURATION
-// =============================================================================
-
-// ModelInfo contains model-specific parameters.
-type ModelInfo struct {
-	// MaxContextTokens is the maximum context window size in tokens.
-	MaxContextTokens int
-
-	// DefaultMaxTokens is the default maximum tokens to generate.
-	DefaultMaxTokens int
-
-	// SupportsBatchAPI indicates if this model supports the Batch API.
-	SupportsBatchAPI bool
+// Logger interface for structured logging.
+// Compatible with slog.Logger and other structured loggers.
+type Logger interface {
+	Debug(msg string, args ...any)
+	Info(msg string, args ...any)
+	Warn(msg string, args ...any)
+	Error(msg string, args ...any)
 }
 
-// KnownModels maps model IDs to their capabilities.
-var KnownModels = map[string]ModelInfo{
-	// Claude 4 models
-	"claude-sonnet-4-5-20250929": {MaxContextTokens: 200000, DefaultMaxTokens: 16384, SupportsBatchAPI: true},
-	"claude-opus-4-5-20251101":   {MaxContextTokens: 200000, DefaultMaxTokens: 16384, SupportsBatchAPI: true},
-	// Claude 3.5 models
-	"claude-3-5-sonnet-20241022": {MaxContextTokens: 200000, DefaultMaxTokens: 8192, SupportsBatchAPI: true},
-	"claude-3-5-haiku-20241022":  {MaxContextTokens: 200000, DefaultMaxTokens: 8192, SupportsBatchAPI: true},
-	// Claude 3 models
-	"claude-3-opus-20240229":   {MaxContextTokens: 200000, DefaultMaxTokens: 4096, SupportsBatchAPI: true},
-	"claude-3-sonnet-20240229": {MaxContextTokens: 200000, DefaultMaxTokens: 4096, SupportsBatchAPI: true},
-	"claude-3-haiku-20240307":  {MaxContextTokens: 200000, DefaultMaxTokens: 4096, SupportsBatchAPI: true},
+// ClientConfig holds all configuration options for a Client.
+type ClientConfig struct {
+	// APIKey is the Anthropic API key (required).
+	// Falls back to ANTHROPIC_API_KEY environment variable if not set.
+	APIKey string
+
+	// Name identifies this service instance for logging and debugging.
+	// Defaults to hostname if not set.
+	Name string
+
+	// ID is the unique identifier for this client instance.
+	// Defaults to a generated UUID if not set.
+	// Must be unique across all running instances.
+	ID string
+
+	// MaxConcurrentRuns limits concurrent run processing.
+	// Defaults to DefaultMaxConcurrentRuns (10).
+	MaxConcurrentRuns int
+
+	// MaxConcurrentTools limits concurrent tool executions.
+	// Defaults to DefaultMaxConcurrentTools (50).
+	MaxConcurrentTools int
+
+	// BatchPollInterval is how often to poll Claude Batch API for status.
+	// Defaults to DefaultBatchPollInterval (30 seconds).
+	BatchPollInterval time.Duration
+
+	// RunPollInterval is the polling fallback interval for new runs.
+	// Used when LISTEN/NOTIFY is unavailable.
+	// Defaults to DefaultRunPollInterval (1 second).
+	RunPollInterval time.Duration
+
+	// ToolPollInterval is the polling interval for tool executions.
+	// Used when LISTEN/NOTIFY is unavailable.
+	// Defaults to DefaultToolPollInterval (500 milliseconds).
+	ToolPollInterval time.Duration
+
+	// HeartbeatInterval for instance liveness.
+	// Defaults to DefaultHeartbeatInterval (15 seconds).
+	HeartbeatInterval time.Duration
+
+	// LeaderTTL is the leader election lease duration.
+	// Defaults to DefaultLeaderTTL (30 seconds).
+	LeaderTTL time.Duration
+
+	// StuckRunTimeout marks runs as stuck after this duration without progress.
+	// The leader will attempt to recover stuck runs.
+	// Defaults to DefaultStuckRunTimeout (5 minutes).
+	StuckRunTimeout time.Duration
+
+	// InstanceTTL is how long an instance can go without heartbeat before cleanup.
+	// Should be > 2x HeartbeatInterval.
+	// Defaults to DefaultInstanceTTL (2 minutes).
+	InstanceTTL time.Duration
+
+	// CleanupInterval is how often to run cleanup jobs (stale instances, etc.).
+	// Defaults to DefaultCleanupInterval (1 minute).
+	CleanupInterval time.Duration
+
+	// Logger for structured logging.
+	// If nil, logs are discarded.
+	Logger Logger
 }
 
-// GetModelInfo returns model info, using sensible defaults for unknown models.
-func GetModelInfo(model string) ModelInfo {
-	if info, ok := KnownModels[model]; ok {
-		return info
+// Default configuration values.
+const (
+	DefaultMaxConcurrentRuns  = 10
+	DefaultMaxConcurrentTools = 50
+	DefaultBatchPollInterval  = 30 * time.Second
+	DefaultRunPollInterval    = 1 * time.Second
+	DefaultToolPollInterval   = 500 * time.Millisecond
+	DefaultHeartbeatInterval  = 15 * time.Second
+	DefaultLeaderTTL          = 30 * time.Second
+	DefaultStuckRunTimeout    = 5 * time.Minute
+	DefaultInstanceTTL        = 2 * time.Minute
+	DefaultCleanupInterval    = 1 * time.Minute
+	DefaultMaxToolRetries     = 3
+)
+
+// validate validates the configuration and sets defaults.
+// Returns an error if required fields are missing.
+func (c *ClientConfig) validate() error {
+	// API key is required
+	if c.APIKey == "" {
+		c.APIKey = os.Getenv("ANTHROPIC_API_KEY")
 	}
-	// Sensible defaults for unknown models
-	return ModelInfo{
-		MaxContextTokens: 200000,
-		DefaultMaxTokens: 8192,
-		SupportsBatchAPI: true, // Assume Batch API support
+	if c.APIKey == "" {
+		return NewAgentError("ValidateConfig", ErrInvalidConfig).
+			WithContext("field", "APIKey").
+			WithContext("reason", "API key is required, set via config or ANTHROPIC_API_KEY env var")
+	}
+
+	// Set defaults for optional fields
+	if c.Name == "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			hostname = "unknown"
+		}
+		c.Name = hostname
+	}
+
+	if c.ID == "" {
+		c.ID = uuid.New().String()
+	}
+
+	if c.MaxConcurrentRuns <= 0 {
+		c.MaxConcurrentRuns = DefaultMaxConcurrentRuns
+	}
+
+	if c.MaxConcurrentTools <= 0 {
+		c.MaxConcurrentTools = DefaultMaxConcurrentTools
+	}
+
+	if c.BatchPollInterval <= 0 {
+		c.BatchPollInterval = DefaultBatchPollInterval
+	}
+
+	if c.RunPollInterval <= 0 {
+		c.RunPollInterval = DefaultRunPollInterval
+	}
+
+	if c.ToolPollInterval <= 0 {
+		c.ToolPollInterval = DefaultToolPollInterval
+	}
+
+	if c.HeartbeatInterval <= 0 {
+		c.HeartbeatInterval = DefaultHeartbeatInterval
+	}
+
+	if c.LeaderTTL <= 0 {
+		c.LeaderTTL = DefaultLeaderTTL
+	}
+
+	if c.StuckRunTimeout <= 0 {
+		c.StuckRunTimeout = DefaultStuckRunTimeout
+	}
+
+	if c.InstanceTTL <= 0 {
+		c.InstanceTTL = DefaultInstanceTTL
+	}
+
+	if c.CleanupInterval <= 0 {
+		c.CleanupInterval = DefaultCleanupInterval
+	}
+
+	return nil
+}
+
+// DefaultConfig returns a new ClientConfig with all default values.
+// Note: APIKey must still be set before use.
+func DefaultConfig() *ClientConfig {
+	return &ClientConfig{
+		MaxConcurrentRuns:  DefaultMaxConcurrentRuns,
+		MaxConcurrentTools: DefaultMaxConcurrentTools,
+		BatchPollInterval:  DefaultBatchPollInterval,
+		RunPollInterval:    DefaultRunPollInterval,
+		ToolPollInterval:   DefaultToolPollInterval,
+		HeartbeatInterval:  DefaultHeartbeatInterval,
+		LeaderTTL:          DefaultLeaderTTL,
+		StuckRunTimeout:    DefaultStuckRunTimeout,
+		InstanceTTL:        DefaultInstanceTTL,
+		CleanupInterval:    DefaultCleanupInterval,
 	}
 }
 
-// =============================================================================
-// COMPACTION CONFIGURATION
-// =============================================================================
-
-// CompactionConfig holds configuration for context compaction.
-type CompactionConfig struct {
-	// Enabled controls whether automatic compaction is enabled.
-	// Defaults to true.
-	Enabled bool
-
-	// Strategy is the compaction strategy to use.
-	// Options: "summarization", "hybrid"
-	// Defaults to "hybrid".
-	Strategy string
-
-	// Trigger is the context utilization threshold (0.0-1.0) at which
-	// compaction is triggered. Defaults to 0.85 (85%).
-	Trigger float64
-
-	// TargetTokens is the target token count after compaction.
-	// Defaults to 40% of max context.
-	TargetTokens int
-
-	// PreserveLastN is the number of recent messages to always preserve.
-	// Defaults to 10.
-	PreserveLastN int
-
-	// ProtectedTokens is the number of recent tokens to never compact.
-	// Defaults to 40000.
-	ProtectedTokens int
-
-	// SummarizerModel is the model to use for generating summaries.
-	// Defaults to "claude-3-5-haiku-20241022".
-	SummarizerModel string
-
-	// PreserveToolOutputs keeps full tool outputs instead of pruning them.
-	// Defaults to false.
-	PreserveToolOutputs bool
-}
-
-// DefaultCompactionConfig returns default compaction settings for a model.
-func DefaultCompactionConfig(model string) CompactionConfig {
-	modelInfo := GetModelInfo(model)
-	return CompactionConfig{
-		Enabled:             true,
-		Strategy:            "hybrid",
-		Trigger:             0.85,
-		TargetTokens:        int(float64(modelInfo.MaxContextTokens) * 0.4),
-		PreserveLastN:       10,
-		ProtectedTokens:     40000,
-		SummarizerModel:     "claude-3-5-haiku-20241022",
-		PreserveToolOutputs: false,
-	}
-}
-
-// =============================================================================
-// RETRY CONFIGURATION
-// =============================================================================
-
-// RetryConfig holds configuration for retry behavior.
-type RetryConfig struct {
-	// MaxAttempts is the maximum number of retry attempts for API calls.
-	// Defaults to 3.
-	MaxAttempts int
-
-	// InitialDelay is the initial delay before the first retry.
-	// Defaults to 1 second.
-	InitialDelay time.Duration
-
-	// MaxDelay is the maximum delay between retries.
-	// Defaults to 30 seconds.
-	MaxDelay time.Duration
-
-	// Multiplier is the backoff multiplier.
-	// Defaults to 2.0.
-	Multiplier float64
-}
-
-// DefaultRetryConfig returns default retry settings.
-func DefaultRetryConfig() RetryConfig {
-	return RetryConfig{
-		MaxAttempts:  3,
-		InitialDelay: 1 * time.Second,
-		MaxDelay:     30 * time.Second,
-		Multiplier:   2.0,
-	}
-}
-
-// =============================================================================
-// TOOL CONFIGURATION
-// =============================================================================
-
-// ToolConfig holds configuration for tool execution.
-type ToolConfig struct {
-	// Timeout is the timeout for individual tool executions.
-	// Defaults to 5 minutes.
-	Timeout time.Duration
-
-	// MaxIterations is the maximum tool call iterations per run.
-	// Defaults to 10.
-	MaxIterations int
-
-	// RetryOnFailure controls whether to retry failed tool executions.
-	// Defaults to true.
-	RetryOnFailure bool
-
-	// MaxRetries is the maximum retry attempts for a single tool execution.
-	// Defaults to 3.
-	MaxRetries int
-}
-
-// DefaultToolConfig returns default tool execution settings.
-func DefaultToolConfig() ToolConfig {
-	return ToolConfig{
-		Timeout:        5 * time.Minute,
-		MaxIterations:  10,
-		RetryOnFailure: true,
-		MaxRetries:     3,
-	}
-}

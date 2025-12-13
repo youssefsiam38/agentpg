@@ -1,395 +1,176 @@
-// Package agentpg provides an event-driven framework for building async AI agents
-// using PostgreSQL for state management and distribution.
-//
-// AgentPG uses PostgreSQL LISTEN/NOTIFY for real-time events with polling fallback,
-// supports multi-level nested agents (agents as tools for other agents), and provides
-// a transaction-first API for atomic operations.
-//
-// Key features:
-//   - Per-client registration (no global state)
-//   - Claude Batch API integration with automatic polling
-//   - Multi-level agent hierarchies (PM → Lead → Worker pattern)
-//   - Race-safe distributed workers using SELECT FOR UPDATE SKIP LOCKED
-//   - Transaction-first architecture (RunTx accepts user transactions)
-//
-// Example usage:
-//
-//	pool, _ := pgxpool.New(ctx, databaseURL)
-//	drv := pgxv5.New(pool)
-//
-//	client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
-//	    APIKey: os.Getenv("ANTHROPIC_API_KEY"),
-//	    Name:   "my-worker",
-//	})
-//
-//	// Register agents on this client instance (no global state)
-//	client.RegisterAgent(&agentpg.AgentDefinition{
-//	    Name:         "assistant",
-//	    Model:        "claude-sonnet-4-5-20250929",
-//	    SystemPrompt: "You are a helpful assistant.",
-//	})
-//
-//	client.RegisterTool(&MyTool{})
-//
-//	client.Start(ctx)
-//	defer client.Stop(context.Background())
-//
-//	sessionID, _ := client.NewSession(ctx, "tenant-1", "user-1", nil, nil)
-//	runID, _ := client.Run(ctx, sessionID, "assistant", "Hello!")
-//	response, _ := client.WaitForRun(ctx, runID)
 package agentpg
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/google/uuid"
 	"github.com/youssefsiam38/agentpg/driver"
 	"github.com/youssefsiam38/agentpg/tool"
 )
 
-// =============================================================================
-// CLIENT CONFIGURATION
-// =============================================================================
-
-// ClientConfig holds configuration for the AgentPG client.
-type ClientConfig struct {
-	// APIKey is the Anthropic API key (required).
-	// If not set, falls back to ANTHROPIC_API_KEY environment variable.
-	APIKey string
-
-	// Name is the name of this service instance (optional).
-	// Used for instance identification in the database.
-	// Defaults to hostname-based name.
-	Name string
-
-	// ID is the unique identifier for this client instance (optional).
-	// If not set, a UUID will be generated.
-	// Must be unique across all running instances.
-	ID string
-
-	// MaxConcurrentRuns is the maximum number of runs this instance will process
-	// concurrently. Defaults to 10.
-	MaxConcurrentRuns int
-
-	// MaxConcurrentTools is the maximum number of tool executions this instance
-	// will process concurrently. Defaults to 50.
-	MaxConcurrentTools int
-
-	// BatchPollInterval is how often to poll Claude Batch API for status updates.
-	// Defaults to 30 seconds.
-	BatchPollInterval time.Duration
-
-	// RunPollInterval is how often to poll for new runs when LISTEN/NOTIFY
-	// is unavailable. Defaults to 1 second.
-	RunPollInterval time.Duration
-
-	// ToolPollInterval is how often to poll for pending tool executions.
-	// Defaults to 500 milliseconds.
-	ToolPollInterval time.Duration
-
-	// HeartbeatInterval is how often this instance sends heartbeats.
-	// Defaults to 15 seconds.
-	HeartbeatInterval time.Duration
-
-	// LeaderTTL is how long a leader election lease lasts.
-	// Defaults to 30 seconds.
-	LeaderTTL time.Duration
-
-	// StuckRunTimeout is how long a run can be claimed before it's considered stuck.
-	// Defaults to 5 minutes.
-	StuckRunTimeout time.Duration
-
-	// Logger is an optional logger. If nil, logs are discarded.
-	Logger Logger
-}
-
-// Logger interface for structured logging.
-type Logger interface {
-	Debug(msg string, args ...any)
-	Info(msg string, args ...any)
-	Warn(msg string, args ...any)
-	Error(msg string, args ...any)
-}
-
-// setDefaults applies default values to the config.
-func (c *ClientConfig) setDefaults() {
-	if c.APIKey == "" {
-		c.APIKey = os.Getenv("ANTHROPIC_API_KEY")
-	}
-	if c.Name == "" {
-		hostname, _ := os.Hostname()
-		if hostname == "" {
-			hostname = "agentpg"
-		}
-		c.Name = hostname
-	}
-	if c.ID == "" {
-		c.ID = uuid.New().String()
-	}
-	if c.MaxConcurrentRuns <= 0 {
-		c.MaxConcurrentRuns = 10
-	}
-	if c.MaxConcurrentTools <= 0 {
-		c.MaxConcurrentTools = 50
-	}
-	if c.BatchPollInterval <= 0 {
-		c.BatchPollInterval = 30 * time.Second
-	}
-	if c.RunPollInterval <= 0 {
-		c.RunPollInterval = 1 * time.Second
-	}
-	if c.ToolPollInterval <= 0 {
-		c.ToolPollInterval = 500 * time.Millisecond
-	}
-	if c.HeartbeatInterval <= 0 {
-		c.HeartbeatInterval = 15 * time.Second
-	}
-	if c.LeaderTTL <= 0 {
-		c.LeaderTTL = 30 * time.Second
-	}
-	if c.StuckRunTimeout <= 0 {
-		c.StuckRunTimeout = 5 * time.Minute
-	}
-}
-
-// validate validates the configuration.
-func (c *ClientConfig) validate() error {
-	if c.APIKey == "" {
-		return fmt.Errorf("%w: API key is required (set APIKey or ANTHROPIC_API_KEY)", ErrInvalidConfig)
-	}
-	return nil
-}
-
-// =============================================================================
-// AGENT DEFINITION
-// =============================================================================
-
-// AgentDefinition defines an agent's configuration.
-// Register agents with Client.RegisterAgent().
-type AgentDefinition struct {
-	// Name is the unique identifier for this agent (required).
-	Name string
-
-	// Description is a human-readable description of this agent.
-	// Used when this agent is registered as a tool for another agent.
-	Description string
-
-	// Model is the Claude model to use (required).
-	// Examples: "claude-sonnet-4-5-20250929", "claude-opus-4-5-20251101"
-	Model string
-
-	// SystemPrompt is the system prompt for this agent.
-	SystemPrompt string
-
-	// Tools is the list of tool names this agent can use.
-	// Only tools listed here will be available to the agent.
-	// Must reference tools registered via client.RegisterTool().
-	Tools []string
-
-	// Agents is the list of agent names this agent can delegate to.
-	// Listed agents become available as tools to this agent.
-	// Enables multi-level agent hierarchies (PM → Lead → Worker pattern).
-	//
-	// Example:
-	//   // Engineering Lead can delegate to specialists
-	//   Agents: []string{"frontend-developer", "backend-developer"}
-	Agents []string
-
-	// MaxTokens is the maximum tokens to generate per response.
-	// If nil, uses model default.
-	MaxTokens *int
-
-	// Temperature controls randomness (0.0 to 1.0).
-	// If nil, uses model default.
-	Temperature *float64
-
-	// TopK limits token selection to top K options.
-	// If nil, uses model default.
-	TopK *int
-
-	// TopP (nucleus sampling) limits cumulative probability.
-	// If nil, uses model default.
-	TopP *float64
-
-	// Config holds additional configuration as JSON.
-	// Examples: auto_compaction, compaction_trigger, extended_context
-	Config map[string]any
-}
-
-// validate validates the agent definition.
-func (d *AgentDefinition) validate() error {
-	if d.Name == "" {
-		return fmt.Errorf("%w: agent name is required", ErrInvalidConfig)
-	}
-	if d.Model == "" {
-		return fmt.Errorf("%w: agent model is required", ErrInvalidConfig)
-	}
-	return nil
-}
-
-// =============================================================================
-// CLIENT
-// =============================================================================
-
-// Client is the main entry point for AgentPG.
-// It manages agents, tools, sessions, and runs with per-client registration.
-//
-// Client is safe for concurrent use.
+// Client is the main AgentPG client that orchestrates agents, tools, and workers.
+// The TTx type parameter represents the native transaction type for the driver
+// (e.g., pgx.Tx for pgxv5, *sql.Tx for database/sql).
 type Client[TTx any] struct {
-	mu sync.RWMutex
+	driver    driver.Driver[TTx]
+	config    *ClientConfig
+	anthropic anthropic.Client
 
-	// Configuration
-	config *ClientConfig
-	driver driver.Driver[TTx]
+	instanceID string
+	started    bool
+	mu         sync.RWMutex
 
-	// Registry (per-client, no global state)
+	// Registered agents and tools (pre-Start)
 	agents map[string]*AgentDefinition
 	tools  map[string]tool.Tool
 
-	// Runtime state
-	started    bool
-	instanceID string
-	stopCh     chan struct{}
-	wg         sync.WaitGroup
+	// Background workers
+	runWorker   *runWorker[TTx]
+	toolWorker  *toolWorker[TTx]
+	batchPoller *batchPoller[TTx]
+
+	// Lifecycle
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+
+	// Waiters for run completion
+	runWaiters   map[uuid.UUID][]chan *Run
+	runWaitersMu sync.Mutex
+
+	// Leadership tracking
+	isLeader bool
+	leaderMu sync.RWMutex
 }
 
-// NewClient creates a new AgentPG client.
-//
-// The driver parameter determines the database backend (pgxv5 or database/sql).
-// Configuration is optional; defaults are applied for omitted values.
-//
-// Example:
-//
-//	pool, _ := pgxpool.New(ctx, databaseURL)
-//	drv := pgxv5.New(pool)
-//	client, err := agentpg.NewClient(drv, nil) // uses defaults
-func NewClient[TTx any](drv driver.Driver[TTx], cfg *ClientConfig) (*Client[TTx], error) {
+// NewClient creates a new AgentPG client with the given driver and configuration.
+// Agents and tools must be registered before calling Start().
+func NewClient[TTx any](drv driver.Driver[TTx], config *ClientConfig) (*Client[TTx], error) {
 	if drv == nil {
 		return nil, fmt.Errorf("%w: driver is required", ErrInvalidConfig)
 	}
 
-	if cfg == nil {
-		cfg = &ClientConfig{}
+	if config == nil {
+		config = &ClientConfig{}
 	}
-	cfg.setDefaults()
 
-	if err := cfg.validate(); err != nil {
+	if err := config.validate(); err != nil {
 		return nil, err
 	}
 
+	// Create Anthropic client
+	var opts []option.RequestOption
+	if config.APIKey != "" {
+		opts = append(opts, option.WithAPIKey(config.APIKey))
+	}
+	anthropicClient := anthropic.NewClient(opts...)
+
+	// Generate instance ID if not provided
+	instanceID := config.ID
+	if instanceID == "" {
+		instanceID = uuid.New().String()
+	}
+
 	return &Client[TTx]{
-		config:     cfg,
 		driver:     drv,
+		config:     config,
+		anthropic:  anthropicClient,
+		instanceID: instanceID,
 		agents:     make(map[string]*AgentDefinition),
 		tools:      make(map[string]tool.Tool),
-		instanceID: cfg.ID,
+		runWaiters: make(map[uuid.UUID][]chan *Run),
 	}, nil
 }
 
-// =============================================================================
-// REGISTRATION METHODS
-// =============================================================================
+// InstanceID returns the unique identifier for this client instance.
+func (c *Client[TTx]) InstanceID() string {
+	return c.instanceID
+}
 
-// RegisterAgent registers an agent definition with this client.
+// Config returns the client configuration.
+func (c *Client[TTx]) Config() *ClientConfig {
+	return c.config
+}
+
+// RegisterAgent registers an agent definition with the client.
 // Must be called before Start().
-//
-// Returns an error if the agent name is already registered or if the
-// definition is invalid.
 func (c *Client[TTx]) RegisterAgent(def *AgentDefinition) error {
-	if def == nil {
-		return fmt.Errorf("%w: agent definition is required", ErrInvalidConfig)
-	}
-	if err := def.validate(); err != nil {
-		return err
-	}
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.started {
-		return fmt.Errorf("%w: cannot register agents after Start()", ErrClientAlreadyStarted)
+		return ErrClientAlreadyStarted
 	}
 
-	if _, exists := c.agents[def.Name]; exists {
-		return fmt.Errorf("%w: agent %q already registered", ErrInvalidConfig, def.Name)
+	if def == nil {
+		return fmt.Errorf("%w: agent definition is nil", ErrInvalidConfig)
+	}
+
+	if def.Name == "" {
+		return fmt.Errorf("%w: agent name is required", ErrInvalidConfig)
+	}
+
+	if def.Model == "" {
+		return fmt.Errorf("%w: agent model is required for agent %q", ErrInvalidConfig, def.Name)
 	}
 
 	c.agents[def.Name] = def
+	c.log().Debug("registered agent", "name", def.Name, "model", def.Model)
 	return nil
 }
 
-// RegisterTool registers a tool with this client.
+// RegisterTool registers a tool with the client.
 // Must be called before Start().
-//
-// Tools are available to all agents that include the tool name in their
-// tool_names configuration.
 func (c *Client[TTx]) RegisterTool(t tool.Tool) error {
-	if t == nil {
-		return fmt.Errorf("%w: tool is required", ErrInvalidConfig)
-	}
-
-	// Validate tool schema
-	schema := t.InputSchema()
-	if schema.Type != "object" {
-		return fmt.Errorf("%w: tool %q schema type must be 'object'", ErrInvalidToolSchema, t.Name())
-	}
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.started {
-		return fmt.Errorf("%w: cannot register tools after Start()", ErrClientAlreadyStarted)
+		return ErrClientAlreadyStarted
 	}
 
-	if _, exists := c.tools[t.Name()]; exists {
-		return fmt.Errorf("%w: tool %q already registered", ErrInvalidConfig, t.Name())
+	if t == nil {
+		return fmt.Errorf("%w: tool is nil", ErrInvalidConfig)
 	}
 
-	c.tools[t.Name()] = t
+	name := t.Name()
+	if name == "" {
+		return fmt.Errorf("%w: tool name is required", ErrInvalidConfig)
+	}
+
+	c.tools[name] = t
+	c.log().Debug("registered tool", "name", name)
 	return nil
 }
 
-// validateAgentReferences validates that all tools and agents referenced
-// by agent definitions are registered. Called during Start().
-func (c *Client[TTx]) validateAgentReferences() error {
-	for agentName, def := range c.agents {
-		// Validate tool references
-		for _, toolName := range def.Tools {
-			if _, exists := c.tools[toolName]; !exists {
-				return fmt.Errorf("%w: agent %q references unregistered tool %q",
-					ErrToolNotFound, agentName, toolName)
-			}
-		}
-
-		// Validate agent references (delegate agents)
-		for _, delegateName := range def.Agents {
-			if _, exists := c.agents[delegateName]; !exists {
-				return fmt.Errorf("%w: agent %q references unregistered agent %q",
-					ErrAgentNotFound, agentName, delegateName)
-			}
-			// Prevent self-reference
-			if delegateName == agentName {
-				return fmt.Errorf("%w: agent %q cannot delegate to itself",
-					ErrInvalidConfig, agentName)
-			}
-		}
-	}
-	return nil
+// GetAgent returns the registered agent definition by name.
+func (c *Client[TTx]) GetAgent(name string) *AgentDefinition {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.agents[name]
 }
 
-// =============================================================================
-// LIFECYCLE METHODS
-// =============================================================================
+// GetTool returns the registered tool by name.
+func (c *Client[TTx]) GetTool(name string) tool.Tool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.tools[name]
+}
 
-// Start starts the client's background workers.
-// This registers the instance in the database and begins processing runs.
-//
-// Start must be called before Run(), RunTx(), WaitForRun(), or other
-// operational methods.
+// Start initializes the client and begins background processing.
+// This method:
+// 1. Validates agent/tool references
+// 2. Registers the instance in the database
+// 3. Syncs agents and tools to the database
+// 4. Starts background workers
 func (c *Client[TTx]) Start(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -398,40 +179,67 @@ func (c *Client[TTx]) Start(ctx context.Context) error {
 		return ErrClientAlreadyStarted
 	}
 
-	// Validate all agent references (tools and delegate agents)
-	if err := c.validateAgentReferences(); err != nil {
+	// Validate agent references
+	if err := c.validateReferences(); err != nil {
 		return err
 	}
 
-	// TODO: Implement worker startup
-	// 1. Register instance in database
-	// 2. Register agents and tools in database (upsert)
-	// 3. Start heartbeat worker
-	// 4. Start leader election
-	// 5. Start run worker (claims and processes runs)
-	// 6. Start tool worker (claims and executes tools)
-	// 7. Start batch poller (polls Claude Batch API)
-	// 8. Start LISTEN/NOTIFY handler
+	// Create cancellable context
+	c.ctx, c.cancel = context.WithCancel(ctx)
 
-	c.started = true
-	c.stopCh = make(chan struct{})
-
-	if c.config.Logger != nil {
-		c.config.Logger.Info("client started",
-			"instance_id", c.instanceID,
-			"name", c.config.Name,
-			"agents", len(c.agents),
-			"tools", len(c.tools),
-		)
+	// Register instance
+	if err := c.registerInstance(c.ctx); err != nil {
+		c.cancel()
+		return fmt.Errorf("failed to register instance: %w", err)
 	}
 
+	// Sync agents and tools to database
+	if err := c.syncRegistrations(c.ctx); err != nil {
+		c.cancel()
+		return fmt.Errorf("failed to sync registrations: %w", err)
+	}
+
+	// Start heartbeat loop
+	c.wg.Add(1)
+	go c.heartbeatLoop()
+
+	// Start leader election loop
+	c.wg.Add(1)
+	go c.leaderLoop()
+
+	// Start cleanup loop (only runs jobs if this instance is leader)
+	c.wg.Add(1)
+	go c.cleanupLoop()
+
+	// Start notification listener
+	c.wg.Add(1)
+	go c.notificationLoop()
+
+	// Initialize and start workers
+	c.runWorker = newRunWorker(c)
+	c.toolWorker = newToolWorker(c)
+	c.batchPoller = newBatchPoller(c)
+
+	c.wg.Add(3)
+	go func() {
+		defer c.wg.Done()
+		c.runWorker.run(c.ctx)
+	}()
+	go func() {
+		defer c.wg.Done()
+		c.toolWorker.run(c.ctx)
+	}()
+	go func() {
+		defer c.wg.Done()
+		c.batchPoller.run(c.ctx)
+	}()
+
+	c.started = true
+	c.log().Info("client started", "instance_id", c.instanceID, "agents", len(c.agents), "tools", len(c.tools))
 	return nil
 }
 
 // Stop gracefully shuts down the client.
-// It waits for in-progress work to complete before returning.
-//
-// The context can be used to set a deadline for shutdown.
 func (c *Client[TTx]) Stop(ctx context.Context) error {
 	c.mu.Lock()
 	if !c.started {
@@ -439,10 +247,14 @@ func (c *Client[TTx]) Stop(ctx context.Context) error {
 		return ErrClientNotStarted
 	}
 	c.started = false
-	close(c.stopCh)
 	c.mu.Unlock()
 
-	// Wait for workers to finish
+	c.log().Info("stopping client", "instance_id", c.instanceID)
+
+	// Cancel background tasks
+	c.cancel()
+
+	// Wait for workers with timeout
 	done := make(chan struct{})
 	go func() {
 		c.wg.Wait()
@@ -453,362 +265,792 @@ func (c *Client[TTx]) Stop(ctx context.Context) error {
 	case <-done:
 		// Clean shutdown
 	case <-ctx.Done():
-		return ctx.Err()
+		c.log().Warn("shutdown timeout, some workers may not have completed")
 	}
 
-	// TODO: Implement cleanup
-	// 1. Deregister instance from database
-	// 2. Release any held work
+	// Release leadership if we were the leader
+	// Use background context since c.ctx is cancelled
+	if c.isLeaderInstance() {
+		if err := c.driver.Store().ReleaseLeader(context.Background(), c.instanceID); err != nil {
+			c.log().Error("failed to release leadership", "error", err)
+		} else {
+			c.log().Info("released leadership", "instance_id", c.instanceID)
+		}
+	}
 
-	if c.config.Logger != nil {
-		c.config.Logger.Info("client stopped", "instance_id", c.instanceID)
+	// Unregister instance (this triggers agentpg_cleanup_orphaned_work)
+	if err := c.driver.Store().UnregisterInstance(context.Background(), c.instanceID); err != nil {
+		c.log().Error("failed to unregister instance", "error", err)
+	}
+
+	// Close driver listener
+	if listener := c.driver.Listener(); listener != nil {
+		listener.Close()
+	}
+
+	c.log().Info("client stopped", "instance_id", c.instanceID)
+	return nil
+}
+
+// NewSession creates a new conversation session.
+func (c *Client[TTx]) NewSession(ctx context.Context, tenantID, identifier string, parentSessionID *uuid.UUID, metadata map[string]any) (uuid.UUID, error) {
+	c.mu.RLock()
+	started := c.started
+	c.mu.RUnlock()
+
+	if !started {
+		return uuid.Nil, ErrClientNotStarted
+	}
+
+	session, err := c.driver.Store().CreateSession(ctx, driver.CreateSessionParams{
+		TenantID:        tenantID,
+		Identifier:      identifier,
+		ParentSessionID: parentSessionID,
+		Metadata:        metadata,
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create session: %w", err)
+	}
+
+	return session.ID, nil
+}
+
+// NewSessionTx creates a new conversation session within a transaction.
+func (c *Client[TTx]) NewSessionTx(ctx context.Context, tx TTx, tenantID, identifier string, parentSessionID *uuid.UUID, metadata map[string]any) (uuid.UUID, error) {
+	c.mu.RLock()
+	started := c.started
+	c.mu.RUnlock()
+
+	if !started {
+		return uuid.Nil, ErrClientNotStarted
+	}
+
+	session, err := c.driver.Store().CreateSessionTx(ctx, tx, driver.CreateSessionParams{
+		TenantID:        tenantID,
+		Identifier:      identifier,
+		ParentSessionID: parentSessionID,
+		Metadata:        metadata,
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create session: %w", err)
+	}
+
+	return session.ID, nil
+}
+
+// GetSession retrieves a session by ID.
+func (c *Client[TTx]) GetSession(ctx context.Context, id uuid.UUID) (*Session, error) {
+	session, err := c.driver.Store().GetSession(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if session == nil {
+		return nil, ErrSessionNotFound
+	}
+
+	return &Session{
+		ID:              session.ID,
+		TenantID:        session.TenantID,
+		Identifier:      session.Identifier,
+		ParentSessionID: session.ParentSessionID,
+		Depth:           session.Depth,
+		Metadata:        session.Metadata,
+		CompactionCount: session.CompactionCount,
+		CreatedAt:       session.CreatedAt,
+		UpdatedAt:       session.UpdatedAt,
+	}, nil
+}
+
+// Run creates a new asynchronous agent run and returns immediately.
+// Use WaitForRun to wait for completion.
+func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentName, prompt string) (uuid.UUID, error) {
+	c.mu.RLock()
+	started := c.started
+	agent := c.agents[agentName]
+	c.mu.RUnlock()
+
+	if !started {
+		return uuid.Nil, ErrClientNotStarted
+	}
+
+	if agent == nil {
+		return uuid.Nil, fmt.Errorf("%w: %s", ErrAgentNotRegistered, agentName)
+	}
+
+	run, err := c.driver.Store().CreateRun(ctx, driver.CreateRunParams{
+		SessionID:           sessionID,
+		AgentName:           agentName,
+		Prompt:              prompt,
+		Depth:               0,
+		CreatedByInstanceID: c.instanceID,
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create run: %w", err)
+	}
+
+	return run.ID, nil
+}
+
+// RunTx creates a new asynchronous agent run within a transaction.
+// The run won't be visible to workers until the transaction commits.
+func (c *Client[TTx]) RunTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentName, prompt string) (uuid.UUID, error) {
+	c.mu.RLock()
+	started := c.started
+	agent := c.agents[agentName]
+	c.mu.RUnlock()
+
+	if !started {
+		return uuid.Nil, ErrClientNotStarted
+	}
+
+	if agent == nil {
+		return uuid.Nil, fmt.Errorf("%w: %s", ErrAgentNotRegistered, agentName)
+	}
+
+	run, err := c.driver.Store().CreateRunTx(ctx, tx, driver.CreateRunParams{
+		SessionID:           sessionID,
+		AgentName:           agentName,
+		Prompt:              prompt,
+		Depth:               0,
+		CreatedByInstanceID: c.instanceID,
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create run: %w", err)
+	}
+
+	return run.ID, nil
+}
+
+// WaitForRun waits for a run to complete and returns the response.
+func (c *Client[TTx]) WaitForRun(ctx context.Context, runID uuid.UUID) (*Response, error) {
+	// Create a channel to receive notification
+	ch := make(chan *Run, 1)
+
+	c.runWaitersMu.Lock()
+	c.runWaiters[runID] = append(c.runWaiters[runID], ch)
+	c.runWaitersMu.Unlock()
+
+	defer func() {
+		c.runWaitersMu.Lock()
+		waiters := c.runWaiters[runID]
+		for i, w := range waiters {
+			if w == ch {
+				c.runWaiters[runID] = append(waiters[:i], waiters[i+1:]...)
+				break
+			}
+		}
+		if len(c.runWaiters[runID]) == 0 {
+			delete(c.runWaiters, runID)
+		}
+		c.runWaitersMu.Unlock()
+	}()
+
+	// Check if already complete
+	run, err := c.driver.Store().GetRun(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get run: %w", err)
+	}
+	if run == nil {
+		return nil, ErrRunNotFound
+	}
+
+	if isTerminalState(RunState(run.State)) {
+		return c.buildResponse(ctx, run)
+	}
+
+	// Poll interval for checking run state
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+
+		case finalRun := <-ch:
+			return c.buildResponse(ctx, &driver.Run{
+				ID:                       finalRun.ID,
+				SessionID:                finalRun.SessionID,
+				AgentName:                finalRun.AgentName,
+				ParentRunID:              finalRun.ParentRunID,
+				ParentToolExecutionID:    finalRun.ParentToolExecutionID,
+				Depth:                    finalRun.Depth,
+				State:                    driver.RunState(finalRun.State),
+				PreviousState:            (*driver.RunState)(finalRun.PreviousState),
+				Prompt:                   finalRun.Prompt,
+				CurrentIteration:         finalRun.CurrentIteration,
+				CurrentIterationID:       finalRun.CurrentIterationID,
+				ResponseText:             finalRun.ResponseText,
+				StopReason:               finalRun.StopReason,
+				InputTokens:              finalRun.InputTokens,
+				OutputTokens:             finalRun.OutputTokens,
+				CacheCreationInputTokens: finalRun.CacheCreationInputTokens,
+				CacheReadInputTokens:     finalRun.CacheReadInputTokens,
+				IterationCount:           finalRun.IterationCount,
+				ToolIterations:           finalRun.ToolIterations,
+				ErrorMessage:             finalRun.ErrorMessage,
+				ErrorType:                finalRun.ErrorType,
+				CreatedByInstanceID:      finalRun.CreatedByInstanceID,
+				ClaimedByInstanceID:      finalRun.ClaimedByInstanceID,
+				ClaimedAt:                finalRun.ClaimedAt,
+				Metadata:                 finalRun.Metadata,
+				CreatedAt:                finalRun.CreatedAt,
+				StartedAt:                finalRun.StartedAt,
+				FinalizedAt:              finalRun.FinalizedAt,
+			})
+
+		case <-ticker.C:
+			// Poll for state change
+			run, err := c.driver.Store().GetRun(ctx, runID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get run: %w", err)
+			}
+			if run == nil {
+				return nil, ErrRunNotFound
+			}
+
+			if isTerminalState(RunState(run.State)) {
+				return c.buildResponse(ctx, run)
+			}
+		}
+	}
+}
+
+// RunSync creates a run and waits for completion. This is a convenience wrapper
+// around Run and WaitForRun.
+// Note: Do not use RunSync inside a transaction as it will deadlock.
+func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentName, prompt string) (*Response, error) {
+	runID, err := c.Run(ctx, sessionID, agentName, prompt)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.WaitForRun(ctx, runID)
+}
+
+// GetRun retrieves a run by ID.
+func (c *Client[TTx]) GetRun(ctx context.Context, id uuid.UUID) (*Run, error) {
+	run, err := c.driver.Store().GetRun(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil {
+		return nil, ErrRunNotFound
+	}
+
+	return convertRun(run), nil
+}
+
+// Internal methods
+
+func (c *Client[TTx]) validateReferences() error {
+	// Validate that agents reference only registered tools and agents
+	for agentName, agent := range c.agents {
+		// Check tool references
+		for _, toolName := range agent.Tools {
+			if _, ok := c.tools[toolName]; !ok {
+				return fmt.Errorf("%w: agent %q references unknown tool %q", ErrInvalidConfig, agentName, toolName)
+			}
+		}
+
+		// Check agent references (for agent-as-tool)
+		for _, delegateName := range agent.Agents {
+			if _, ok := c.agents[delegateName]; !ok {
+				return fmt.Errorf("%w: agent %q references unknown agent %q", ErrInvalidConfig, agentName, delegateName)
+			}
+			// Prevent self-reference
+			if delegateName == agentName {
+				return fmt.Errorf("%w: agent %q cannot reference itself", ErrInvalidConfig, agentName)
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Client[TTx]) registerInstance(ctx context.Context) error {
+	hostname, _ := os.Hostname()
+	pid := os.Getpid()
+
+	return c.driver.Store().RegisterInstance(ctx, driver.RegisterInstanceParams{
+		ID:                 c.instanceID,
+		Name:               c.config.Name,
+		Hostname:           hostname,
+		PID:                pid,
+		Version:            "1.0.0",
+		MaxConcurrentRuns:  c.config.MaxConcurrentRuns,
+		MaxConcurrentTools: c.config.MaxConcurrentTools,
+	})
+}
+
+func (c *Client[TTx]) syncRegistrations(ctx context.Context) error {
+	store := c.driver.Store()
+
+	// Sync agents to database
+	for _, agent := range c.agents {
+		toolNames := make([]string, 0, len(agent.Tools)+len(agent.Agents))
+		toolNames = append(toolNames, agent.Tools...)
+		toolNames = append(toolNames, agent.Agents...)
+
+		if err := store.UpsertAgent(ctx, &driver.AgentDefinition{
+			Name:         agent.Name,
+			Description:  agent.Description,
+			Model:        agent.Model,
+			SystemPrompt: agent.SystemPrompt,
+			ToolNames:    toolNames,
+			MaxTokens:    agent.MaxTokens,
+			Temperature:  agent.Temperature,
+			TopK:         agent.TopK,
+			TopP:         agent.TopP,
+			Config:       agent.Config,
+		}); err != nil {
+			return fmt.Errorf("failed to upsert agent %q: %w", agent.Name, err)
+		}
+
+		// Register instance capability for this agent
+		if err := store.RegisterInstanceAgent(ctx, c.instanceID, agent.Name); err != nil {
+			return fmt.Errorf("failed to register instance agent %q: %w", agent.Name, err)
+		}
+	}
+
+	// Sync regular tools to database
+	for name, t := range c.tools {
+		schema := t.InputSchema()
+		schemaMap := map[string]any{
+			"type":       schema.Type,
+			"properties": schema.Properties,
+			"required":   schema.Required,
+		}
+
+		if err := store.UpsertTool(ctx, &driver.ToolDefinition{
+			Name:        name,
+			Description: t.Description(),
+			InputSchema: schemaMap,
+			IsAgentTool: false,
+		}); err != nil {
+			return fmt.Errorf("failed to upsert tool %q: %w", name, err)
+		}
+
+		// Register instance capability for this tool
+		if err := store.RegisterInstanceTool(ctx, c.instanceID, name); err != nil {
+			return fmt.Errorf("failed to register instance tool %q: %w", name, err)
+		}
+	}
+
+	// Create agent-as-tool entries
+	for _, agent := range c.agents {
+		for _, delegateName := range agent.Agents {
+			delegateAgent := c.agents[delegateName]
+
+			// Create tool entry for the agent
+			schemaMap := map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"task": map[string]any{
+						"type":        "string",
+						"description": "The task to delegate to this agent",
+					},
+				},
+				"required": []string{"task"},
+			}
+
+			if err := store.UpsertTool(ctx, &driver.ToolDefinition{
+				Name:        delegateName,
+				Description: delegateAgent.Description,
+				InputSchema: schemaMap,
+				IsAgentTool: true,
+				AgentName:   &delegateName,
+			}); err != nil {
+				return fmt.Errorf("failed to upsert agent-tool %q: %w", delegateName, err)
+			}
+
+			// Register instance capability for agent-tool
+			if err := store.RegisterInstanceTool(ctx, c.instanceID, delegateName); err != nil {
+				return fmt.Errorf("failed to register instance agent-tool %q: %w", delegateName, err)
+			}
+		}
 	}
 
 	return nil
 }
 
-// InstanceID returns the unique identifier for this client instance.
-func (c *Client[TTx]) InstanceID() string {
-	return c.instanceID
-}
+func (c *Client[TTx]) heartbeatLoop() {
+	defer c.wg.Done()
 
-// =============================================================================
-// SESSION METHODS
-// =============================================================================
+	ticker := time.NewTicker(c.config.HeartbeatInterval)
+	defer ticker.Stop()
 
-// NewSession creates a new conversation session.
-//
-// Parameters:
-//   - tenantID: Multi-tenant isolation key (required for queries)
-//   - identifier: User-provided identifier (unique within tenant)
-//   - parentSessionID: Optional parent session for nested agents
-//   - metadata: Optional arbitrary metadata
-//
-// Returns the session UUID.
-func (c *Client[TTx]) NewSession(
-	ctx context.Context,
-	tenantID string,
-	identifier string,
-	parentSessionID *uuid.UUID,
-	metadata map[string]any,
-) (uuid.UUID, error) {
-	c.mu.RLock()
-	if !c.started {
-		c.mu.RUnlock()
-		return uuid.Nil, ErrClientNotStarted
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-ticker.C:
+			if err := c.driver.Store().UpdateHeartbeat(c.ctx, c.instanceID); err != nil {
+				c.log().Error("failed to update heartbeat", "error", err)
+			}
+		}
 	}
-	c.mu.RUnlock()
-
-	// TODO: Implement session creation via driver
-	// 1. Calculate depth from parent
-	// 2. Insert session row
-	// 3. Return session ID
-
-	return uuid.New(), nil
 }
 
-// NewSessionTx creates a new session within an existing transaction.
-// This allows atomic session creation as part of a larger operation.
-func (c *Client[TTx]) NewSessionTx(
-	ctx context.Context,
-	tx TTx,
-	tenantID string,
-	identifier string,
-	parentSessionID *uuid.UUID,
-	metadata map[string]any,
-) (uuid.UUID, error) {
-	c.mu.RLock()
-	if !c.started {
-		c.mu.RUnlock()
-		return uuid.Nil, ErrClientNotStarted
+// leaderLoop manages leader election and lease refresh.
+// It runs on a regular interval (LeaderTTL / 2) to:
+// 1. Attempt to acquire leadership if not already leader
+// 2. Refresh the lease if currently leader
+func (c *Client[TTx]) leaderLoop() {
+	defer c.wg.Done()
+
+	// Use half the TTL as the refresh interval to ensure we refresh before expiry
+	refreshInterval := c.config.LeaderTTL / 2
+	if refreshInterval < time.Second {
+		refreshInterval = time.Second
 	}
-	c.mu.RUnlock()
 
-	// TODO: Implement session creation within transaction
+	ticker := time.NewTicker(refreshInterval)
+	defer ticker.Stop()
 
-	return uuid.New(), nil
-}
+	// Try to acquire leadership immediately on start
+	c.tryAcquireOrRefreshLeadership()
 
-// =============================================================================
-// RUN METHODS
-// =============================================================================
-
-// Run submits a new agent run for async processing.
-//
-// The run is created in 'pending' state and will be picked up by a worker
-// (potentially on a different instance). Use WaitForRun() to wait for completion,
-// or RunSync() for synchronous execution.
-//
-// Parameters:
-//   - sessionID: The session to run within
-//   - agentName: The agent to execute
-//   - prompt: The user prompt
-//
-// Returns the run UUID.
-func (c *Client[TTx]) Run(
-	ctx context.Context,
-	sessionID uuid.UUID,
-	agentName string,
-	prompt string,
-) (uuid.UUID, error) {
-	c.mu.RLock()
-	if !c.started {
-		c.mu.RUnlock()
-		return uuid.Nil, ErrClientNotStarted
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-ticker.C:
+			c.tryAcquireOrRefreshLeadership()
+		}
 	}
-	c.mu.RUnlock()
-
-	// TODO: Implement run creation
-	// 1. Validate agent exists
-	// 2. Create user message in session
-	// 3. Insert run row with state='pending'
-	// 4. NOTIFY workers
-
-	return uuid.New(), nil
 }
 
-// RunTx submits a new agent run within an existing transaction.
-//
-// This is the transaction-first API: the run is created atomically with
-// whatever other operations are in the transaction. The run won't be
-// visible to workers until the transaction commits.
-//
-// IMPORTANT: Do not use WaitForRun() inside the same transaction as it
-// will deadlock (the run won't be visible until commit).
-func (c *Client[TTx]) RunTx(
-	ctx context.Context,
-	tx TTx,
-	sessionID uuid.UUID,
-	agentName string,
-	prompt string,
-) (uuid.UUID, error) {
-	c.mu.RLock()
-	if !c.started {
-		c.mu.RUnlock()
-		return uuid.Nil, ErrClientNotStarted
+func (c *Client[TTx]) tryAcquireOrRefreshLeadership() {
+	store := c.driver.Store()
+
+	c.leaderMu.RLock()
+	wasLeader := c.isLeader
+	c.leaderMu.RUnlock()
+
+	if wasLeader {
+		// Already leader, try to refresh
+		err := store.RefreshLeader(c.ctx, c.instanceID, c.config.LeaderTTL)
+		if err != nil {
+			// Lost leadership (someone else took it or it expired)
+			c.leaderMu.Lock()
+			c.isLeader = false
+			c.leaderMu.Unlock()
+			c.log().Info("lost leadership", "instance_id", c.instanceID)
+		}
+	} else {
+		// Not leader, try to acquire
+		acquired, err := store.TryAcquireLeader(c.ctx, c.instanceID, c.config.LeaderTTL)
+		if err != nil {
+			c.log().Error("failed to try acquire leadership", "error", err)
+			return
+		}
+
+		if acquired {
+			c.leaderMu.Lock()
+			c.isLeader = true
+			c.leaderMu.Unlock()
+			c.log().Info("acquired leadership", "instance_id", c.instanceID)
+		}
 	}
-	c.mu.RUnlock()
-
-	// TODO: Implement run creation within transaction
-
-	return uuid.New(), nil
 }
 
-// WaitForRun waits for a run to reach a terminal state (completed, failed, cancelled).
-//
-// Returns the final response when the run completes successfully.
-// Returns an error if the run fails or is cancelled.
-//
-// The context can be used to set a timeout for waiting.
-func (c *Client[TTx]) WaitForRun(ctx context.Context, runID uuid.UUID) (*Response, error) {
-	c.mu.RLock()
-	if !c.started {
-		c.mu.RUnlock()
-		return nil, ErrClientNotStarted
+// isLeaderInstance returns true if this instance is currently the elected leader.
+func (c *Client[TTx]) isLeaderInstance() bool {
+	c.leaderMu.RLock()
+	defer c.leaderMu.RUnlock()
+	return c.isLeader
+}
+
+// cleanupLoop runs periodic cleanup jobs.
+// Only the elected leader runs cleanup to avoid duplicate work.
+// Jobs include deleting stale instances (no heartbeat for InstanceTTL).
+func (c *Client[TTx]) cleanupLoop() {
+	defer c.wg.Done()
+
+	ticker := time.NewTicker(c.config.CleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-ticker.C:
+			if c.isLeaderInstance() {
+				c.runCleanupJobs()
+			}
+		}
 	}
-	c.mu.RUnlock()
-
-	// TODO: Implement run waiting
-	// 1. Subscribe to run state changes (LISTEN or poll)
-	// 2. Wait for terminal state
-	// 3. Return response or error
-
-	return &Response{}, nil
 }
 
-// RunSync is a convenience wrapper that calls Run() followed by WaitForRun().
-//
-// This provides a synchronous interface for simple use cases.
-// For more control, use Run() and WaitForRun() separately.
-//
-// NOTE: There is intentionally no RunSyncTx - calling RunTx followed by
-// WaitForRun in the same transaction would deadlock.
-func (c *Client[TTx]) RunSync(
-	ctx context.Context,
-	sessionID uuid.UUID,
-	agentName string,
-	prompt string,
-) (*Response, error) {
-	runID, err := c.Run(ctx, sessionID, agentName, prompt)
+func (c *Client[TTx]) runCleanupJobs() {
+	ctx := c.ctx
+	store := c.driver.Store()
+	log := c.log()
+
+	// Delete stale instances (no heartbeat for longer than InstanceTTL)
+	// The agentpg_cleanup_orphaned_work trigger will handle marking
+	// orphaned runs/tools as failed when the instance row is deleted
+	deleted, err := store.DeleteStaleInstances(ctx, c.config.InstanceTTL)
 	if err != nil {
-		return nil, err
+		log.Error("failed to delete stale instances", "error", err)
+	} else if deleted > 0 {
+		log.Info("cleaned up stale instances", "count", deleted)
 	}
-	return c.WaitForRun(ctx, runID)
 }
 
-// =============================================================================
-// QUERY METHODS
-// =============================================================================
+func (c *Client[TTx]) notificationLoop() {
+	defer c.wg.Done()
 
-// GetRun retrieves the current state of a run.
-func (c *Client[TTx]) GetRun(ctx context.Context, runID uuid.UUID) (*Run, error) {
-	c.mu.RLock()
-	if !c.started {
-		c.mu.RUnlock()
-		return nil, ErrClientNotStarted
+	listener := c.driver.Listener()
+	if listener == nil {
+		c.log().Debug("no listener available, notification loop disabled")
+		return
 	}
-	c.mu.RUnlock()
 
-	// TODO: Implement
-
-	return nil, ErrRunNotFound
-}
-
-// GetSession retrieves a session by ID.
-func (c *Client[TTx]) GetSession(ctx context.Context, sessionID uuid.UUID) (*Session, error) {
-	c.mu.RLock()
-	if !c.started {
-		c.mu.RUnlock()
-		return nil, ErrClientNotStarted
+	// Start listening on relevant channels
+	channels := []string{
+		ChannelRunCreated,
+		ChannelRunState,
+		ChannelRunFinalized,
+		ChannelToolPending,
+		ChannelToolsComplete,
 	}
-	c.mu.RUnlock()
 
-	// TODO: Implement
+	if err := listener.Listen(c.ctx, channels...); err != nil {
+		c.log().Error("failed to start listener", "error", err)
+		return
+	}
 
-	return nil, ErrSessionNotFound
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case notif, ok := <-listener.Notifications():
+			if !ok {
+				return
+			}
+			c.handleNotification(notif)
+		}
+	}
 }
 
-// =============================================================================
-// RESPONSE TYPES
-// =============================================================================
+func (c *Client[TTx]) handleNotification(notif driver.Notification) {
+	switch notif.Channel {
+	case ChannelRunCreated:
+		// Signal run worker to check for new runs
+		if c.runWorker != nil {
+			c.runWorker.trigger()
+		}
 
-// Response represents the result of a completed run.
-type Response struct {
-	// Text is the final text response from the agent.
-	Text string
+	case ChannelRunFinalized:
+		// Parse payload and notify waiters
+		var payload struct {
+			RunID                 uuid.UUID  `json:"run_id"`
+			SessionID             uuid.UUID  `json:"session_id"`
+			State                 string     `json:"state"`
+			ParentRunID           *uuid.UUID `json:"parent_run_id"`
+			ParentToolExecutionID *uuid.UUID `json:"parent_tool_execution_id"`
+		}
+		if err := json.Unmarshal([]byte(notif.Payload), &payload); err != nil {
+			c.log().Error("failed to parse run finalized payload", "error", err)
+			return
+		}
 
-	// StopReason indicates why the run stopped.
-	// Values: "end_turn", "max_tokens", "tool_use"
-	StopReason string
+		// Fetch full run and notify waiters
+		run, err := c.driver.Store().GetRun(c.ctx, payload.RunID)
+		if err != nil {
+			c.log().Error("failed to get finalized run", "error", err, "run_id", payload.RunID)
+			return
+		}
 
-	// Usage contains token usage statistics.
-	Usage Usage
+		c.notifyRunWaiters(payload.RunID, convertRun(run))
 
-	// Message is the full message with all content blocks.
-	Message *Message
+	case ChannelToolPending:
+		// Signal tool worker to check for new executions
+		if c.toolWorker != nil {
+			c.toolWorker.trigger()
+		}
 
-	// IterationCount is how many batch API calls were made.
-	IterationCount int
-
-	// ToolIterations is how many iterations involved tool use.
-	ToolIterations int
+	case ChannelToolsComplete:
+		// Signal tool worker that all tools for a run are complete
+		var payload struct {
+			RunID uuid.UUID `json:"run_id"`
+		}
+		if err := json.Unmarshal([]byte(notif.Payload), &payload); err != nil {
+			c.log().Error("failed to parse tools complete payload", "error", err)
+			return
+		}
+		if c.toolWorker != nil {
+			c.toolWorker.handleToolsComplete(payload.RunID)
+		}
+	}
 }
 
-// Usage contains token usage statistics.
-type Usage struct {
-	InputTokens              int
-	OutputTokens             int
-	CacheCreationInputTokens int
-	CacheReadInputTokens     int
+func (c *Client[TTx]) notifyRunWaiters(runID uuid.UUID, run *Run) {
+	c.runWaitersMu.Lock()
+	waiters := c.runWaiters[runID]
+	delete(c.runWaiters, runID)
+	c.runWaitersMu.Unlock()
+
+	for _, ch := range waiters {
+		select {
+		case ch <- run:
+		default:
+		}
+	}
 }
 
-// Run represents an agent run.
-type Run struct {
-	ID                     uuid.UUID
-	SessionID              uuid.UUID
-	AgentName              string
-	State                  RunState
-	ParentRunID            *uuid.UUID
-	ParentToolExecutionID  *uuid.UUID
-	Depth                  int
-	Prompt                 string
-	ResponseText           string
-	StopReason             string
-	CurrentIteration       int
-	IterationCount         int
-	ToolIterations         int
-	InputTokens            int
-	OutputTokens           int
-	CacheCreationTokens    int
-	CacheReadTokens        int
-	ErrorMessage           string
-	ErrorType              string
-	CreatedByInstanceID    string
-	ClaimedByInstanceID    string
-	ClaimedAt              *time.Time
-	Metadata               map[string]any
-	CreatedAt              time.Time
-	StartedAt              *time.Time
-	FinalizedAt            *time.Time
+func (c *Client[TTx]) buildResponse(ctx context.Context, run *driver.Run) (*Response, error) {
+	if run.State == string(RunStateFailed) {
+		return nil, &AgentError{
+			Op:        "run",
+			Err:       errors.New(Deref(run.ErrorMessage)),
+			RunID:     run.ID.String(),
+			SessionID: run.SessionID.String(),
+			Context: map[string]any{
+				"error_type": Deref(run.ErrorType),
+			},
+		}
+	}
+
+	if run.State == string(RunStateCancelled) {
+		return nil, &AgentError{
+			Op:        "run",
+			Err:       errors.New("run was cancelled"),
+			RunID:     run.ID.String(),
+			SessionID: run.SessionID.String(),
+		}
+	}
+
+	// Get the final message
+	var message *Message
+	if run.CurrentIterationID != nil {
+		iter, err := c.driver.Store().GetIteration(ctx, *run.CurrentIterationID)
+		if err == nil && iter != nil && iter.ResponseMessageID != nil {
+			msg, err := c.driver.Store().GetMessage(ctx, *iter.ResponseMessageID)
+			if err == nil && msg != nil {
+				message = convertMessage(msg)
+			}
+		}
+	}
+
+	// If no message from iteration, try to get from run's messages
+	if message == nil {
+		messages, err := c.driver.Store().GetMessagesByRun(ctx, run.ID)
+		if err == nil && len(messages) > 0 {
+			// Get last assistant message
+			for i := len(messages) - 1; i >= 0; i-- {
+				if messages[i].Role == string(MessageRoleAssistant) {
+					message = convertMessage(messages[i])
+					break
+				}
+			}
+		}
+	}
+
+	return &Response{
+		Text:       Deref(run.ResponseText),
+		StopReason: Deref(run.StopReason),
+		Usage: Usage{
+			InputTokens:              run.InputTokens,
+			OutputTokens:             run.OutputTokens,
+			CacheCreationInputTokens: run.CacheCreationInputTokens,
+			CacheReadInputTokens:     run.CacheReadInputTokens,
+		},
+		Message:        message,
+		IterationCount: run.IterationCount,
+		ToolIterations: run.ToolIterations,
+	}, nil
 }
 
-// RunState represents the state of a run.
-type RunState string
-
-const (
-	RunStatePending         RunState = "pending"
-	RunStateBatchSubmitting RunState = "batch_submitting"
-	RunStateBatchPending    RunState = "batch_pending"
-	RunStateBatchProcessing RunState = "batch_processing"
-	RunStatePendingTools    RunState = "pending_tools"
-	RunStateAwaitingInput   RunState = "awaiting_input"
-	RunStateCompleted       RunState = "completed"
-	RunStateCancelled       RunState = "cancelled"
-	RunStateFailed          RunState = "failed"
-)
-
-// Session represents a conversation session.
-type Session struct {
-	ID              uuid.UUID
-	TenantID        string
-	Identifier      string
-	ParentSessionID *uuid.UUID
-	Depth           int
-	Metadata        map[string]any
-	CompactionCount int
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+func (c *Client[TTx]) log() Logger {
+	if c.config.Logger != nil {
+		return c.config.Logger
+	}
+	return &noopLogger{}
 }
 
-// Message represents a conversation message.
-type Message struct {
-	ID          uuid.UUID
-	SessionID   uuid.UUID
-	RunID       *uuid.UUID
-	Role        MessageRole
-	Content     []ContentBlock
-	Usage       map[string]any
-	IsPreserved bool
-	IsSummary   bool
-	Metadata    map[string]any
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+// Helper functions
+
+func isTerminalState(state RunState) bool {
+	return state == RunStateCompleted || state == RunStateFailed || state == RunStateCancelled
 }
 
-// MessageRole represents the role of a message.
-type MessageRole string
-
-const (
-	MessageRoleUser      MessageRole = "user"
-	MessageRoleAssistant MessageRole = "assistant"
-	MessageRoleSystem    MessageRole = "system"
-)
-
-// ContentBlock represents a block of content within a message.
-type ContentBlock struct {
-	Type               ContentType
-	Text               string
-	ToolUseID          string
-	ToolName           string
-	ToolInput          map[string]any
-	ToolResultForUseID string
-	ToolContent        string
-	IsError            bool
-	Source             map[string]any
-	SearchResults      []map[string]any
-	Metadata           map[string]any
+func convertRun(r *driver.Run) *Run {
+	if r == nil {
+		return nil
+	}
+	return &Run{
+		ID:                       r.ID,
+		SessionID:                r.SessionID,
+		AgentName:                r.AgentName,
+		ParentRunID:              r.ParentRunID,
+		ParentToolExecutionID:    r.ParentToolExecutionID,
+		Depth:                    r.Depth,
+		State:                    RunState(r.State),
+		PreviousState:            (*RunState)(r.PreviousState),
+		Prompt:                   r.Prompt,
+		CurrentIteration:         r.CurrentIteration,
+		CurrentIterationID:       r.CurrentIterationID,
+		ResponseText:             r.ResponseText,
+		StopReason:               r.StopReason,
+		InputTokens:              r.InputTokens,
+		OutputTokens:             r.OutputTokens,
+		CacheCreationInputTokens: r.CacheCreationInputTokens,
+		CacheReadInputTokens:     r.CacheReadInputTokens,
+		IterationCount:           r.IterationCount,
+		ToolIterations:           r.ToolIterations,
+		ErrorMessage:             r.ErrorMessage,
+		ErrorType:                r.ErrorType,
+		CreatedByInstanceID:      r.CreatedByInstanceID,
+		ClaimedByInstanceID:      r.ClaimedByInstanceID,
+		ClaimedAt:                r.ClaimedAt,
+		Metadata:                 r.Metadata,
+		CreatedAt:                r.CreatedAt,
+		StartedAt:                r.StartedAt,
+		FinalizedAt:              r.FinalizedAt,
+	}
 }
 
-// ContentType represents the type of a content block.
-type ContentType string
+func convertMessage(m *driver.Message) *Message {
+	if m == nil {
+		return nil
+	}
+	content := make([]ContentBlock, len(m.Content))
+	for i, c := range m.Content {
+		content[i] = ContentBlock{
+			Type:               c.Type,
+			Text:               c.Text,
+			ToolUseID:          c.ToolUseID,
+			ToolName:           c.ToolName,
+			ToolInput:          c.ToolInput,
+			ToolResultForUseID: c.ToolResultForUseID,
+			ToolContent:        c.ToolContent,
+			IsError:            c.IsError,
+			Source:             c.Source,
+			SearchResults:      c.SearchResults,
+			Metadata:           c.Metadata,
+		}
+	}
+	return &Message{
+		ID:          m.ID,
+		SessionID:   m.SessionID,
+		RunID:       m.RunID,
+		Role:        MessageRole(m.Role),
+		Content:     content,
+		Usage:       Usage(m.Usage),
+		IsPreserved: m.IsPreserved,
+		IsSummary:   m.IsSummary,
+		Metadata:    m.Metadata,
+		CreatedAt:   m.CreatedAt,
+		UpdatedAt:   m.UpdatedAt,
+	}
+}
 
-const (
-	ContentTypeText            ContentType = "text"
-	ContentTypeToolUse         ContentType = "tool_use"
-	ContentTypeToolResult      ContentType = "tool_result"
-	ContentTypeImage           ContentType = "image"
-	ContentTypeDocument        ContentType = "document"
-	ContentTypeThinking        ContentType = "thinking"
-	ContentTypeServerToolUse   ContentType = "server_tool_use"
-	ContentTypeWebSearchResult ContentType = "web_search_result"
-)
+// noopLogger is a no-op logger implementation
+type noopLogger struct{}
+
+func (l *noopLogger) Debug(msg string, args ...any) {}
+func (l *noopLogger) Info(msg string, args ...any)  {}
+func (l *noopLogger) Warn(msg string, args ...any)  {}
+func (l *noopLogger) Error(msg string, args ...any) {}
