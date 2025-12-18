@@ -188,10 +188,10 @@ type batchResultLine struct {
 	Result   struct {
 		Type    string `json:"type"` // "succeeded" or "errored"
 		Message *struct {
-			ID           string `json:"id"`
-			Type         string `json:"type"`
-			Role         string `json:"role"`
-			Content      []struct {
+			ID      string `json:"id"`
+			Type    string `json:"type"`
+			Role    string `json:"role"`
+			Content []struct {
 				Type  string          `json:"type"`
 				Text  string          `json:"text,omitempty"`
 				ID    string          `json:"id,omitempty"`
@@ -342,15 +342,15 @@ func (p *batchPoller[TTx]) processResult(ctx context.Context, iter *driver.Itera
 	}
 
 	if err := store.UpdateIteration(ctx, iter.ID, map[string]any{
-		"stop_reason":           msg.StopReason,
-		"response_message_id":   message.ID,
-		"has_tool_use":          hasToolUse,
-		"tool_execution_count":  toolExecutionCount,
-		"input_tokens":          msg.Usage.InputTokens,
-		"output_tokens":         msg.Usage.OutputTokens,
+		"stop_reason":                 msg.StopReason,
+		"response_message_id":         message.ID,
+		"has_tool_use":                hasToolUse,
+		"tool_execution_count":        toolExecutionCount,
+		"input_tokens":                msg.Usage.InputTokens,
+		"output_tokens":               msg.Usage.OutputTokens,
 		"cache_creation_input_tokens": msg.Usage.CacheCreationInputTokens,
 		"cache_read_input_tokens":     msg.Usage.CacheReadInputTokens,
-		"completed_at":          now,
+		"completed_at":                now,
 	}); err != nil {
 		return fmt.Errorf("failed to update iteration: %w", err)
 	}

@@ -33,9 +33,10 @@ type Client[TTx any] struct {
 	tools  map[string]tool.Tool
 
 	// Background workers
-	runWorker   *runWorker[TTx]
-	toolWorker  *toolWorker[TTx]
-	batchPoller *batchPoller[TTx]
+	runWorker       *runWorker[TTx]
+	streamingWorker *streamingWorker[TTx]
+	toolWorker      *toolWorker[TTx]
+	batchPoller     *batchPoller[TTx]
 
 	// Lifecycle
 	ctx    context.Context
@@ -217,13 +218,18 @@ func (c *Client[TTx]) Start(ctx context.Context) error {
 
 	// Initialize and start workers
 	c.runWorker = newRunWorker(c)
+	c.streamingWorker = newStreamingWorker(c)
 	c.toolWorker = newToolWorker(c)
 	c.batchPoller = newBatchPoller(c)
 
-	c.wg.Add(3)
+	c.wg.Add(4)
 	go func() {
 		defer c.wg.Done()
 		c.runWorker.run(c.ctx)
+	}()
+	go func() {
+		defer c.wg.Done()
+		c.streamingWorker.run(c.ctx)
 	}()
 	go func() {
 		defer c.wg.Done()
@@ -472,6 +478,7 @@ func (c *Client[TTx]) WaitForRun(ctx context.Context, runID uuid.UUID) (*Respons
 				ID:                       finalRun.ID,
 				SessionID:                finalRun.SessionID,
 				AgentName:                finalRun.AgentName,
+				RunMode:                  string(finalRun.RunMode),
 				ParentRunID:              finalRun.ParentRunID,
 				ParentToolExecutionID:    finalRun.ParentToolExecutionID,
 				Depth:                    finalRun.Depth,
@@ -521,6 +528,81 @@ func (c *Client[TTx]) WaitForRun(ctx context.Context, runID uuid.UUID) (*Respons
 // Note: Do not use RunSync inside a transaction as it will deadlock.
 func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentName, prompt string) (*Response, error) {
 	runID, err := c.Run(ctx, sessionID, agentName, prompt)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.WaitForRun(ctx, runID)
+}
+
+// RunFast creates a new asynchronous agent run using the streaming API.
+// This provides faster response times compared to the batch API.
+// Use WaitForRun to wait for completion.
+func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentName, prompt string) (uuid.UUID, error) {
+	c.mu.RLock()
+	started := c.started
+	agent := c.agents[agentName]
+	c.mu.RUnlock()
+
+	if !started {
+		return uuid.Nil, ErrClientNotStarted
+	}
+
+	if agent == nil {
+		return uuid.Nil, fmt.Errorf("%w: %s", ErrAgentNotRegistered, agentName)
+	}
+
+	run, err := c.driver.Store().CreateRun(ctx, driver.CreateRunParams{
+		SessionID:           sessionID,
+		AgentName:           agentName,
+		Prompt:              prompt,
+		RunMode:             string(RunModeStreaming),
+		Depth:               0,
+		CreatedByInstanceID: c.instanceID,
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create streaming run: %w", err)
+	}
+
+	return run.ID, nil
+}
+
+// RunFastTx creates a new asynchronous agent run using the streaming API within a transaction.
+// The run won't be visible to workers until the transaction commits.
+func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentName, prompt string) (uuid.UUID, error) {
+	c.mu.RLock()
+	started := c.started
+	agent := c.agents[agentName]
+	c.mu.RUnlock()
+
+	if !started {
+		return uuid.Nil, ErrClientNotStarted
+	}
+
+	if agent == nil {
+		return uuid.Nil, fmt.Errorf("%w: %s", ErrAgentNotRegistered, agentName)
+	}
+
+	run, err := c.driver.Store().CreateRunTx(ctx, tx, driver.CreateRunParams{
+		SessionID:           sessionID,
+		AgentName:           agentName,
+		Prompt:              prompt,
+		RunMode:             string(RunModeStreaming),
+		Depth:               0,
+		CreatedByInstanceID: c.instanceID,
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create streaming run: %w", err)
+	}
+
+	return run.ID, nil
+}
+
+// RunFastSync creates a streaming run and waits for completion.
+// This is a convenience wrapper around RunFast and WaitForRun.
+// Note: Do not use RunFastSync inside a transaction as it will deadlock.
+func (c *Client[TTx]) RunFastSync(ctx context.Context, sessionID uuid.UUID, agentName, prompt string) (*Response, error) {
+	runID, err := c.RunFast(ctx, sessionID, agentName, prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -837,9 +919,34 @@ func (c *Client[TTx]) notificationLoop() {
 func (c *Client[TTx]) handleNotification(notif driver.Notification) {
 	switch notif.Channel {
 	case ChannelRunCreated:
-		// Signal run worker to check for new runs
-		if c.runWorker != nil {
-			c.runWorker.trigger()
+		// Parse payload to determine run mode
+		var payload struct {
+			RunID     uuid.UUID `json:"run_id"`
+			SessionID uuid.UUID `json:"session_id"`
+			AgentName string    `json:"agent_name"`
+			RunMode   string    `json:"run_mode"`
+		}
+		if err := json.Unmarshal([]byte(notif.Payload), &payload); err != nil {
+			c.log().Error("failed to parse run created payload", "error", err)
+			// Fall back to triggering both workers
+			if c.runWorker != nil {
+				c.runWorker.trigger()
+			}
+			if c.streamingWorker != nil {
+				c.streamingWorker.trigger()
+			}
+			return
+		}
+
+		// Trigger appropriate worker based on run mode
+		if payload.RunMode == string(RunModeStreaming) {
+			if c.streamingWorker != nil {
+				c.streamingWorker.trigger()
+			}
+		} else {
+			if c.runWorker != nil {
+				c.runWorker.trigger()
+			}
 		}
 
 	case ChannelRunFinalized:
@@ -984,6 +1091,7 @@ func convertRun(r *driver.Run) *Run {
 		ID:                       r.ID,
 		SessionID:                r.SessionID,
 		AgentName:                r.AgentName,
+		RunMode:                  RunMode(r.RunMode),
 		ParentRunID:              r.ParentRunID,
 		ParentToolExecutionID:    r.ParentToolExecutionID,
 		Depth:                    r.Depth,

@@ -11,11 +11,11 @@ var (
 	ErrInvalidConfig = errors.New("invalid configuration")
 
 	// Resource not found errors
-	ErrSessionNotFound = errors.New("session not found")
-	ErrRunNotFound     = errors.New("run not found")
-	ErrAgentNotFound   = errors.New("agent not found")
-	ErrToolNotFound    = errors.New("tool not found")
-	ErrIterationNotFound = errors.New("iteration not found")
+	ErrSessionNotFound       = errors.New("session not found")
+	ErrRunNotFound           = errors.New("run not found")
+	ErrAgentNotFound         = errors.New("agent not found")
+	ErrToolNotFound          = errors.New("tool not found")
+	ErrIterationNotFound     = errors.New("iteration not found")
 	ErrToolExecutionNotFound = errors.New("tool execution not found")
 
 	// Registration errors

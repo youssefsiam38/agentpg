@@ -12,9 +12,9 @@ import (
 
 // toolWorker executes pending tool executions.
 type toolWorker[TTx any] struct {
-	client           *Client[TTx]
-	triggerCh        chan struct{}
-	toolsCompleteCh  chan uuid.UUID
+	client          *Client[TTx]
+	triggerCh       chan struct{}
+	toolsCompleteCh chan uuid.UUID
 }
 
 func newToolWorker[TTx any](c *Client[TTx]) *toolWorker[TTx] {

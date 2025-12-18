@@ -60,7 +60,8 @@ type Store[TTx any] interface {
 	GetRun(ctx context.Context, id uuid.UUID) (*Run, error)
 	UpdateRun(ctx context.Context, id uuid.UUID, updates map[string]any) error
 	UpdateRunState(ctx context.Context, id uuid.UUID, state RunState, updates map[string]any) error
-	ClaimRuns(ctx context.Context, instanceID string, maxCount int) ([]*Run, error)
+	// ClaimRuns claims pending runs for processing. runMode is optional ("batch", "streaming", or empty for any).
+	ClaimRuns(ctx context.Context, instanceID string, maxCount int, runMode string) ([]*Run, error)
 	GetRunsBySession(ctx context.Context, sessionID uuid.UUID, limit int) ([]*Run, error)
 	GetStuckPendingToolsRuns(ctx context.Context, limit int) ([]*Run, error)
 
@@ -160,6 +161,7 @@ type CreateRunParams struct {
 	SessionID             uuid.UUID
 	AgentName             string
 	Prompt                string
+	RunMode               string // "batch" or "streaming", defaults to "batch"
 	ParentRunID           *uuid.UUID
 	ParentToolExecutionID *uuid.UUID
 	Depth                 int
@@ -172,6 +174,7 @@ type CreateIterationParams struct {
 	RunID           uuid.UUID
 	IterationNumber int
 	TriggerType     string
+	IsStreaming     bool // TRUE if using streaming API instead of batch API
 }
 
 // CreateToolExecutionParams contains parameters for creating a tool execution.
@@ -225,7 +228,7 @@ type CreateCompactionEventParams struct {
 
 // Type aliases for convenience (re-exported from main package)
 type (
-	Session         = struct {
+	Session = struct {
 		ID              uuid.UUID
 		TenantID        string
 		Identifier      string
@@ -267,6 +270,7 @@ type (
 		ID                       uuid.UUID
 		SessionID                uuid.UUID
 		AgentName                string
+		RunMode                  string // "batch" or "streaming"
 		ParentRunID              *uuid.UUID
 		ParentToolExecutionID    *uuid.UUID
 		Depth                    int
@@ -300,6 +304,7 @@ type (
 		ID                       uuid.UUID
 		RunID                    uuid.UUID
 		IterationNumber          int
+		IsStreaming              bool // TRUE if using streaming API instead of batch API
 		BatchID                  *string
 		BatchRequestID           *string
 		BatchStatus              *BatchStatus
@@ -308,6 +313,8 @@ type (
 		BatchExpiresAt           *time.Time
 		BatchPollCount           int
 		BatchLastPollAt          *time.Time
+		StreamingStartedAt       *time.Time // Only for streaming mode
+		StreamingCompletedAt     *time.Time // Only for streaming mode
 		TriggerType              string
 		RequestMessageIDs        []uuid.UUID
 		StopReason               *string

@@ -12,8 +12,8 @@ import (
 	"github.com/youssefsiam38/agentpg/tool"
 )
 
-// runWorker processes pending runs by claiming them, building messages,
-// and submitting to Claude Batch API.
+// runWorker processes pending batch runs by claiming them, building messages,
+// and submitting to Claude Batch API. Only claims runs with run_mode='batch'.
 type runWorker[TTx any] struct {
 	client    *Client[TTx]
 	triggerCh chan struct{}
@@ -52,10 +52,10 @@ func (w *runWorker[TTx]) run(ctx context.Context) {
 func (w *runWorker[TTx]) processRuns(ctx context.Context) {
 	store := w.client.driver.Store()
 
-	// Claim pending runs
-	runs, err := store.ClaimRuns(ctx, w.client.instanceID, w.client.config.MaxConcurrentRuns)
+	// Claim pending batch runs only
+	runs, err := store.ClaimRuns(ctx, w.client.instanceID, w.client.config.MaxConcurrentRuns, "batch")
 	if err != nil {
-		w.client.log().Error("failed to claim runs", "error", err)
+		w.client.log().Error("failed to claim batch runs", "error", err)
 		return
 	}
 
