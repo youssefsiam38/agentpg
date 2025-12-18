@@ -31,9 +31,14 @@ type ClientConfig struct {
 	// Must be unique across all running instances.
 	ID string
 
-	// MaxConcurrentRuns limits concurrent run processing.
+	// MaxConcurrentRuns limits concurrent batch run processing.
 	// Defaults to DefaultMaxConcurrentRuns (10).
 	MaxConcurrentRuns int
+
+	// MaxConcurrentStreamingRuns limits concurrent streaming run processing.
+	// Streaming runs hold connections longer, so this is typically lower than MaxConcurrentRuns.
+	// Defaults to DefaultMaxConcurrentStreamingRuns (5).
+	MaxConcurrentStreamingRuns int
 
 	// MaxConcurrentTools limits concurrent tool executions.
 	// Defaults to DefaultMaxConcurrentTools (50).
@@ -82,17 +87,18 @@ type ClientConfig struct {
 
 // Default configuration values.
 const (
-	DefaultMaxConcurrentRuns  = 10
-	DefaultMaxConcurrentTools = 50
-	DefaultBatchPollInterval  = 30 * time.Second
-	DefaultRunPollInterval    = 1 * time.Second
-	DefaultToolPollInterval   = 500 * time.Millisecond
-	DefaultHeartbeatInterval  = 15 * time.Second
-	DefaultLeaderTTL          = 30 * time.Second
-	DefaultStuckRunTimeout    = 5 * time.Minute
-	DefaultInstanceTTL        = 2 * time.Minute
-	DefaultCleanupInterval    = 1 * time.Minute
-	DefaultMaxToolRetries     = 3
+	DefaultMaxConcurrentRuns          = 10
+	DefaultMaxConcurrentStreamingRuns = 5 // Lower because streaming holds connections
+	DefaultMaxConcurrentTools         = 50
+	DefaultBatchPollInterval          = 30 * time.Second
+	DefaultRunPollInterval            = 1 * time.Second
+	DefaultToolPollInterval           = 500 * time.Millisecond
+	DefaultHeartbeatInterval          = 15 * time.Second
+	DefaultLeaderTTL                  = 30 * time.Second
+	DefaultStuckRunTimeout            = 5 * time.Minute
+	DefaultInstanceTTL                = 2 * time.Minute
+	DefaultCleanupInterval            = 1 * time.Minute
+	DefaultMaxToolRetries             = 3
 )
 
 // validate validates the configuration and sets defaults.
@@ -123,6 +129,10 @@ func (c *ClientConfig) validate() error {
 
 	if c.MaxConcurrentRuns <= 0 {
 		c.MaxConcurrentRuns = DefaultMaxConcurrentRuns
+	}
+
+	if c.MaxConcurrentStreamingRuns <= 0 {
+		c.MaxConcurrentStreamingRuns = DefaultMaxConcurrentStreamingRuns
 	}
 
 	if c.MaxConcurrentTools <= 0 {
@@ -168,16 +178,16 @@ func (c *ClientConfig) validate() error {
 // Note: APIKey must still be set before use.
 func DefaultConfig() *ClientConfig {
 	return &ClientConfig{
-		MaxConcurrentRuns:  DefaultMaxConcurrentRuns,
-		MaxConcurrentTools: DefaultMaxConcurrentTools,
-		BatchPollInterval:  DefaultBatchPollInterval,
-		RunPollInterval:    DefaultRunPollInterval,
-		ToolPollInterval:   DefaultToolPollInterval,
-		HeartbeatInterval:  DefaultHeartbeatInterval,
-		LeaderTTL:          DefaultLeaderTTL,
-		StuckRunTimeout:    DefaultStuckRunTimeout,
-		InstanceTTL:        DefaultInstanceTTL,
-		CleanupInterval:    DefaultCleanupInterval,
+		MaxConcurrentRuns:          DefaultMaxConcurrentRuns,
+		MaxConcurrentStreamingRuns: DefaultMaxConcurrentStreamingRuns,
+		MaxConcurrentTools:         DefaultMaxConcurrentTools,
+		BatchPollInterval:          DefaultBatchPollInterval,
+		RunPollInterval:            DefaultRunPollInterval,
+		ToolPollInterval:           DefaultToolPollInterval,
+		HeartbeatInterval:          DefaultHeartbeatInterval,
+		LeaderTTL:                  DefaultLeaderTTL,
+		StuckRunTimeout:            DefaultStuckRunTimeout,
+		InstanceTTL:                DefaultInstanceTTL,
+		CleanupInterval:            DefaultCleanupInterval,
 	}
 }
-

@@ -308,17 +308,23 @@ func (s *Store) createRun(ctx context.Context, e executor, params driver.CreateR
 	var run driver.Run
 	metadata, _ := json.Marshal(params.Metadata)
 
+	// Default run_mode to "batch" if not specified
+	runMode := params.RunMode
+	if runMode == "" {
+		runMode = "batch"
+	}
+
 	err := e.QueryRow(ctx, `
-		INSERT INTO agentpg_runs (session_id, agent_name, prompt, parent_run_id, parent_tool_execution_id, depth, created_by_instance_id, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, session_id, agent_name, parent_run_id, parent_tool_execution_id, depth, state, previous_state,
+		INSERT INTO agentpg_runs (session_id, agent_name, prompt, run_mode, parent_run_id, parent_tool_execution_id, depth, created_by_instance_id, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id, session_id, agent_name, run_mode, parent_run_id, parent_tool_execution_id, depth, state, previous_state,
 			prompt, current_iteration, current_iteration_id, response_text, stop_reason,
 			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 			iteration_count, tool_iterations, error_message, error_type,
 			created_by_instance_id, claimed_by_instance_id, claimed_at, metadata, created_at, started_at, finalized_at
-	`, params.SessionID, params.AgentName, params.Prompt, params.ParentRunID,
+	`, params.SessionID, params.AgentName, params.Prompt, runMode, params.ParentRunID,
 		params.ParentToolExecutionID, params.Depth, params.CreatedByInstanceID, metadata).Scan(
-		&run.ID, &run.SessionID, &run.AgentName, &run.ParentRunID, &run.ParentToolExecutionID, &run.Depth,
+		&run.ID, &run.SessionID, &run.AgentName, &run.RunMode, &run.ParentRunID, &run.ParentToolExecutionID, &run.Depth,
 		&run.State, &run.PreviousState, &run.Prompt, &run.CurrentIteration, &run.CurrentIterationID,
 		&run.ResponseText, &run.StopReason, &run.InputTokens, &run.OutputTokens,
 		&run.CacheCreationInputTokens, &run.CacheReadInputTokens, &run.IterationCount, &run.ToolIterations,
@@ -336,14 +342,14 @@ func (s *Store) GetRun(ctx context.Context, id uuid.UUID) (*driver.Run, error) {
 	var run driver.Run
 	var metadata []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, session_id, agent_name, parent_run_id, parent_tool_execution_id, depth, state, previous_state,
+		SELECT id, session_id, agent_name, run_mode, parent_run_id, parent_tool_execution_id, depth, state, previous_state,
 			prompt, current_iteration, current_iteration_id, response_text, stop_reason,
 			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 			iteration_count, tool_iterations, error_message, error_type,
 			created_by_instance_id, claimed_by_instance_id, claimed_at, metadata, created_at, started_at, finalized_at
 		FROM agentpg_runs WHERE id = $1
 	`, id).Scan(
-		&run.ID, &run.SessionID, &run.AgentName, &run.ParentRunID, &run.ParentToolExecutionID, &run.Depth,
+		&run.ID, &run.SessionID, &run.AgentName, &run.RunMode, &run.ParentRunID, &run.ParentToolExecutionID, &run.Depth,
 		&run.State, &run.PreviousState, &run.Prompt, &run.CurrentIteration, &run.CurrentIterationID,
 		&run.ResponseText, &run.StopReason, &run.InputTokens, &run.OutputTokens,
 		&run.CacheCreationInputTokens, &run.CacheReadInputTokens, &run.IterationCount, &run.ToolIterations,
@@ -398,8 +404,19 @@ func (s *Store) updateRun(ctx context.Context, id uuid.UUID, updates map[string]
 	return err
 }
 
-func (s *Store) ClaimRuns(ctx context.Context, instanceID string, maxCount int) ([]*driver.Run, error) {
-	rows, err := s.pool.Query(ctx, "SELECT * FROM agentpg_claim_runs($1, $2)", instanceID, maxCount)
+func (s *Store) ClaimRuns(ctx context.Context, instanceID string, maxCount int, runMode string) ([]*driver.Run, error) {
+	var rows pgx.Rows
+	var err error
+
+	// Call stored procedure with optional run mode filter
+	if runMode == "" {
+		// Claim any mode
+		rows, err = s.pool.Query(ctx, "SELECT * FROM agentpg_claim_runs($1, $2)", instanceID, maxCount)
+	} else {
+		// Claim specific mode (batch or streaming)
+		rows, err = s.pool.Query(ctx, "SELECT * FROM agentpg_claim_runs($1, $2, $3::agentpg_run_mode)", instanceID, maxCount, runMode)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to claim runs: %w", err)
 	}
@@ -410,7 +427,7 @@ func (s *Store) ClaimRuns(ctx context.Context, instanceID string, maxCount int) 
 
 func (s *Store) GetRunsBySession(ctx context.Context, sessionID uuid.UUID, limit int) ([]*driver.Run, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, session_id, agent_name, parent_run_id, parent_tool_execution_id, depth, state, previous_state,
+		SELECT id, session_id, agent_name, run_mode, parent_run_id, parent_tool_execution_id, depth, state, previous_state,
 			prompt, current_iteration, current_iteration_id, response_text, stop_reason,
 			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 			iteration_count, tool_iterations, error_message, error_type,
@@ -429,7 +446,7 @@ func (s *Store) GetStuckPendingToolsRuns(ctx context.Context, limit int) ([]*dri
 	// Find runs that are in pending_tools state but have no pending tool executions
 	// This catches runs where all tools completed but the notification was missed
 	rows, err := s.pool.Query(ctx, `
-		SELECT r.id, r.session_id, r.agent_name, r.parent_run_id, r.parent_tool_execution_id, r.depth, r.state, r.previous_state,
+		SELECT r.id, r.session_id, r.agent_name, r.run_mode, r.parent_run_id, r.parent_tool_execution_id, r.depth, r.state, r.previous_state,
 			r.prompt, r.current_iteration, r.current_iteration_id, r.response_text, r.stop_reason,
 			r.input_tokens, r.output_tokens, r.cache_creation_input_tokens, r.cache_read_input_tokens,
 			r.iteration_count, r.tool_iterations, r.error_message, r.error_type,
@@ -458,16 +475,20 @@ func (s *Store) GetStuckPendingToolsRuns(ctx context.Context, limit int) ([]*dri
 func (s *Store) CreateIteration(ctx context.Context, params driver.CreateIterationParams) (*driver.Iteration, error) {
 	var iter driver.Iteration
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO agentpg_iterations (run_id, iteration_number, trigger_type)
-		VALUES ($1, $2, $3)
-		RETURNING id, run_id, iteration_number, batch_id, batch_request_id, batch_status,
+		INSERT INTO agentpg_iterations (run_id, iteration_number, is_streaming, trigger_type)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, run_id, iteration_number, is_streaming,
+			batch_id, batch_request_id, batch_status,
 			batch_submitted_at, batch_completed_at, batch_expires_at, batch_poll_count, batch_last_poll_at,
+			streaming_started_at, streaming_completed_at,
 			trigger_type, request_message_ids, stop_reason, response_message_id, has_tool_use, tool_execution_count,
 			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 			error_message, error_type, created_at, started_at, completed_at
-	`, params.RunID, params.IterationNumber, params.TriggerType).Scan(
-		&iter.ID, &iter.RunID, &iter.IterationNumber, &iter.BatchID, &iter.BatchRequestID, &iter.BatchStatus,
+	`, params.RunID, params.IterationNumber, params.IsStreaming, params.TriggerType).Scan(
+		&iter.ID, &iter.RunID, &iter.IterationNumber, &iter.IsStreaming,
+		&iter.BatchID, &iter.BatchRequestID, &iter.BatchStatus,
 		&iter.BatchSubmittedAt, &iter.BatchCompletedAt, &iter.BatchExpiresAt, &iter.BatchPollCount, &iter.BatchLastPollAt,
+		&iter.StreamingStartedAt, &iter.StreamingCompletedAt,
 		&iter.TriggerType, &iter.RequestMessageIDs, &iter.StopReason, &iter.ResponseMessageID, &iter.HasToolUse, &iter.ToolExecutionCount,
 		&iter.InputTokens, &iter.OutputTokens, &iter.CacheCreationInputTokens, &iter.CacheReadInputTokens,
 		&iter.ErrorMessage, &iter.ErrorType, &iter.CreatedAt, &iter.StartedAt, &iter.CompletedAt,
@@ -481,15 +502,19 @@ func (s *Store) CreateIteration(ctx context.Context, params driver.CreateIterati
 func (s *Store) GetIteration(ctx context.Context, id uuid.UUID) (*driver.Iteration, error) {
 	var iter driver.Iteration
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, run_id, iteration_number, batch_id, batch_request_id, batch_status,
+		SELECT id, run_id, iteration_number, is_streaming,
+			batch_id, batch_request_id, batch_status,
 			batch_submitted_at, batch_completed_at, batch_expires_at, batch_poll_count, batch_last_poll_at,
+			streaming_started_at, streaming_completed_at,
 			trigger_type, request_message_ids, stop_reason, response_message_id, has_tool_use, tool_execution_count,
 			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 			error_message, error_type, created_at, started_at, completed_at
 		FROM agentpg_iterations WHERE id = $1
 	`, id).Scan(
-		&iter.ID, &iter.RunID, &iter.IterationNumber, &iter.BatchID, &iter.BatchRequestID, &iter.BatchStatus,
+		&iter.ID, &iter.RunID, &iter.IterationNumber, &iter.IsStreaming,
+		&iter.BatchID, &iter.BatchRequestID, &iter.BatchStatus,
 		&iter.BatchSubmittedAt, &iter.BatchCompletedAt, &iter.BatchExpiresAt, &iter.BatchPollCount, &iter.BatchLastPollAt,
+		&iter.StreamingStartedAt, &iter.StreamingCompletedAt,
 		&iter.TriggerType, &iter.RequestMessageIDs, &iter.StopReason, &iter.ResponseMessageID, &iter.HasToolUse, &iter.ToolExecutionCount,
 		&iter.InputTokens, &iter.OutputTokens, &iter.CacheCreationInputTokens, &iter.CacheReadInputTokens,
 		&iter.ErrorMessage, &iter.ErrorType, &iter.CreatedAt, &iter.StartedAt, &iter.CompletedAt,
@@ -536,8 +561,10 @@ func (s *Store) GetIterationsForPoll(ctx context.Context, instanceID string, pol
 
 func (s *Store) GetIterationsByRun(ctx context.Context, runID uuid.UUID) ([]*driver.Iteration, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, run_id, iteration_number, batch_id, batch_request_id, batch_status,
+		SELECT id, run_id, iteration_number, is_streaming,
+			batch_id, batch_request_id, batch_status,
 			batch_submitted_at, batch_completed_at, batch_expires_at, batch_poll_count, batch_last_poll_at,
+			streaming_started_at, streaming_completed_at,
 			trigger_type, request_message_ids, stop_reason, response_message_id, has_tool_use, tool_execution_count,
 			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 			error_message, error_type, created_at, started_at, completed_at
@@ -1330,7 +1357,7 @@ func collectRuns(rows pgx.Rows) ([]*driver.Run, error) {
 		var run driver.Run
 		var metadata []byte
 		if err := rows.Scan(
-			&run.ID, &run.SessionID, &run.AgentName, &run.ParentRunID, &run.ParentToolExecutionID, &run.Depth,
+			&run.ID, &run.SessionID, &run.AgentName, &run.RunMode, &run.ParentRunID, &run.ParentToolExecutionID, &run.Depth,
 			&run.State, &run.PreviousState, &run.Prompt, &run.CurrentIteration, &run.CurrentIterationID,
 			&run.ResponseText, &run.StopReason, &run.InputTokens, &run.OutputTokens,
 			&run.CacheCreationInputTokens, &run.CacheReadInputTokens, &run.IterationCount, &run.ToolIterations,
@@ -1350,8 +1377,10 @@ func collectIterations(rows pgx.Rows) ([]*driver.Iteration, error) {
 	for rows.Next() {
 		var iter driver.Iteration
 		if err := rows.Scan(
-			&iter.ID, &iter.RunID, &iter.IterationNumber, &iter.BatchID, &iter.BatchRequestID, &iter.BatchStatus,
+			&iter.ID, &iter.RunID, &iter.IterationNumber, &iter.IsStreaming,
+			&iter.BatchID, &iter.BatchRequestID, &iter.BatchStatus,
 			&iter.BatchSubmittedAt, &iter.BatchCompletedAt, &iter.BatchExpiresAt, &iter.BatchPollCount, &iter.BatchLastPollAt,
+			&iter.StreamingStartedAt, &iter.StreamingCompletedAt,
 			&iter.TriggerType, &iter.RequestMessageIDs, &iter.StopReason, &iter.ResponseMessageID, &iter.HasToolUse, &iter.ToolExecutionCount,
 			&iter.InputTokens, &iter.OutputTokens, &iter.CacheCreationInputTokens, &iter.CacheReadInputTokens,
 			&iter.ErrorMessage, &iter.ErrorType, &iter.CreatedAt, &iter.StartedAt, &iter.CompletedAt,

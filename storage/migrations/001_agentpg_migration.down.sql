@@ -40,6 +40,7 @@ DROP FUNCTION IF EXISTS agentpg_notify_run_created();
 -- Stored procedures
 DROP FUNCTION IF EXISTS agentpg_get_iterations_for_poll(TEXT, INTERVAL, INTEGER);
 DROP FUNCTION IF EXISTS agentpg_claim_tool_executions(TEXT, INTEGER);
+DROP FUNCTION IF EXISTS agentpg_claim_runs(TEXT, INTEGER, agentpg_run_mode);
 DROP FUNCTION IF EXISTS agentpg_claim_runs(TEXT, INTEGER);
 
 -- =============================================================================
@@ -96,6 +97,8 @@ DROP INDEX IF EXISTS idx_runs_session;
 DROP INDEX IF EXISTS idx_runs_active;
 DROP INDEX IF EXISTS idx_runs_pending_tools;
 DROP INDEX IF EXISTS idx_runs_pending_claim;
+DROP INDEX IF EXISTS idx_runs_pending_batch;
+DROP INDEX IF EXISTS idx_runs_pending_streaming;
 
 -- Tool indexes
 DROP INDEX IF EXISTS idx_tools_agent;
@@ -157,3 +160,4 @@ DROP TYPE IF EXISTS agentpg_content_type;
 DROP TYPE IF EXISTS agentpg_tool_execution_state;
 DROP TYPE IF EXISTS agentpg_batch_status;
 DROP TYPE IF EXISTS agentpg_run_state;
+DROP TYPE IF EXISTS agentpg_run_mode;

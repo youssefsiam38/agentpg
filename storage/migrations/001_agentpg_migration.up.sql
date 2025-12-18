@@ -1,12 +1,13 @@
 -- =============================================================================
--- AGENTPG SCHEMA v2.0
+-- AGENTPG SCHEMA v2.1
 -- =============================================================================
 -- Event-driven distributed AI agent framework with multi-level nested agents.
+-- Supports both Claude Batch API (async) and Streaming API (real-time).
 --
 -- ARCHITECTURE OVERVIEW:
 -- 1. Sessions: Conversation contexts (supports hierarchical nested sessions)
 -- 2. Runs: Individual agent invocations with parent-child relationships
--- 3. Iterations: Each batch API call within a run
+-- 3. Iterations: Each API call within a run (batch or streaming)
 -- 4. Messages: Conversation history within sessions
 -- 5. Content Blocks: Normalized message content (text, tool_use, tool_result, etc.)
 -- 6. Tool Executions: Pending tool work (includes agent-as-tool calls)
@@ -19,7 +20,8 @@
 -- - SELECT FOR UPDATE SKIP LOCKED for race-safe claiming
 -- - Parent-child relationships enable multi-level agent hierarchies
 -- - UNLOGGED tables for ephemeral instance data (performance)
--- - Claude Batch API integration with iteration tracking
+-- - Dual API support: Claude Batch API (24h window) and Streaming API (real-time)
+-- - Iteration tracking for both batch and streaming modes
 -- =============================================================================
 
 -- =============================================================================
@@ -27,11 +29,24 @@
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
+-- Run Mode (Batch vs Streaming API)
+-- -----------------------------------------------------------------------------
+-- Determines which Claude API is used for processing.
+-- - batch: Uses Claude Batch API (24h processing window, cost-effective)
+-- - streaming: Uses Claude Streaming API (real-time, lower latency)
+-- -----------------------------------------------------------------------------
+CREATE TYPE agentpg_run_mode AS ENUM(
+    'batch',                -- Uses Claude Batch API (async, 24h window)
+    'streaming'             -- Uses Claude Streaming API (real-time)
+);
+
+-- -----------------------------------------------------------------------------
 -- Run State Machine
 -- -----------------------------------------------------------------------------
 -- Represents the lifecycle of a single agent run.
+-- Supports both Batch API and Streaming API modes.
 --
--- STATE TRANSITIONS:
+-- BATCH MODE STATE TRANSITIONS:
 --   pending ──────────────────┐
 --       │ (worker claims)     │
 --       v                     │
@@ -48,6 +63,17 @@
 --       ├──> awaiting_input   │ (stop_reason=max_tokens, needs continuation)
 --       └──> failed           │ (error)
 --
+-- STREAMING MODE STATE TRANSITIONS:
+--   pending ──────────────────┐
+--       │ (worker claims)     │
+--       v                     │
+--   streaming ────────────────┤
+--       │ (stream complete)   │
+--       ├──> pending_tools    │ (has tool_use blocks)
+--       ├──> completed        │ (stop_reason=end_turn)
+--       ├──> awaiting_input   │ (stop_reason=max_tokens)
+--       └──> failed           │ (error)
+--
 --   pending_tools ────────────┤
 --       │ (all tools done)    │
 --       └──> pending          │ (continue with tool_results)
@@ -55,10 +81,11 @@
 -- TERMINAL STATES: completed, cancelled, failed
 -- -----------------------------------------------------------------------------
 CREATE TYPE agentpg_run_state AS ENUM(
-    'pending',              -- Waiting for worker to claim and submit to Batch API
-    'batch_submitting',     -- Worker is preparing and submitting batch request
-    'batch_pending',        -- Batch submitted, waiting for Claude to start processing
-    'batch_processing',     -- Claude is processing the batch
+    'pending',              -- Waiting for worker to claim
+    'batch_submitting',     -- [Batch] Worker is preparing and submitting batch request
+    'batch_pending',        -- [Batch] Batch submitted, waiting for Claude to start processing
+    'batch_processing',     -- [Batch] Claude is processing the batch
+    'streaming',            -- [Streaming] Worker is processing via streaming API
     'pending_tools',        -- Response has tool_use, waiting for tool executions
     'awaiting_input',       -- Paused (max_tokens reached, needs user/system continuation)
     'completed',            -- Terminal: successful completion (stop_reason=end_turn)
@@ -325,9 +352,13 @@ CREATE INDEX idx_tools_agent ON agentpg_tools(agent_name) WHERE is_agent_tool = 
 -- Central table for agent run execution with hierarchical support.
 --
 -- ARCHITECTURE ROLE:
--- - Each row is a single Run() invocation
--- - Implements state machine for async processing with Claude Batch API
+-- - Each row is a single Run()/RunFast() invocation
+-- - Implements state machine for async processing (Batch or Streaming API)
 -- - Supports parent-child relationships for nested agent calls
+--
+-- RUN MODES:
+-- - batch: Uses Claude Batch API (24h processing window, cost-effective)
+-- - streaming: Uses Claude Streaming API (real-time, low latency)
 --
 -- NESTED AGENT RUNS:
 -- When Agent A calls Agent B as a tool:
@@ -339,8 +370,8 @@ CREATE INDEX idx_tools_agent ON agentpg_tools(agent_name) WHERE is_agent_tool = 
 -- 6. Parent run continues with tool_result
 --
 -- MULTI-ITERATION SUPPORT:
--- A single run can have multiple iterations (each = one batch API call):
--- prompt → batch1 → tools → batch2 → tools → batch3 → end_turn
+-- A single run can have multiple iterations (each = one API call):
+-- prompt → api1 → tools → api2 → tools → api3 → end_turn
 -- Iterations are tracked in agentpg_iterations table.
 -- =============================================================================
 CREATE TABLE agentpg_runs (
@@ -352,6 +383,15 @@ CREATE TABLE agentpg_runs (
 
     -- Agent executing this run
     agent_name TEXT NOT NULL REFERENCES agentpg_agents(name),
+
+    -- ==========================================================================
+    -- RUN MODE (Batch vs Streaming API)
+    -- ==========================================================================
+
+    -- Which Claude API to use for this run
+    -- 'batch': Claude Batch API (24h processing, cost-effective)
+    -- 'streaming': Claude Streaming API (real-time, low latency)
+    run_mode agentpg_run_mode NOT NULL DEFAULT 'batch',
 
     -- ==========================================================================
     -- HIERARCHICAL RUN SUPPORT
@@ -389,8 +429,8 @@ CREATE TABLE agentpg_runs (
     -- CURRENT ITERATION TRACKING
     -- ==========================================================================
     -- The current/latest iteration for this run.
-    -- Detailed batch tracking is in agentpg_iterations table.
-    -- A run can have many iterations: prompt→batch1→tools→batch2→tools→batch3→end_turn
+    -- Detailed tracking is in agentpg_iterations table (supports both batch and streaming).
+    -- A run can have many iterations: prompt→api1→tools→api2→tools→api3→end_turn
 
     -- Current iteration number (updated as run progresses)
     current_iteration INTEGER NOT NULL DEFAULT 0,
@@ -481,7 +521,10 @@ CREATE TABLE agentpg_runs (
 );
 
 COMMENT ON TABLE agentpg_runs IS
-'Agent run executions with hierarchical support for nested agent-as-tool calls.';
+'Agent run executions with hierarchical support for nested agent-as-tool calls. Supports both Batch and Streaming API modes.';
+
+COMMENT ON COLUMN agentpg_runs.run_mode IS
+'Which Claude API to use: batch (24h async, cost-effective) or streaming (real-time, low latency).';
 
 COMMENT ON COLUMN agentpg_runs.parent_run_id IS
 'For agent-as-tool invocations, links to the parent run that called this agent.';
@@ -493,20 +536,29 @@ COMMENT ON COLUMN agentpg_runs.depth IS
 'Hierarchy depth (0=root). PM→Lead→Worker would be depths 0→1→2.';
 
 COMMENT ON COLUMN agentpg_runs.current_iteration IS
-'Current iteration number. Incremented each time a new batch is submitted.';
+'Current iteration number. Incremented each time a new API call (batch or streaming) is made.';
 
 COMMENT ON COLUMN agentpg_runs.claimed_by_instance_id IS
 'Instance processing this run. Used for work routing and stuck run detection.';
 
 -- Indexes for worker queries
+-- General pending runs index (both batch and streaming)
 CREATE INDEX idx_runs_pending_claim ON agentpg_runs(state, created_at)
     WHERE state = 'pending' AND claimed_by_instance_id IS NULL;
+
+-- Separate indexes for batch vs streaming pending runs (for mode-specific claiming)
+CREATE INDEX idx_runs_pending_batch ON agentpg_runs(state, run_mode, created_at)
+    WHERE state = 'pending' AND run_mode = 'batch' AND claimed_by_instance_id IS NULL;
+
+CREATE INDEX idx_runs_pending_streaming ON agentpg_runs(state, run_mode, created_at)
+    WHERE state = 'pending' AND run_mode = 'streaming' AND claimed_by_instance_id IS NULL;
 
 CREATE INDEX idx_runs_pending_tools ON agentpg_runs(state)
     WHERE state = 'pending_tools';
 
+-- Active runs index (includes both batch states and streaming state)
 CREATE INDEX idx_runs_active ON agentpg_runs(state)
-    WHERE state IN ('batch_submitting', 'batch_pending', 'batch_processing');
+    WHERE state IN ('batch_submitting', 'batch_pending', 'batch_processing', 'streaming');
 
 CREATE INDEX idx_runs_session ON agentpg_runs(session_id, created_at DESC);
 
@@ -644,23 +696,33 @@ CREATE INDEX idx_content_blocks_tool_use ON agentpg_content_blocks(tool_use_id)
 -- =============================================================================
 -- ITERATIONS TABLE
 -- =============================================================================
--- Tracks each Claude API call (batch) within a run.
+-- Tracks each Claude API call (batch or streaming) within a run.
 --
 -- ARCHITECTURE ROLE:
 -- - A single Run can have MULTIPLE iterations
--- - Each iteration = one batch API call + response
--- - Enables tracking: prompt → batch1 → tools → batch2 → tools → batch3 → end_turn
+-- - Each iteration = one API call + response (batch OR streaming)
+-- - Enables tracking: prompt → api1 → tools → api2 → tools → api3 → end_turn
 --
 -- MULTI-ITERATION FLOW:
 -- 1. Run created with user prompt
--- 2. Iteration 1: Submit batch with prompt, get response with tool_use
+-- 2. Iteration 1: Call API with prompt, get response with tool_use
 -- 3. Execute tools, store tool_results
--- 4. Iteration 2: Submit batch with tool_results, get response with more tool_use
+-- 4. Iteration 2: Call API with tool_results, get response with more tool_use
 -- 5. Execute tools, store tool_results
--- 6. Iteration 3: Submit batch with tool_results, get response with end_turn
+-- 6. Iteration 3: Call API with tool_results, get response with end_turn
 -- 7. Run completed
 --
--- Each iteration stores its own batch_id, request/response, and token usage.
+-- BATCH MODE:
+-- - batch_id, batch_request_id, batch_status, batch_* fields are populated
+-- - Requires polling for status
+--
+-- STREAMING MODE:
+-- - is_streaming = TRUE
+-- - batch_* fields are NULL (not used)
+-- - streaming_started_at, streaming_completed_at track timing
+-- - Response is accumulated in real-time
+--
+-- Each iteration stores its own API tracking, request/response, and token usage.
 -- =============================================================================
 CREATE TABLE agentpg_iterations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -672,7 +734,14 @@ CREATE TABLE agentpg_iterations (
     iteration_number INTEGER NOT NULL,
 
     -- ==========================================================================
-    -- BATCH API TRACKING
+    -- API MODE
+    -- ==========================================================================
+
+    -- TRUE if this iteration used streaming API instead of batch API
+    is_streaming BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- ==========================================================================
+    -- BATCH API TRACKING (only populated when is_streaming = FALSE)
     -- ==========================================================================
 
     -- Claude Batch API identifiers for THIS iteration
@@ -688,6 +757,14 @@ CREATE TABLE agentpg_iterations (
     -- Polling tracking
     batch_poll_count INTEGER NOT NULL DEFAULT 0,
     batch_last_poll_at TIMESTAMPTZ,
+
+    -- ==========================================================================
+    -- STREAMING API TRACKING (only populated when is_streaming = TRUE)
+    -- ==========================================================================
+
+    -- Streaming timing (batch_* fields are used for batch mode)
+    streaming_started_at TIMESTAMPTZ,       -- When streaming API call started
+    streaming_completed_at TIMESTAMPTZ,     -- When streaming finished
 
     -- ==========================================================================
     -- REQUEST CONTEXT
@@ -739,18 +816,21 @@ CREATE TABLE agentpg_iterations (
     -- ==========================================================================
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    started_at TIMESTAMPTZ,                 -- When batch submitted
-    completed_at TIMESTAMPTZ,               -- When response processed
+    started_at TIMESTAMPTZ,                 -- When API call initiated (batch submit or stream start)
+    completed_at TIMESTAMPTZ,               -- When response fully processed
 
     -- Unique iteration number per run
     CONSTRAINT unique_iteration_per_run UNIQUE (run_id, iteration_number)
 );
 
 COMMENT ON TABLE agentpg_iterations IS
-'Tracks each Claude API batch call within a run. A run can have many iterations (prompt→tools→prompt→tools→done).';
+'Tracks each Claude API call within a run (batch or streaming). A run can have many iterations (prompt→tools→prompt→tools→done).';
 
 COMMENT ON COLUMN agentpg_iterations.iteration_number IS
 '1-indexed iteration number. Iteration 1 is the initial prompt, subsequent iterations are tool result continuations.';
+
+COMMENT ON COLUMN agentpg_iterations.is_streaming IS
+'TRUE if this iteration used streaming API instead of batch API. Determines which tracking fields are populated.';
 
 COMMENT ON COLUMN agentpg_iterations.trigger_type IS
 'What caused this iteration: user_prompt (first), tool_results (after tools), continuation (after max_tokens).';
@@ -759,7 +839,7 @@ COMMENT ON COLUMN agentpg_iterations.has_tool_use IS
 'TRUE if Claude returned tool_use blocks in this iteration. Determines if we need another iteration after tools complete.';
 
 COMMENT ON COLUMN agentpg_iterations.batch_request_id IS
-'Our correlation ID within the batch (custom_id in Batch API). Used to match results.';
+'[Batch only] Our correlation ID within the batch (custom_id in Batch API). Used to match results.';
 
 -- Indexes
 CREATE INDEX idx_iterations_run ON agentpg_iterations(run_id, iteration_number);
@@ -1130,12 +1210,21 @@ CREATE INDEX idx_archive_session ON agentpg_message_archive(session_id, archived
 -- Returns runs that the instance can process (has agent capability).
 -- Uses SELECT FOR UPDATE SKIP LOCKED for race safety across workers.
 --
+-- p_run_mode: Optional filter for run mode ('batch', 'streaming', or NULL for any)
+--
+-- The initial state transition depends on run mode:
+-- - batch: pending -> batch_submitting
+-- - streaming: pending -> streaming
+--
 -- USAGE:
---   SELECT * FROM agentpg_claim_runs('instance-123', 5);
+--   SELECT * FROM agentpg_claim_runs('instance-123', 5);          -- claim any mode
+--   SELECT * FROM agentpg_claim_runs('instance-123', 5, 'batch'); -- batch only
+--   SELECT * FROM agentpg_claim_runs('instance-123', 5, 'streaming'); -- streaming only
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION agentpg_claim_runs(
     p_instance_id TEXT,
-    p_max_count INTEGER DEFAULT 1
+    p_max_count INTEGER DEFAULT 1,
+    p_run_mode agentpg_run_mode DEFAULT NULL
 ) RETURNS SETOF agentpg_runs AS $$
 BEGIN
     RETURN QUERY
@@ -1144,6 +1233,8 @@ BEGIN
         FROM agentpg_runs r
         WHERE r.state = 'pending'
           AND r.claimed_by_instance_id IS NULL
+          -- Filter by run mode if specified
+          AND (p_run_mode IS NULL OR r.run_mode = p_run_mode)
           -- Only claim if instance has capability for this agent
           AND EXISTS (
               SELECT 1 FROM agentpg_instance_agents ia
@@ -1157,7 +1248,11 @@ BEGIN
     UPDATE agentpg_runs r
     SET claimed_by_instance_id = p_instance_id,
         claimed_at = NOW(),
-        state = 'batch_submitting',
+        -- Transition to appropriate state based on run mode
+        state = CASE
+            WHEN r.run_mode = 'batch' THEN 'batch_submitting'::agentpg_run_state
+            WHEN r.run_mode = 'streaming' THEN 'streaming'::agentpg_run_state
+        END,
         previous_state = 'pending',
         started_at = COALESCE(started_at, NOW())
     FROM claimable c
@@ -1167,7 +1262,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION agentpg_claim_runs IS
-'Race-safe run claiming. Only claims runs for agents the instance can handle.';
+'Race-safe run claiming with optional run mode filter. Transitions to batch_submitting or streaming based on run mode.';
 
 -- -----------------------------------------------------------------------------
 -- Claim pending tool executions (race-safe with SKIP LOCKED)
@@ -1263,6 +1358,7 @@ COMMENT ON FUNCTION agentpg_get_iterations_for_poll IS
 -- -----------------------------------------------------------------------------
 -- Notify workers when a new run is created in pending state.
 -- Workers listen on 'agentpg_run_created' channel.
+-- Includes run_mode so workers can filter by batch/streaming.
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION agentpg_notify_run_created()
 RETURNS TRIGGER AS $$
@@ -1272,6 +1368,7 @@ BEGIN
             'run_id', NEW.id,
             'session_id', NEW.session_id,
             'agent_name', NEW.agent_name,
+            'run_mode', NEW.run_mode,
             'parent_run_id', NEW.parent_run_id,
             'depth', NEW.depth
         )::text);

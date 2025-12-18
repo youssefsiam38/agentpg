@@ -226,7 +226,7 @@ func main() {
 
 	// Example 1: Basic weather query
 	fmt.Println("=== Example 1: Basic Weather Query ===")
-	response1, err := client.RunSync(ctx, sessionID, "weather-assistant", "What's the weather like in Tokyo?")
+	response1, err := client.RunFastSync(ctx, sessionID, "weather-assistant", "What's the weather like in Tokyo?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -252,7 +252,7 @@ func main() {
 
 	// Example 3: Unknown city (generates random weather)
 	fmt.Println("\n=== Example 3: Unknown City ===")
-	response3, err := client.RunSync(ctx, sessionID, "weather-assistant", "How's the weather in Reykjavik?")
+	response3, err := client.RunFastSync(ctx, sessionID, "weather-assistant", "How's the weather in Reykjavik?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

@@ -21,7 +21,7 @@ type Response struct {
 	// Message is the full final assistant message with content blocks.
 	Message *Message
 
-	// IterationCount is the total number of batch API calls made for this run.
+	// IterationCount is the total number of API calls made for this run (batch or streaming).
 	IterationCount int
 
 	// ToolIterations is the number of iterations that involved tool_use.
@@ -102,6 +102,9 @@ type Run struct {
 	SessionID uuid.UUID `json:"session_id"`
 	AgentName string    `json:"agent_name"`
 
+	// Run mode (batch or streaming API)
+	RunMode RunMode `json:"run_mode"`
+
 	// Hierarchical run support
 	ParentRunID           *uuid.UUID `json:"parent_run_id,omitempty"`
 	ParentToolExecutionID *uuid.UUID `json:"parent_tool_execution_id,omitempty"`
@@ -162,15 +165,15 @@ func (r *Run) Usage() Usage {
 
 // Session represents a conversation context.
 type Session struct {
-	ID              uuid.UUID  `json:"id"`
-	TenantID        string     `json:"tenant_id"`
-	Identifier      string     `json:"identifier"`
-	ParentSessionID *uuid.UUID `json:"parent_session_id,omitempty"`
-	Depth           int        `json:"depth"`
+	ID              uuid.UUID      `json:"id"`
+	TenantID        string         `json:"tenant_id"`
+	Identifier      string         `json:"identifier"`
+	ParentSessionID *uuid.UUID     `json:"parent_session_id,omitempty"`
+	Depth           int            `json:"depth"`
 	Metadata        map[string]any `json:"metadata,omitempty"`
-	CompactionCount int        `json:"compaction_count"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	CompactionCount int            `json:"compaction_count"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
 }
 
 // AgentDefinition defines an agent's configuration.
@@ -226,13 +229,16 @@ func (a *AgentDefinition) AllToolNames() []string {
 	return result
 }
 
-// Iteration represents a single Claude API call (batch) within a run.
+// Iteration represents a single Claude API call (batch or streaming) within a run.
 type Iteration struct {
 	ID              uuid.UUID `json:"id"`
 	RunID           uuid.UUID `json:"run_id"`
 	IterationNumber int       `json:"iteration_number"`
 
-	// Batch API tracking
+	// API mode
+	IsStreaming bool `json:"is_streaming"`
+
+	// Batch API tracking (only populated when IsStreaming = false)
 	BatchID          *string      `json:"batch_id,omitempty"`
 	BatchRequestID   *string      `json:"batch_request_id,omitempty"`
 	BatchStatus      *BatchStatus `json:"batch_status,omitempty"`
@@ -241,6 +247,10 @@ type Iteration struct {
 	BatchExpiresAt   *time.Time   `json:"batch_expires_at,omitempty"`
 	BatchPollCount   int          `json:"batch_poll_count"`
 	BatchLastPollAt  *time.Time   `json:"batch_last_poll_at,omitempty"`
+
+	// Streaming API tracking (only populated when IsStreaming = true)
+	StreamingStartedAt   *time.Time `json:"streaming_started_at,omitempty"`
+	StreamingCompletedAt *time.Time `json:"streaming_completed_at,omitempty"`
 
 	// Request context
 	TriggerType       string      `json:"trigger_type"` // "user_prompt", "tool_results", "continuation"
@@ -344,17 +354,17 @@ type Instance struct {
 
 // CompactionEvent represents a context compaction operation.
 type CompactionEvent struct {
-	ID                   uuid.UUID  `json:"id"`
-	SessionID            uuid.UUID  `json:"session_id"`
-	Strategy             string     `json:"strategy"`
-	OriginalTokens       int        `json:"original_tokens"`
-	CompactedTokens      int        `json:"compacted_tokens"`
-	MessagesRemoved      int        `json:"messages_removed"`
-	SummaryContent       *string    `json:"summary_content,omitempty"`
-	PreservedMessageIDs  []uuid.UUID `json:"preserved_message_ids,omitempty"`
-	ModelUsed            *string    `json:"model_used,omitempty"`
-	DurationMS           *int64     `json:"duration_ms,omitempty"`
-	CreatedAt            time.Time  `json:"created_at"`
+	ID                  uuid.UUID   `json:"id"`
+	SessionID           uuid.UUID   `json:"session_id"`
+	Strategy            string      `json:"strategy"`
+	OriginalTokens      int         `json:"original_tokens"`
+	CompactedTokens     int         `json:"compacted_tokens"`
+	MessagesRemoved     int         `json:"messages_removed"`
+	SummaryContent      *string     `json:"summary_content,omitempty"`
+	PreservedMessageIDs []uuid.UUID `json:"preserved_message_ids,omitempty"`
+	ModelUsed           *string     `json:"model_used,omitempty"`
+	DurationMS          *int64      `json:"duration_ms,omitempty"`
+	CreatedAt           time.Time   `json:"created_at"`
 }
 
 // Helper functions for working with pointers

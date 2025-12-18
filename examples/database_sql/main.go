@@ -128,7 +128,7 @@ func main() {
 		fmt.Printf("=== Message %d ===\n", i+1)
 		fmt.Printf("User: %s\n", prompt)
 
-		response, err := client.RunSync(ctx, sessionID, "database-sql-demo", prompt)
+		response, err := client.RunFastSync(ctx, sessionID, "database-sql-demo", prompt)
 		if err != nil {
 			log.Printf("Error: %v\n\n", err)
 			continue
@@ -168,7 +168,7 @@ func main() {
 	}
 
 	// Create a run within the transaction
-	runID, err := client.RunTx(ctx, tx, sessionID2, "database-sql-demo", "What's a fun fact about Tokyo?")
+	runID, err := client.RunFastTx(ctx, tx, sessionID2, "database-sql-demo", "What's a fun fact about Tokyo?")
 	if err != nil {
 		tx.Rollback()
 		log.Fatalf("Failed to create run in transaction: %v", err)

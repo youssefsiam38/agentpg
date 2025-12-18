@@ -11,13 +11,13 @@ import (
 
 // Listener implements driver.Listener using lib/pq.
 type Listener struct {
-	connStr   string
-	listener  *pq.Listener
-	notifCh   chan driver.Notification
-	done      chan struct{}
-	mu        sync.Mutex
-	closed    bool
-	channels  []string
+	connStr  string
+	listener *pq.Listener
+	notifCh  chan driver.Notification
+	done     chan struct{}
+	mu       sync.Mutex
+	closed   bool
+	channels []string
 }
 
 // NewListener creates a new Listener using the provided connection string.
@@ -41,8 +41,8 @@ func (l *Listener) Listen(ctx context.Context, channels ...string) error {
 	// Create pq listener with reconnection callback
 	l.listener = pq.NewListener(
 		l.connStr,
-		10*time.Second,  // minReconnectInterval
-		time.Minute,     // maxReconnectInterval
+		10*time.Second, // minReconnectInterval
+		time.Minute,    // maxReconnectInterval
 		func(ev pq.ListenerEventType, err error) {
 			// Reconnection callback - could log errors here
 			if err != nil {

@@ -12,9 +12,27 @@ const (
 	ContentTypeWebSearchResult = "web_search_result"
 )
 
+// RunMode represents the execution mode of a run (mirrors agentpg_run_mode enum).
+// Determines which Claude API is used for processing.
+type RunMode string
+
+const (
+	// RunModeBatch uses the Claude Batch API (24h processing window, cost-effective).
+	RunModeBatch RunMode = "batch"
+
+	// RunModeStreaming uses the Claude Streaming API (real-time, low latency).
+	RunModeStreaming RunMode = "streaming"
+)
+
+// String returns the string representation of the run mode.
+func (m RunMode) String() string {
+	return string(m)
+}
+
 // RunState represents the lifecycle of a run (mirrors agentpg_run_state enum).
+// Supports both Batch API and Streaming API modes.
 //
-// State transitions:
+// Batch mode state transitions:
 //
 //	pending ──────────────────┐
 //	    │ (worker claims)     │
@@ -32,6 +50,20 @@ const (
 //	    ├──> awaiting_input   │ (stop_reason=max_tokens, needs continuation)
 //	    └──> failed           │ (error)
 //
+// Streaming mode state transitions:
+//
+//	pending ──────────────────┐
+//	    │ (worker claims)     │
+//	    v                     │
+//	streaming ────────────────┤
+//	    │ (stream complete)   │
+//	    ├──> pending_tools    │ (has tool_use blocks)
+//	    ├──> completed        │ (stop_reason=end_turn)
+//	    ├──> awaiting_input   │ (stop_reason=max_tokens)
+//	    └──> failed           │ (error)
+//
+// Common transitions (both modes):
+//
 //	pending_tools ────────────┤
 //	    │ (all tools done)    │
 //	    └──> pending          │ (continue with tool_results)
@@ -44,6 +76,7 @@ const (
 	RunStateBatchSubmitting RunState = "batch_submitting"
 	RunStateBatchPending    RunState = "batch_pending"
 	RunStateBatchProcessing RunState = "batch_processing"
+	RunStateStreaming       RunState = "streaming"
 	RunStatePendingTools    RunState = "pending_tools"
 	RunStateAwaitingInput   RunState = "awaiting_input"
 	RunStateCompleted       RunState = "completed"
