@@ -12,6 +12,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/google/uuid"
+	"github.com/youssefsiam38/agentpg/compaction"
 	"github.com/youssefsiam38/agentpg/driver"
 	"github.com/youssefsiam38/agentpg/tool"
 )
@@ -37,6 +38,9 @@ type Client[TTx any] struct {
 	streamingWorker *streamingWorker[TTx]
 	toolWorker      *toolWorker[TTx]
 	batchPoller     *batchPoller[TTx]
+
+	// Compaction
+	compactor *compaction.Compactor[TTx]
 
 	// Lifecycle
 	ctx    context.Context
@@ -80,6 +84,17 @@ func NewClient[TTx any](drv driver.Driver[TTx], config *ClientConfig) (*Client[T
 		instanceID = uuid.New().String()
 	}
 
+	// Create compactor (lazy initialization, always available)
+	compactorConfig := config.CompactionConfig
+	if compactorConfig == nil {
+		compactorConfig = compaction.DefaultConfig()
+	}
+	compactorLogger := compaction.Logger(nil)
+	if config.Logger != nil {
+		compactorLogger = config.Logger
+	}
+	comp := compaction.New(drv.Store(), &anthropicClient, compactorConfig, compactorLogger)
+
 	return &Client[TTx]{
 		driver:     drv,
 		config:     config,
@@ -88,6 +103,7 @@ func NewClient[TTx any](drv driver.Driver[TTx], config *ClientConfig) (*Client[T
 		agents:     make(map[string]*AgentDefinition),
 		tools:      make(map[string]tool.Tool),
 		runWaiters: make(map[uuid.UUID][]chan *Run),
+		compactor:  comp,
 	}, nil
 }
 
@@ -608,6 +624,91 @@ func (c *Client[TTx]) RunFastSync(ctx context.Context, sessionID uuid.UUID, agen
 	}
 
 	return c.WaitForRun(ctx, runID)
+}
+
+// Compact performs context compaction on the specified session.
+// This replaces older messages with a structured summary to reduce context size
+// while preserving essential information.
+//
+// Use NeedsCompaction to check if compaction is needed before calling this method.
+func (c *Client[TTx]) Compact(ctx context.Context, sessionID uuid.UUID) (*compaction.Result, error) {
+	c.mu.RLock()
+	started := c.started
+	c.mu.RUnlock()
+
+	if !started {
+		return nil, ErrClientNotStarted
+	}
+
+	return c.compactor.Compact(ctx, sessionID)
+}
+
+// CompactWithConfig performs context compaction with a custom configuration.
+// This allows overriding the default compaction settings for a specific operation.
+func (c *Client[TTx]) CompactWithConfig(ctx context.Context, sessionID uuid.UUID, cfg *compaction.Config) (*compaction.Result, error) {
+	c.mu.RLock()
+	started := c.started
+	c.mu.RUnlock()
+
+	if !started {
+		return nil, ErrClientNotStarted
+	}
+
+	// Create a temporary compactor with the custom config
+	compactorLogger := compaction.Logger(nil)
+	if c.config.Logger != nil {
+		compactorLogger = c.config.Logger
+	}
+	tempCompactor := compaction.New(c.driver.Store(), &c.anthropic, cfg, compactorLogger)
+	return tempCompactor.Compact(ctx, sessionID)
+}
+
+// NeedsCompaction checks if a session needs compaction based on token usage.
+// Returns true if the session's context exceeds the configured trigger threshold.
+func (c *Client[TTx]) NeedsCompaction(ctx context.Context, sessionID uuid.UUID) (bool, error) {
+	c.mu.RLock()
+	started := c.started
+	c.mu.RUnlock()
+
+	if !started {
+		return false, ErrClientNotStarted
+	}
+
+	return c.compactor.NeedsCompaction(ctx, sessionID)
+}
+
+// GetCompactionStats returns statistics about a session's compaction state.
+// This includes token counts, usage percentage, and whether compaction is needed.
+func (c *Client[TTx]) GetCompactionStats(ctx context.Context, sessionID uuid.UUID) (*compaction.Stats, error) {
+	c.mu.RLock()
+	started := c.started
+	c.mu.RUnlock()
+
+	if !started {
+		return nil, ErrClientNotStarted
+	}
+
+	return c.compactor.GetStats(ctx, sessionID)
+}
+
+// CompactIfNeeded performs compaction only if the session exceeds the trigger threshold.
+// Returns nil result if compaction was not needed.
+// This is useful for automatic compaction after runs complete.
+func (c *Client[TTx]) CompactIfNeeded(ctx context.Context, sessionID uuid.UUID) (*compaction.Result, error) {
+	c.mu.RLock()
+	started := c.started
+	c.mu.RUnlock()
+
+	if !started {
+		return nil, ErrClientNotStarted
+	}
+
+	return c.compactor.CompactIfNeeded(ctx, sessionID)
+}
+
+// getCompactor returns the internal compactor for use by workers.
+func (c *Client[TTx]) getCompactor() *compaction.Compactor[TTx] {
+	return c.compactor
 }
 
 // GetRun retrieves a run by ID.

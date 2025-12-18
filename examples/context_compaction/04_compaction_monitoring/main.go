@@ -1,17 +1,17 @@
-// Package main demonstrates the Client API with compaction monitoring using per-client registration.
+// Package main demonstrates compaction monitoring using the Client API.
 //
 // This example shows:
-// - Comprehensive compaction monitoring with hooks
-// - Tracking metrics across compaction events
-// - Before/after compaction hooks
-// - Token usage metrics
-// - Per-client agent registration (new API)
+// - Tracking compaction events and metrics
+// - Querying compaction history from database
+// - Monitoring token usage over time
+// - Manual vs automatic compaction comparison
 package main
 
 import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -19,8 +19,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
+	"github.com/youssefsiam38/agentpg/compaction"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
 
@@ -35,8 +37,8 @@ type CompactionMonitor struct {
 
 type CompactionEvent struct {
 	Timestamp       time.Time
-	SessionID       string
-	Strategy        string
+	SessionID       uuid.UUID
+	Strategy        compaction.Strategy
 	OriginalTokens  int
 	CompactedTokens int
 	Reduction       float64
@@ -50,11 +52,7 @@ func NewCompactionMonitor() *CompactionMonitor {
 	}
 }
 
-func (m *CompactionMonitor) RecordEvent(
-	sessionID string,
-	result *compaction.CompactionResult,
-	duration time.Duration,
-) {
+func (m *CompactionMonitor) RecordEvent(sessionID uuid.UUID, result *compaction.Result) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -71,14 +69,14 @@ func (m *CompactionMonitor) RecordEvent(
 		CompactedTokens: result.CompactedTokens,
 		Reduction:       reduction,
 		MessagesRemoved: result.MessagesRemoved,
-		Duration:        duration,
+		Duration:        result.Duration,
 	}
 
 	m.events = append(m.events, event)
 
 	// Log in structured format
-	fmt.Printf("[COMPACTION EVENT] %s\n", event.Timestamp.Format(time.RFC3339))
-	fmt.Printf("  Session: %s\n", event.SessionID[:8]+"...")
+	fmt.Printf("\n[COMPACTION EVENT] %s\n", event.Timestamp.Format(time.RFC3339))
+	fmt.Printf("  Session: %s\n", event.SessionID.String()[:8]+"...")
 	fmt.Printf("  Strategy: %s\n", event.Strategy)
 	fmt.Printf("  Tokens: %d -> %d (%.1f%% reduction)\n",
 		event.OriginalTokens, event.CompactedTokens, event.Reduction)
@@ -111,13 +109,52 @@ func (m *CompactionMonitor) GetStats() (total int, avgReduction float64, totalTo
 	return len(m.events), sumReduction / float64(len(m.events)), totalTokensSaved
 }
 
+// ==========================================================
+// TokenTracker monitors token usage over time
+// ==========================================================
+
+type TokenTracker struct {
+	mu      sync.Mutex
+	samples []TokenSample
+}
+
+type TokenSample struct {
+	Timestamp   time.Time
+	SessionID   uuid.UUID
+	TotalTokens int
+	Messages    int
+}
+
+func NewTokenTracker() *TokenTracker {
+	return &TokenTracker{
+		samples: make([]TokenSample, 0),
+	}
+}
+
+func (t *TokenTracker) RecordSample(sessionID uuid.UUID, stats *compaction.Stats) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.samples = append(t.samples, TokenSample{
+		Timestamp:   time.Now(),
+		SessionID:   sessionID,
+		TotalTokens: stats.TotalTokens,
+		Messages:    stats.TotalMessages,
+	})
+}
+
+func (t *TokenTracker) GetSamples() []TokenSample {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	result := make([]TokenSample, len(t.samples))
+	copy(result, t.samples)
+	return result
+}
 
 func main() {
-	// Create a context that cancels on SIGINT/SIGTERM
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
 		log.Fatal("ANTHROPIC_API_KEY environment variable is required")
@@ -125,32 +162,38 @@ func main() {
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		log.Fatal("DATABASE_URL environment variable is required")
+		dbURL = "postgres://agentpg:agentpg@localhost:5432/agentpg?sslmode=disable"
 	}
 
-	// Create PostgreSQL connection pool
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer pool.Close()
 
-	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
 
-	// Create the AgentPG client
+	// Create client with low thresholds to trigger compaction
 	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
-		APIKey: apiKey,
+		APIKey:                apiKey,
+		AutoCompactionEnabled: false, // Manual control for monitoring demo
+		CompactionConfig: &compaction.Config{
+			Strategy:     compaction.StrategyHybrid,
+			Trigger:      0.30, // 30% threshold for demo
+			TargetTokens: 3000,
+		},
+		Logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		})),
 	})
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Register agent on the client (new per-client API)
 	maxTokens := 4096
 	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "compaction-monitoring-demo",
-		Description:  "Assistant with compaction monitoring",
+		Name:         "monitoring-demo",
+		Description:  "Assistant for compaction monitoring demo",
 		Model:        "claude-sonnet-4-5-20250929",
 		SystemPrompt: "You are a helpful assistant. Provide detailed responses.",
 		MaxTokens:    &maxTokens,
@@ -158,38 +201,30 @@ func main() {
 		log.Fatalf("Failed to register agent: %v", err)
 	}
 
-	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
 	}
-	defer func() {
-		if err := client.Stop(context.Background()); err != nil {
-			log.Printf("Error stopping client: %v", err)
-		}
-	}()
+	defer client.Stop(context.Background())
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
-	// NOTE: The old API had agent-specific hooks (OnBeforeCompaction, OnAfterCompaction, OnAfterMessage)
-	// These hooks are not available in the new per-client API.
-	// Compaction monitoring would need to be implemented differently in the new architecture.
+	// Initialize monitors
+	compactionMonitor := NewCompactionMonitor()
+	tokenTracker := NewTokenTracker()
 
-	// Create compaction monitor (for demonstration purposes)
-	monitor := NewCompactionMonitor()
-	_ = monitor // Avoid unused variable warning
-
-	// Create session using client API
-	sessionID, err := client.NewSession(ctx, "1", "monitoring-demo", nil, map[string]any{
-		"description": "Compaction monitoring demonstration",
-	})
+	// Create session
+	sessionID, err := client.NewSession(ctx, "1", "monitoring-demo", nil, nil)
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
 
-	fmt.Printf("Created session: %s\n\n", sessionID)
+	fmt.Println(strings.Repeat("=", 70))
+	fmt.Println("COMPACTION MONITORING DEMO")
+	fmt.Println(strings.Repeat("=", 70))
+	fmt.Printf("\nSession: %s\n", sessionID)
 
 	// ==========================================================
-	// Run conversation to potentially trigger compaction
+	// Run conversation with monitoring
 	// ==========================================================
 
 	prompts := []string{
@@ -201,43 +236,102 @@ func main() {
 	}
 
 	for i, prompt := range prompts {
-		fmt.Printf("\n=== Query %d/%d ===\n", i+1, len(prompts))
-		fmt.Printf("Prompt: %s\n\n", truncate(prompt, 60))
+		fmt.Printf("\n--- Query %d/%d ---\n", i+1, len(prompts))
+		fmt.Printf("Prompt: %s\n", truncate(prompt, 60))
 
-		response, err := client.RunSync(ctx, sessionID, "compaction-monitoring-demo", prompt)
+		response, err := client.RunFastSync(ctx, sessionID, "monitoring-demo", prompt)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}
 
-		// Print truncated response
-		fmt.Printf("Response: %s\n", truncate(response.Text, 150))
+		fmt.Printf("Response: %s\n", truncate(response.Text, 100))
+		fmt.Printf("Tokens - Input: %d, Output: %d\n",
+			response.Usage.InputTokens, response.Usage.OutputTokens)
 
-		// Print token usage
-		fmt.Printf("[METRICS] Input: %d, Output: %d tokens\n",
-			response.Usage.InputTokens,
-			response.Usage.OutputTokens)
+		// Track token usage
+		stats, err := client.GetCompactionStats(ctx, sessionID)
+		if err != nil {
+			log.Printf("Failed to get stats: %v", err)
+			continue
+		}
+
+		tokenTracker.RecordSample(sessionID, stats)
+		fmt.Printf("Context: %d tokens (%.1f%%), %d messages\n",
+			stats.TotalTokens, stats.UsagePercent*100, stats.TotalMessages)
+
+		// Check if compaction is needed and perform it
+		if stats.NeedsCompaction {
+			fmt.Println("\n>>> Compaction threshold reached! Triggering compaction...")
+
+			result, err := client.Compact(ctx, sessionID)
+			if err != nil {
+				log.Printf("Compaction failed: %v", err)
+			} else {
+				compactionMonitor.RecordEvent(sessionID, result)
+			}
+		}
 	}
 
 	// ==========================================================
-	// Display monitoring summary
+	// Display Monitoring Summary
 	// ==========================================================
 
-	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Println("               COMPACTION MONITORING SUMMARY")
-	fmt.Println(strings.Repeat("=", 60))
+	fmt.Println("\n" + strings.Repeat("=", 70))
+	fmt.Println("MONITORING SUMMARY")
+	fmt.Println(strings.Repeat("=", 70))
 
-	// NOTE: Compaction monitoring is not implemented in this example because
-	// the new per-client API doesn't expose compaction hooks.
-	// In a production system, you would monitor compaction through:
-	// - Database queries to agentpg_compaction_events table
-	// - Custom logging/metrics collection
-	// - Periodic polling of session statistics
+	// Token usage history
+	fmt.Println("\n--- Token Usage History ---")
+	samples := tokenTracker.GetSamples()
+	for i, sample := range samples {
+		fmt.Printf("  [%d] %s: %d tokens, %d messages\n",
+			i+1, sample.Timestamp.Format("15:04:05"), sample.TotalTokens, sample.Messages)
+	}
 
-	fmt.Println("\nNOTE: Compaction monitoring hooks are part of the old API.")
-	fmt.Println("To monitor compaction in the new API, query the agentpg_compaction_events table directly.")
+	// Compaction events
+	fmt.Println("\n--- Compaction Events ---")
+	events := compactionMonitor.GetEvents()
+	if len(events) == 0 {
+		fmt.Println("  No compaction events recorded")
+	} else {
+		for i, event := range events {
+			fmt.Printf("  [%d] %s: %d -> %d tokens (%.1f%% reduction)\n",
+				i+1, event.Timestamp.Format("15:04:05"),
+				event.OriginalTokens, event.CompactedTokens, event.Reduction)
+		}
+	}
 
-	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Println("=== Demo Complete ===")
+	// Overall stats
+	fmt.Println("\n--- Overall Statistics ---")
+	total, avgReduction, tokensSaved := compactionMonitor.GetStats()
+	fmt.Printf("  Total compactions: %d\n", total)
+	fmt.Printf("  Average reduction: %.1f%%\n", avgReduction)
+	fmt.Printf("  Total tokens saved: %d\n", tokensSaved)
+
+	// Final session stats
+	finalStats, err := client.GetCompactionStats(ctx, sessionID)
+	if err != nil {
+		log.Printf("Failed to get final stats: %v", err)
+	} else {
+		fmt.Println("\n--- Final Session State ---")
+		fmt.Printf("  Total messages: %d\n", finalStats.TotalMessages)
+		fmt.Printf("  Total tokens: %d\n", finalStats.TotalTokens)
+		fmt.Printf("  Context usage: %.1f%%\n", finalStats.UsagePercent*100)
+		fmt.Printf("  Compaction count: %d\n", finalStats.CompactionCount)
+		fmt.Printf("  Compactable messages: %d\n", finalStats.CompactableMessages)
+		fmt.Printf("  Summary messages: %d\n", finalStats.SummaryMessages)
+	}
+
+	// Database query hint
+	fmt.Println("\n--- Database Monitoring ---")
+	fmt.Println("Query compaction history:")
+	fmt.Printf("  SELECT * FROM agentpg_compaction_events WHERE session_id = '%s';\n", sessionID)
+	fmt.Println("\nQuery archived messages:")
+	fmt.Printf("  SELECT * FROM agentpg_message_archive WHERE session_id = '%s';\n", sessionID)
+
+	fmt.Println("\n" + strings.Repeat("=", 70))
+	fmt.Println("DEMO COMPLETE")
+	fmt.Println(strings.Repeat("=", 70))
 }
 
 func truncate(s string, maxLen int) string {

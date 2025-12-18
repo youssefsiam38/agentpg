@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/google/uuid"
 	"github.com/youssefsiam38/agentpg/driver"
 )
 
@@ -385,6 +386,11 @@ func (p *batchPoller[TTx]) processResult(ctx context.Context, iter *driver.Itera
 		return fmt.Errorf("failed to update run state: %w", err)
 	}
 
+	// Auto-compaction: check if session needs compaction after run completes
+	if nextState == RunStateCompleted && p.client.config.AutoCompactionEnabled {
+		p.checkAndCompact(ctx, run.SessionID)
+	}
+
 	log.Info("processed batch result",
 		"run_id", iter.RunID,
 		"iteration_id", iter.ID,
@@ -439,4 +445,47 @@ func (p *batchPoller[TTx]) createToolExecutions(ctx context.Context, iter *drive
 	}
 
 	return nil
+}
+
+// checkAndCompact checks if the session needs compaction and performs it if needed.
+// This is called after a run completes when AutoCompactionEnabled is true.
+// Errors are logged but do not fail the run.
+func (p *batchPoller[TTx]) checkAndCompact(ctx context.Context, sessionID uuid.UUID) {
+	compactor := p.client.getCompactor()
+	if compactor == nil {
+		return
+	}
+
+	needsCompaction, err := compactor.NeedsCompaction(ctx, sessionID)
+	if err != nil {
+		p.client.log().Warn("auto-compaction check failed",
+			"session_id", sessionID,
+			"error", err,
+		)
+		return
+	}
+
+	if !needsCompaction {
+		return
+	}
+
+	p.client.log().Info("triggering auto-compaction",
+		"session_id", sessionID,
+	)
+
+	result, err := compactor.Compact(ctx, sessionID)
+	if err != nil {
+		p.client.log().Warn("auto-compaction failed",
+			"session_id", sessionID,
+			"error", err,
+		)
+		return
+	}
+
+	p.client.log().Info("auto-compaction completed",
+		"session_id", sessionID,
+		"original_tokens", result.OriginalTokens,
+		"compacted_tokens", result.CompactedTokens,
+		"messages_removed", result.MessagesRemoved,
+	)
 }

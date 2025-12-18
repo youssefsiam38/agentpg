@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/youssefsiam38/agentpg/compaction"
 )
 
 // Logger interface for structured logging.
@@ -83,6 +84,17 @@ type ClientConfig struct {
 	// Logger for structured logging.
 	// If nil, logs are discarded.
 	Logger Logger
+
+	// AutoCompactionEnabled enables automatic context compaction in workers.
+	// When enabled, workers will check if compaction is needed after each run
+	// completes and trigger compaction if the context exceeds the threshold.
+	// Defaults to false (manual compaction only).
+	AutoCompactionEnabled bool
+
+	// CompactionConfig is the configuration for context compaction.
+	// If nil, default compaction configuration is used.
+	// Only used if AutoCompactionEnabled is true or when calling Compact() manually.
+	CompactionConfig *compaction.Config
 }
 
 // Default configuration values.
