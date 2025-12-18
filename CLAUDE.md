@@ -280,6 +280,17 @@ type ClientConfig struct {
 
     // Logger for structured logging.
     Logger Logger
+
+    // AutoCompactionEnabled enables automatic context compaction in workers.
+    // When enabled, workers check if compaction is needed after each run
+    // completes and trigger compaction if the context exceeds the threshold.
+    // Defaults to false (manual compaction only).
+    AutoCompactionEnabled bool
+
+    // CompactionConfig is the configuration for context compaction.
+    // If nil, default compaction configuration is used.
+    // Only used if AutoCompactionEnabled is true or when calling Compact() manually.
+    CompactionConfig *compaction.Config
 }
 ```
 
@@ -731,16 +742,48 @@ childSessionID, err := client.NewSession(ctx, "tenant-1", "child-session", &pare
 
 ### Running Agents
 
+AgentPG provides two API modes for running agents:
+
+#### Batch API (Cost-Effective, Higher Latency)
+
 ```go
-// Async run (returns immediately)
+// Async run using Batch API (returns immediately)
 runID, err := client.Run(ctx, sessionID, "assistant", "Hello!")
 
 // Wait for completion
 response, err := client.WaitForRun(ctx, runID)
 
-// Sync run (convenience wrapper)
+// Sync run using Batch API (convenience wrapper)
 response, err := client.RunSync(ctx, sessionID, "assistant", "Hello!")
+
+// With transaction support
+runID, err := client.RunTx(ctx, tx, sessionID, "assistant", "Hello!")
 ```
+
+#### Streaming API (Real-Time, Lower Latency)
+
+```go
+// Async run using Streaming API (returns immediately)
+runID, err := client.RunFast(ctx, sessionID, "assistant", "Hello!")
+
+// Wait for completion
+response, err := client.WaitForRun(ctx, runID)
+
+// Sync run using Streaming API (recommended for interactive use)
+response, err := client.RunFastSync(ctx, sessionID, "assistant", "Hello!")
+
+// With transaction support
+runID, err := client.RunFastTx(ctx, tx, sessionID, "assistant", "Hello!")
+```
+
+#### Choosing Between Batch and Streaming
+
+| Feature | Batch API (`Run*`) | Streaming API (`RunFast*`) |
+|---------|-------------------|---------------------------|
+| Latency | Higher (polling) | Lower (real-time) |
+| Cost | 50% discount | Standard pricing |
+| Best for | Background tasks, high volume | Interactive apps, chat UIs |
+| Timeout | 24 hours | Connection-based |
 
 ### Response Structure
 
@@ -1124,29 +1167,94 @@ fmt.Printf("Tool iterations: %d\n", run.ToolIterations)
 
 ## Context Compaction
 
-Long conversations can exceed Claude's context window. AgentPG supports automatic compaction.
+Long conversations can exceed Claude's context window (200K tokens). AgentPG provides automatic and manual compaction via the `compaction` package.
+
+### Configuration
+
+```go
+import "github.com/youssefsiam38/agentpg/compaction"
+
+// Enable auto-compaction in ClientConfig
+client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
+    APIKey: apiKey,
+    AutoCompactionEnabled: true,  // Trigger compaction after each run
+    CompactionConfig: &compaction.Config{
+        Strategy:            compaction.StrategyHybrid, // or StrategySummarization
+        Trigger:             0.85,                      // 85% context usage threshold
+        TargetTokens:        80000,                     // Target after compaction
+        PreserveLastN:       10,                        // Always keep last 10 messages
+        ProtectedTokens:     40000,                     // Never touch last 40K tokens
+        MaxTokensForModel:   200000,                    // Claude's context window
+        SummarizerModel:     "claude-3-5-haiku-20241022",
+        SummarizerMaxTokens: 4096,
+        PreserveToolOutputs: false,                     // Prune tool outputs in hybrid mode
+        UseTokenCountingAPI: true,                      // Use Claude's token counting API
+    },
+})
+```
 
 ### Compaction Strategies
 
-```go
-// Hybrid strategy (default): prune tool outputs first, then summarize
-compactionConfig := agentpg.CompactionConfig{
-    Enabled:             true,
-    Strategy:            "hybrid",
-    Trigger:             0.85,  // Trigger at 85% context usage
-    TargetTokens:        80000, // Target after compaction
-    PreserveLastN:       10,    // Always keep last 10 messages
-    ProtectedTokens:     40000, // Never touch last 40K tokens
-    SummarizerModel:     "claude-3-5-haiku-20241022",
-    PreserveToolOutputs: false,
-}
+#### Hybrid Strategy (Default)
 
-// Summarization strategy: use Claude to summarize older messages
-compactionConfig := agentpg.CompactionConfig{
-    Strategy: "summarization",
-    // ...
+Two-phase approach that minimizes API costs:
+
+1. **Phase 1: Prune Tool Outputs** - Replaces tool outputs with `[TOOL OUTPUT PRUNED]` placeholders (free, no API call)
+2. **Phase 2: Summarize** - If still over target, uses Claude to summarize remaining messages
+
+```go
+CompactionConfig: &compaction.Config{
+    Strategy:            compaction.StrategyHybrid,
+    PreserveToolOutputs: false,  // Enable pruning
 }
 ```
+
+#### Summarization Strategy
+
+Directly summarizes all compactable messages using Claude's streaming API. Creates a structured 9-section summary (Claude Code pattern).
+
+```go
+CompactionConfig: &compaction.Config{
+    Strategy: compaction.StrategySummarization,
+}
+```
+
+### Manual Compaction
+
+```go
+// Check if compaction is needed
+needsCompaction, err := client.NeedsCompaction(ctx, sessionID)
+
+// Get detailed statistics
+stats, err := client.GetCompactionStats(ctx, sessionID)
+fmt.Printf("Usage: %.1f%% (%d tokens)\n", stats.UsagePercent*100, stats.TotalTokens)
+fmt.Printf("Messages: %d total, %d compactable\n", stats.TotalMessages, stats.CompactableMessages)
+
+// Manual compaction
+result, err := client.Compact(ctx, sessionID)
+fmt.Printf("Reduced: %d -> %d tokens\n", result.OriginalTokens, result.CompactedTokens)
+
+// Compact only if needed
+result, err := client.CompactIfNeeded(ctx, sessionID)
+
+// Compact with custom config (one-off override)
+result, err := client.CompactWithConfig(ctx, sessionID, &compaction.Config{
+    Strategy:     compaction.StrategySummarization,
+    TargetTokens: 50000,
+})
+```
+
+### Message Partitioning
+
+Messages are partitioned into mutually exclusive categories:
+
+| Category | Description | Compactable |
+|----------|-------------|-------------|
+| Protected | Within last `ProtectedTokens` (40K default) | No |
+| Preserved | Marked `is_preserved=true` | No |
+| Recent | Last `PreserveLastN` messages (10 default) | No |
+| Summaries | Previous compaction summaries (`is_summary=true`) | No |
+| Compactable | Everything else | Yes |
 
 ### Preserved Messages
 
@@ -1159,7 +1267,38 @@ SET is_preserved = true
 WHERE id = 'important-message-id';
 ```
 
-### Compaction Events
+### Compaction Result
+
+```go
+type Result struct {
+    EventID             uuid.UUID     // ID of the compaction event record
+    Strategy            Strategy      // Strategy that was used
+    OriginalTokens      int           // Token count before compaction
+    CompactedTokens     int           // Token count after compaction
+    MessagesRemoved     int           // Number of messages archived
+    PreservedMessageIDs []uuid.UUID   // IDs of preserved messages
+    SummaryCreated      bool          // Whether a summary was created
+    Duration            time.Duration // How long compaction took
+}
+```
+
+### Compaction Statistics
+
+```go
+type Stats struct {
+    SessionID           uuid.UUID
+    TotalMessages       int
+    TotalTokens         int
+    UsagePercent        float64  // Percentage of context window used
+    CompactionCount     int      // Times this session has been compacted
+    PreservedMessages   int      // Non-compactable message count
+    SummaryMessages     int      // Summary messages from previous compactions
+    CompactableMessages int      // Messages eligible for compaction
+    NeedsCompaction     bool     // Whether compaction should be triggered
+}
+```
+
+### Database Tables
 
 ```sql
 -- Track compaction history
@@ -1172,19 +1311,20 @@ SELECT
 FROM agentpg_compaction_events
 WHERE session_id = 'session-123'
 ORDER BY created_at DESC;
-```
 
-### Archived Messages
-
-Compacted messages are archived for potential recovery:
-
-```sql
--- Retrieve archived messages
+-- Retrieve archived messages (for potential recovery)
 SELECT original_message
 FROM agentpg_message_archive
 WHERE session_id = 'session-123'
 ORDER BY archived_at DESC;
 ```
+
+### Token Counting
+
+The compaction package uses Claude's token counting API with a fallback:
+
+1. **Primary**: `client.Messages.CountTokens()` API for accurate counts
+2. **Fallback**: Character-based approximation (~4 characters per token)
 
 ---
 
@@ -1649,19 +1789,45 @@ func (m *MockBatchAPI) GetBatchResult(ctx context.Context, batchID, requestID st
 
 ---
 
-### Batch API use
+### API Modes
 
-**(Batch API):**
+AgentPG supports two API modes for executing agents:
+
+#### Batch API (Cost-Effective)
+
 ```go
 // Run() creates pending run, returns immediately
 runID, _ := client.Run(ctx, sessionID, "agent", prompt)
 
-// Wait for batch processing
+// Wait for batch processing (polls until complete)
 response, _ := client.WaitForRun(ctx, runID)
 
 // Or use convenience wrapper
 response, _ := client.RunSync(ctx, sessionID, "agent", prompt)
+
+// With transaction support
+runID, _ := client.RunTx(ctx, tx, sessionID, "agent", prompt)
 ```
+
+#### Streaming API (Real-Time)
+
+```go
+// RunFast() uses streaming API for lower latency
+runID, _ := client.RunFast(ctx, sessionID, "agent", prompt)
+
+// Wait for streaming to complete
+response, _ := client.WaitForRun(ctx, runID)
+
+// Or use convenience wrapper (recommended for interactive apps)
+response, _ := client.RunFastSync(ctx, sessionID, "agent", prompt)
+
+// With transaction support
+runID, _ := client.RunFastTx(ctx, tx, sessionID, "agent", prompt)
+```
+
+**When to use which:**
+- **Batch API**: Background processing, high volume, cost-sensitive (50% discount)
+- **Streaming API**: Interactive apps, chat interfaces, real-time responses
 
 ### Database Migration
 
@@ -1800,6 +1966,11 @@ See the [Go documentation](https://pkg.go.dev/github.com/youssefsiam38/agentpg) 
 - `RegisterAgentAsTool()` - Create agent hierarchy
 - `Start()` / `Stop()` - Lifecycle
 - `NewSession()` / `NewSessionTx()` - Create sessions
-- `Run()` / `RunTx()` / `RunSync()` - Execute agents
+- `Run()` / `RunTx()` / `RunSync()` - Execute agents (Batch API)
+- `RunFast()` / `RunFastTx()` / `RunFastSync()` - Execute agents (Streaming API)
 - `WaitForRun()` - Wait for completion
 - `GetRun()` / `GetSession()` - Query state
+- `Compact()` / `CompactWithConfig()` - Manual compaction
+- `CompactIfNeeded()` - Conditional compaction
+- `NeedsCompaction()` - Check compaction threshold
+- `GetCompactionStats()` - Get session compaction statistics
