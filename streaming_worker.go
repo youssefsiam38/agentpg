@@ -333,6 +333,11 @@ func (w *streamingWorker[TTx]) processResult(ctx context.Context, iter *driver.I
 		return fmt.Errorf("failed to update run state: %w", err)
 	}
 
+	// Auto-compaction: check if session needs compaction after run completes
+	if nextState == RunStateCompleted && w.client.config.AutoCompactionEnabled {
+		w.checkAndCompact(ctx, run.SessionID)
+	}
+
 	log.Info("processed streaming result",
 		"run_id", iter.RunID,
 		"iteration_id", iter.ID,
@@ -507,4 +512,47 @@ func (w *streamingWorker[TTx]) failRun(ctx context.Context, runID uuid.UUID, err
 			"error", err,
 		)
 	}
+}
+
+// checkAndCompact checks if the session needs compaction and performs it if needed.
+// This is called after a run completes when AutoCompactionEnabled is true.
+// Errors are logged but do not fail the run.
+func (w *streamingWorker[TTx]) checkAndCompact(ctx context.Context, sessionID uuid.UUID) {
+	compactor := w.client.getCompactor()
+	if compactor == nil {
+		return
+	}
+
+	needsCompaction, err := compactor.NeedsCompaction(ctx, sessionID)
+	if err != nil {
+		w.client.log().Warn("auto-compaction check failed",
+			"session_id", sessionID,
+			"error", err,
+		)
+		return
+	}
+
+	if !needsCompaction {
+		return
+	}
+
+	w.client.log().Info("triggering auto-compaction",
+		"session_id", sessionID,
+	)
+
+	result, err := compactor.Compact(ctx, sessionID)
+	if err != nil {
+		w.client.log().Warn("auto-compaction failed",
+			"session_id", sessionID,
+			"error", err,
+		)
+		return
+	}
+
+	w.client.log().Info("auto-compaction completed",
+		"session_id", sessionID,
+		"original_tokens", result.OriginalTokens,
+		"compacted_tokens", result.CompactedTokens,
+		"messages_removed", result.MessagesRemoved,
+	)
 }

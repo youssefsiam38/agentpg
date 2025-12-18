@@ -2,8 +2,9 @@
 //
 // This example shows:
 // - Per-client agent registration
-// - Enabling auto compaction via Config
+// - Enabling auto compaction via ClientConfig
 // - Long conversation that may trigger compaction
+// - Checking compaction stats after conversation
 package main
 
 import (
@@ -16,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
+	"github.com/youssefsiam38/agentpg/compaction"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
 )
 
@@ -32,7 +34,7 @@ func main() {
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		log.Fatal("DATABASE_URL environment variable is required")
+		dbURL = "postgres://agentpg:agentpg@localhost:5432/agentpg?sslmode=disable"
 	}
 
 	// Create PostgreSQL connection pool
@@ -45,15 +47,25 @@ func main() {
 	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
 
-	// Create the AgentPG client
+	// Create the AgentPG client with auto-compaction enabled
 	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
 		APIKey: apiKey,
+		// Enable auto-compaction - runs automatically after each completed run
+		AutoCompactionEnabled: true,
+		// Configure compaction settings
+		CompactionConfig: &compaction.Config{
+			Strategy:        compaction.StrategyHybrid, // Prune tool outputs first, then summarize
+			Trigger:         0.85,                      // Trigger at 85% context usage
+			TargetTokens:    80000,                     // Target after compaction
+			PreserveLastN:   10,                        // Always keep last 10 messages
+			ProtectedTokens: 40000,                     // Never touch last 40K tokens
+		},
 	})
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Register agent with auto-compaction enabled
+	// Register agent
 	maxTokens := 4096
 	if err := client.RegisterAgent(&agentpg.AgentDefinition{
 		Name:         "auto-compaction-demo",
@@ -61,12 +73,6 @@ func main() {
 		Model:        "claude-sonnet-4-5-20250929",
 		SystemPrompt: "You are a helpful assistant. Provide detailed, thorough responses to questions.",
 		MaxTokens:    &maxTokens,
-		Config: map[string]any{
-			// Enable auto-compaction with settings
-			"auto_compaction":    true,
-			"compaction_trigger": 0.85,  // 85% threshold
-			"compaction_target":  80000, // Target token count after compaction
-		},
 	}); err != nil {
 		log.Fatalf("Failed to register agent: %v", err)
 	}
@@ -82,6 +88,7 @@ func main() {
 	}()
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+	log.Println("Auto-compaction is ENABLED")
 
 	// Create session
 	sessionID, err := client.NewSession(ctx, "1", "auto-compaction-demo", nil, map[string]any{
@@ -109,7 +116,7 @@ func main() {
 		fmt.Printf("=== Question %d/%d ===\n", i+1, len(questions))
 		fmt.Printf("Q: %s\n\n", truncateString(question, 80))
 
-		response, err := client.RunSync(ctx, sessionID, "auto-compaction-demo", question)
+		response, err := client.RunFastSync(ctx, sessionID, "auto-compaction-demo", question)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}
@@ -126,16 +133,41 @@ func main() {
 			response.Usage.InputTokens,
 			response.Usage.OutputTokens)
 		fmt.Println()
+
+		// Check compaction stats after each run
+		stats, err := client.GetCompactionStats(ctx, sessionID)
+		if err != nil {
+			log.Printf("Failed to get compaction stats: %v", err)
+		} else {
+			fmt.Printf("Context Usage: %.1f%% (%d tokens)\n", stats.UsagePercent*100, stats.TotalTokens)
+			fmt.Printf("Messages: %d total, %d compactable, %d preserved\n",
+				stats.TotalMessages, stats.CompactableMessages, stats.PreservedMessages)
+			if stats.CompactionCount > 0 {
+				fmt.Printf("Compaction Events: %d\n", stats.CompactionCount)
+			}
+		}
+		fmt.Println()
 	}
 
 	// ==========================================================
-	// Summary
+	// Final Summary
 	// ==========================================================
 
-	fmt.Println("=== Summary ===")
-	fmt.Println("Conversation completed successfully.")
+	fmt.Println("=== Final Summary ===")
+
+	stats, err := client.GetCompactionStats(ctx, sessionID)
+	if err != nil {
+		log.Printf("Failed to get final stats: %v", err)
+	} else {
+		fmt.Printf("Final Context Usage: %.1f%% (%d tokens)\n", stats.UsagePercent*100, stats.TotalTokens)
+		fmt.Printf("Total Messages: %d\n", stats.TotalMessages)
+		fmt.Printf("Compaction Events: %d\n", stats.CompactionCount)
+		fmt.Printf("Needs Compaction: %v\n", stats.NeedsCompaction)
+	}
+
+	fmt.Println("\nConversation completed successfully.")
 	fmt.Println("Note: Compaction events can be monitored via the agentpg_compaction_events table.")
-	fmt.Println("Query example: SELECT * FROM agentpg_compaction_events WHERE session_id = '<session_id>';")
+	fmt.Printf("Query example: SELECT * FROM agentpg_compaction_events WHERE session_id = '%s';\n", sessionID)
 	fmt.Println("\n=== Demo Complete ===")
 }
 
