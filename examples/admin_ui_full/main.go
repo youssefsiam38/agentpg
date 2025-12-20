@@ -99,6 +99,7 @@ func main() {
 		PageSize:        25,
 		RefreshInterval: 5 * time.Second,
 		Logger:          slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		// TenantID:        "default", // Set to specific tenant ID for single-tenant mode
 		// TenantID: "", // Empty = admin mode (shows all tenants)
 	}
 

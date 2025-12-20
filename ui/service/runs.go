@@ -10,9 +10,14 @@ import (
 
 // ListRuns returns a paginated list of runs.
 func (s *Service[TTx]) ListRuns(ctx context.Context, params RunListParams) (*RunList, error) {
+	// Apply validation and defaults
 	if params.Limit <= 0 {
 		params.Limit = 25
 	}
+	params.Limit = ValidateLimit(params.Limit)
+	params.Offset = ValidateOffset(params.Offset)
+	params.OrderBy = ValidateOrderBy(params.OrderBy, AllowedRunOrderBy)
+	params.OrderDir = ValidateOrderDir(params.OrderDir)
 
 	// Use the driver's ListRuns method with filtering and pagination
 	runs, total, err := s.store.ListRuns(ctx, driver.ListRunsParams{

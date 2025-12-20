@@ -1,15 +1,15 @@
 {{define "fragments/session-list.html"}}
 <div class="space-y-3">
     {{range .Sessions}}
-    <a href="{{$.BasePath}}/sessions/{{.ID}}" class="block p-4 bg-white rounded-lg shadow hover:shadow-md transition-shadow">
+    <a href="{{$.BasePath}}/sessions/{{.ID}}" class="block p-4 bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 hover:bg-gray-700/50 transition-colors">
         <div class="flex items-center justify-between">
             <div class="flex items-center space-x-3">
-                <span class="font-medium text-gray-900">{{.Identifier}}</span>
-                <span class="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">{{.TenantID}}</span>
+                <span class="font-medium text-gray-100">{{.Identifier}}</span>
+                <span class="text-xs text-gray-400 bg-gray-700 px-2 py-1 rounded">{{.TenantID}}</span>
             </div>
             <span class="text-sm text-gray-500">{{formatTimeAgo .LastActivityAt}}</span>
         </div>
-        <div class="mt-2 flex items-center space-x-4 text-sm text-gray-500">
+        <div class="mt-2 flex items-center space-x-4 text-sm text-gray-400">
             <span>{{.RunCount}} runs</span>
             <span>{{.MessageCount}} messages</span>
         </div>
@@ -20,7 +20,7 @@
 
     {{if .HasMore}}
     <div class="text-center py-4">
-        <a href="{{$.BasePath}}/sessions" class="text-sm text-indigo-600 hover:text-indigo-500">Load more...</a>
+        <a href="{{$.BasePath}}/sessions" class="text-sm text-cyan-400 hover:text-cyan-300">Load more...</a>
     </div>
     {{end}}
 </div>

@@ -8,6 +8,72 @@ import (
 	"github.com/youssefsiam38/agentpg/driver"
 )
 
+// Validation constants for query parameters
+const (
+	// MaxPageLimit is the maximum allowed page size to prevent resource exhaustion
+	MaxPageLimit = 1000
+	// MinPageLimit is the minimum allowed page size
+	MinPageLimit = 1
+)
+
+// AllowedSessionOrderBy is the whitelist of valid OrderBy values for sessions
+var AllowedSessionOrderBy = map[string]bool{
+	"":           true, // empty means default ordering
+	"created_at": true,
+	"updated_at": true,
+}
+
+// AllowedRunOrderBy is the whitelist of valid OrderBy values for runs
+var AllowedRunOrderBy = map[string]bool{
+	"":             true, // empty means default ordering
+	"created_at":   true,
+	"finalized_at": true,
+}
+
+// AllowedOrderDir is the whitelist of valid OrderDir values
+var AllowedOrderDir = map[string]bool{
+	"":     true, // empty means default direction
+	"asc":  true,
+	"desc": true,
+}
+
+// ValidateOrderBy validates an OrderBy value against the allowed whitelist.
+// Returns the validated value or an empty string if invalid.
+func ValidateOrderBy(value string, allowed map[string]bool) string {
+	if allowed[value] {
+		return value
+	}
+	return ""
+}
+
+// ValidateOrderDir validates an OrderDir value.
+// Returns the validated value or an empty string if invalid.
+func ValidateOrderDir(value string) string {
+	if AllowedOrderDir[value] {
+		return value
+	}
+	return ""
+}
+
+// ValidateLimit ensures limit is within acceptable bounds.
+func ValidateLimit(limit int) int {
+	if limit < MinPageLimit {
+		return MinPageLimit
+	}
+	if limit > MaxPageLimit {
+		return MaxPageLimit
+	}
+	return limit
+}
+
+// ValidateOffset ensures offset is non-negative.
+func ValidateOffset(offset int) int {
+	if offset < 0 {
+		return 0
+	}
+	return offset
+}
+
 // DashboardStats contains aggregated statistics for the dashboard.
 type DashboardStats struct {
 	// Session counts

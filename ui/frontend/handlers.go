@@ -3,6 +3,7 @@ package frontend
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -10,7 +11,19 @@ import (
 	"github.com/youssefsiam38/agentpg/ui/service"
 )
 
+// Validation constants
+const (
+	// maxIdentifierLength is the maximum length for session identifiers
+	maxIdentifierLength = 256
+	// maxAgentNameLength is the maximum length for agent names
+	maxAgentNameLength = 128
+)
+
+// identifierRegex validates session identifiers (alphanumeric, hyphens, underscores)
+var identifierRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 // parseInt parses an integer from a query parameter with a default.
+// It applies bounds validation to prevent resource exhaustion.
 func parseInt(r *http.Request, key string, defaultVal int) int {
 	val := r.URL.Query().Get(key)
 	if val == "" {
@@ -20,12 +33,59 @@ func parseInt(r *http.Request, key string, defaultVal int) int {
 	if err != nil {
 		return defaultVal
 	}
-	return i
+	// Apply bounds validation
+	return service.ValidateLimit(i)
+}
+
+// parseOffset parses an offset from a query parameter with a default.
+func parseOffset(r *http.Request, key string, defaultVal int) int {
+	val := r.URL.Query().Get(key)
+	if val == "" {
+		return defaultVal
+	}
+	i, err := strconv.Atoi(val)
+	if err != nil {
+		return defaultVal
+	}
+	return service.ValidateOffset(i)
 }
 
 // parseUUID parses a UUID from a string.
 func parseUUID(s string) (uuid.UUID, error) {
 	return uuid.Parse(s)
+}
+
+// validateIdentifier validates a session identifier.
+// Returns the validated identifier or an empty string if invalid.
+func validateIdentifier(s string) string {
+	if len(s) == 0 || len(s) > maxIdentifierLength {
+		return ""
+	}
+	if !identifierRegex.MatchString(s) {
+		return ""
+	}
+	return s
+}
+
+// validateAgentName validates an agent name.
+// Returns the validated name or an empty string if invalid.
+func validateAgentName(s string) string {
+	if len(s) == 0 || len(s) > maxAgentNameLength {
+		return ""
+	}
+	// Agent names should be alphanumeric with hyphens and underscores
+	if !identifierRegex.MatchString(s) {
+		return ""
+	}
+	return s
+}
+
+// logError logs an error if the logger is configured.
+// It's used for optional data fetches that shouldn't break the page.
+func (rt *router[TTx]) logError(msg string, err error) {
+	if rt.config.Logger != nil {
+		rt.config.Logger.Warn(msg, "error", err.Error())
+	}
 }
 
 // Main page handlers
@@ -55,12 +115,15 @@ func (rt *router[TTx]) handleSessions(w http.ResponseWriter, r *http.Request) {
 	params := service.SessionListParams{
 		TenantID: rt.config.TenantID,
 		Limit:    parseInt(r, "limit", rt.config.PageSize),
-		Offset:   parseInt(r, "offset", 0),
-		OrderBy:  r.URL.Query().Get("order_by"),
-		OrderDir: r.URL.Query().Get("order_dir"),
+		Offset:   parseOffset(r, "offset", 0),
+		OrderBy:  service.ValidateOrderBy(r.URL.Query().Get("order_by"), service.AllowedSessionOrderBy),
+		OrderDir: service.ValidateOrderDir(r.URL.Query().Get("order_dir")),
 	}
-	if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
-		params.TenantID = tenantID
+	// Only allow tenant_id override if config.TenantID is empty (admin mode)
+	if rt.config.TenantID == "" {
+		if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
+			params.TenantID = tenantID
+		}
 	}
 
 	list, err := rt.svc.ListSessions(r.Context(), params)
@@ -69,8 +132,15 @@ func (rt *router[TTx]) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get tenants for filter dropdown
-	tenants, _ := rt.svc.ListTenants(r.Context())
+	// Get tenants for filter dropdown (only in admin mode)
+	var tenants []*service.TenantInfo
+	if rt.config.TenantID == "" {
+		var err error
+		tenants, err = rt.svc.ListTenants(r.Context())
+		if err != nil {
+			rt.logError("failed to list tenants for filter dropdown", err)
+		}
+	}
 
 	data := map[string]any{
 		"Title":         "Sessions",
@@ -120,12 +190,15 @@ func (rt *router[TTx]) handleRuns(w http.ResponseWriter, r *http.Request) {
 		State:     r.URL.Query().Get("state"),
 		RunMode:   r.URL.Query().Get("run_mode"),
 		Limit:     parseInt(r, "limit", rt.config.PageSize),
-		Offset:    parseInt(r, "offset", 0),
-		OrderBy:   r.URL.Query().Get("order_by"),
-		OrderDir:  r.URL.Query().Get("order_dir"),
+		Offset:    parseOffset(r, "offset", 0),
+		OrderBy:   service.ValidateOrderBy(r.URL.Query().Get("order_by"), service.AllowedRunOrderBy),
+		OrderDir:  service.ValidateOrderDir(r.URL.Query().Get("order_dir")),
 	}
-	if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
-		params.TenantID = tenantID
+	// Only allow tenant_id override if config.TenantID is empty (admin mode)
+	if rt.config.TenantID == "" {
+		if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
+			params.TenantID = tenantID
+		}
 	}
 	if sessionID := r.URL.Query().Get("session_id"); sessionID != "" {
 		if id, err := parseUUID(sessionID); err == nil {
@@ -140,7 +213,10 @@ func (rt *router[TTx]) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get agents for filter dropdown
-	agents, _ := rt.svc.ListAgents(r.Context())
+	agents, err := rt.svc.ListAgents(r.Context())
+	if err != nil {
+		rt.logError("failed to list agents for filter dropdown", err)
+	}
 
 	data := map[string]any{
 		"Title":        "Runs",
@@ -179,7 +255,11 @@ func (rt *router[TTx]) handleRunDetail(w http.ResponseWriter, r *http.Request) {
 	// Get hierarchy if this is a root run
 	var hierarchy *service.RunHierarchy
 	if detail.Run.ParentRunID == nil {
-		hierarchy, _ = rt.svc.GetRunHierarchy(r.Context(), id)
+		var hierarchyErr error
+		hierarchy, hierarchyErr = rt.svc.GetRunHierarchy(r.Context(), id)
+		if hierarchyErr != nil {
+			rt.logError("failed to get run hierarchy", hierarchyErr)
+		}
 	}
 
 	data := map[string]any{
@@ -253,7 +333,7 @@ func (rt *router[TTx]) handleToolExecutions(w http.ResponseWriter, r *http.Reque
 		ToolName: r.URL.Query().Get("tool_name"),
 		State:    r.URL.Query().Get("state"),
 		Limit:    parseInt(r, "limit", rt.config.PageSize),
-		Offset:   parseInt(r, "offset", 0),
+		Offset:   parseOffset(r, "offset", 0),
 	}
 	if runID := r.URL.Query().Get("run_id"); runID != "" {
 		if id, err := parseUUID(runID); err == nil {
@@ -272,7 +352,10 @@ func (rt *router[TTx]) handleToolExecutions(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Get tools for filter dropdown
-	tools, _ := rt.svc.ListTools(r.Context())
+	tools, err := rt.svc.ListTools(r.Context())
+	if err != nil {
+		rt.logError("failed to list tools for filter dropdown", err)
+	}
 
 	data := map[string]any{
 		"Title":        "Tool Executions",
@@ -346,7 +429,10 @@ func (rt *router[TTx]) handleInstances(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get leader info (ignore error - leader may not exist)
-	leader, _ := rt.svc.GetLeaderInfo(r.Context())
+	leader, leaderErr := rt.svc.GetLeaderInfo(r.Context())
+	if leaderErr != nil {
+		rt.logError("failed to get leader info", leaderErr)
+	}
 
 	data := map[string]any{
 		"Title":     "Instances",
@@ -370,7 +456,7 @@ func (rt *router[TTx]) handleCompaction(w http.ResponseWriter, r *http.Request) 
 	params := service.CompactionEventListParams{
 		SessionID: sessionID,
 		Limit:     parseInt(r, "limit", rt.config.PageSize),
-		Offset:    parseInt(r, "offset", 0),
+		Offset:    parseOffset(r, "offset", 0),
 	}
 
 	events, err := rt.svc.ListCompactionEvents(r.Context(), params)
@@ -400,11 +486,16 @@ func (rt *router[TTx]) handleChat(w http.ResponseWriter, r *http.Request) {
 		OrderBy:  "updated_at",
 		OrderDir: "desc",
 	})
-	if err == nil && sessions != nil {
+	if err != nil {
+		rt.logError("failed to list sessions for chat sidebar", err)
+	} else if sessions != nil {
 		sessionList = sessions.Sessions
 	}
 
-	agents, _ := rt.svc.ListAgents(r.Context())
+	agents, agentsErr := rt.svc.ListAgents(r.Context())
+	if agentsErr != nil {
+		rt.logError("failed to list agents for chat", agentsErr)
+	}
 
 	data := map[string]any{
 		"Title":    "Chat",
@@ -418,8 +509,14 @@ func (rt *router[TTx]) handleChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rt *router[TTx]) handleChatNew(w http.ResponseWriter, r *http.Request) {
-	agents, _ := rt.svc.ListAgents(r.Context())
-	tenants, _ := rt.svc.ListTenants(r.Context())
+	agents, agentsErr := rt.svc.ListAgents(r.Context())
+	if agentsErr != nil {
+		rt.logError("failed to list agents for new chat", agentsErr)
+	}
+	tenants, tenantsErr := rt.svc.ListTenants(r.Context())
+	if tenantsErr != nil {
+		rt.logError("failed to list tenants for new chat", tenantsErr)
+	}
 
 	data := map[string]any{
 		"Title":   "New Chat",
@@ -456,9 +553,14 @@ func (rt *router[TTx]) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if isNewSession {
-		// For new sessions, agent_name is required
+		// For new sessions, agent_name is required and must be valid
 		if agentName == "" {
 			http.Error(w, "Missing agent_name for new session", http.StatusBadRequest)
+			return
+		}
+		// Validate agent name format
+		if validated := validateAgentName(agentName); validated == "" {
+			http.Error(w, "Invalid agent name: must be alphanumeric with hyphens/underscores only", http.StatusBadRequest)
 			return
 		}
 
@@ -467,8 +569,15 @@ func (rt *router[TTx]) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		if tenantID == "" {
 			tenantID = "default"
 		}
+
+		// Validate identifier if provided
 		identifier := r.FormValue("session_id") // session_id field is used as identifier for new sessions
-		if identifier == "" {
+		if identifier != "" {
+			if validated := validateIdentifier(identifier); validated == "" {
+				http.Error(w, "Invalid session identifier: must be alphanumeric with hyphens/underscores only", http.StatusBadRequest)
+				return
+			}
+		} else {
 			identifier = fmt.Sprintf("chat-%d", time.Now().UnixNano())
 		}
 
@@ -546,7 +655,10 @@ func (rt *router[TTx]) handleChatPoll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get tool executions for this run
-	toolExecs, _ := rt.svc.GetRunToolExecutions(r.Context(), runID)
+	toolExecs, toolErr := rt.svc.GetRunToolExecutions(r.Context(), runID)
+	if toolErr != nil {
+		rt.logError("failed to get tool executions for chat poll", toolErr)
+	}
 
 	data := map[string]any{
 		"BasePath":       rt.config.BasePath,
@@ -602,25 +714,34 @@ func (rt *router[TTx]) handleChatSession(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Get conversation
-	conversation, _ := rt.svc.GetConversation(r.Context(), sessionID, 100)
+	conversation, convErr := rt.svc.GetConversation(r.Context(), sessionID, 100)
+	if convErr != nil {
+		rt.logError("failed to get conversation for chat session", convErr)
+	}
 
 	// Get agents for the send form
-	agents, _ := rt.svc.ListAgents(r.Context())
+	agents, agentsErr := rt.svc.ListAgents(r.Context())
+	if agentsErr != nil {
+		rt.logError("failed to list agents for chat session", agentsErr)
+	}
 
 	// Get recent sessions for sidebar
-	sessions, _ := rt.svc.ListSessions(r.Context(), service.SessionListParams{
+	sessions, sessionsErr := rt.svc.ListSessions(r.Context(), service.SessionListParams{
 		TenantID: rt.config.TenantID,
 		Limit:    10,
 		OrderBy:  "updated_at",
 		OrderDir: "desc",
 	})
+	if sessionsErr != nil {
+		rt.logError("failed to list sessions for chat sidebar", sessionsErr)
+	}
 
 	// Check for pending run (from redirect after new session creation)
 	var pendingRunID *uuid.UUID
 	if pendingRunStr := r.URL.Query().Get("pending_run"); pendingRunStr != "" {
-		if runID, err := parseUUID(pendingRunStr); err == nil {
+		if runID, runParseErr := parseUUID(pendingRunStr); runParseErr == nil {
 			// Only show pending if run is actually still in a non-terminal state
-			if run, err := rt.svc.GetRun(r.Context(), runID); err == nil && run != nil {
+			if run, runErr := rt.svc.GetRun(r.Context(), runID); runErr == nil && run != nil {
 				state := string(run.State)
 				if state != "completed" && state != "failed" && state != "cancelled" {
 					pendingRunID = &runID
@@ -629,12 +750,18 @@ func (rt *router[TTx]) handleChatSession(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Build session list safely
+	var sessionList []*service.SessionSummary
+	if sessions != nil {
+		sessionList = sessions.Sessions
+	}
+
 	data := map[string]any{
 		"Title":        "Chat: " + session.Session.Identifier,
 		"Session":      session,
 		"Conversation": conversation,
 		"Agents":       agents,
-		"Sessions":     sessions.Sessions,
+		"Sessions":     sessionList,
 		"PendingRunID": pendingRunID,
 	}
 
@@ -663,7 +790,7 @@ func (rt *router[TTx]) handleFragmentRunList(w http.ResponseWriter, r *http.Requ
 		AgentName: r.URL.Query().Get("agent_name"),
 		State:     r.URL.Query().Get("state"),
 		Limit:     parseInt(r, "limit", 10),
-		Offset:    parseInt(r, "offset", 0),
+		Offset:    parseOffset(r, "offset", 0),
 	}
 
 	list, err := rt.svc.ListRuns(r.Context(), params)
@@ -687,10 +814,13 @@ func (rt *router[TTx]) handleFragmentSessionList(w http.ResponseWriter, r *http.
 	params := service.SessionListParams{
 		TenantID: rt.config.TenantID,
 		Limit:    parseInt(r, "limit", 10),
-		Offset:   parseInt(r, "offset", 0),
+		Offset:   parseOffset(r, "offset", 0),
 	}
-	if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
-		params.TenantID = tenantID
+	// Only allow tenant_id override if config.TenantID is empty (admin mode)
+	if rt.config.TenantID == "" {
+		if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
+			params.TenantID = tenantID
+		}
 	}
 
 	list, err := rt.svc.ListSessions(r.Context(), params)
