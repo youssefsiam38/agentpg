@@ -1693,3 +1693,141 @@ CREATE TRIGGER trg_cleanup_orphaned_tools
     AFTER DELETE ON agentpg_instance_tools
     FOR EACH ROW
     EXECUTE FUNCTION agentpg_cleanup_orphaned_tools();
+
+-- =============================================================================
+-- ATOMIC OPERATIONS
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- Create tool executions and update run state atomically
+-- -----------------------------------------------------------------------------
+-- This procedure ensures that tool execution creation and run state update
+-- happen in a single transaction, preventing partial state on crash.
+--
+-- USAGE:
+--   SELECT * FROM agentpg_create_tool_executions_and_update_run(
+--       '[{"run_id": "...", "iteration_id": "...", "tool_use_id": "...", ...}]'::jsonb,
+--       'run-uuid',
+--       'pending_tools',
+--       '{"tool_iterations": 1, "input_tokens": 100}'::jsonb
+--   );
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION agentpg_create_tool_executions_and_update_run(
+    p_tool_params JSONB,
+    p_run_id UUID,
+    p_new_state agentpg_run_state,
+    p_run_updates JSONB
+) RETURNS SETOF agentpg_tool_executions AS $$
+DECLARE
+    v_param JSONB;
+    v_exec agentpg_tool_executions;
+    v_max_attempts INTEGER;
+BEGIN
+    -- Create all tool executions
+    FOR v_param IN SELECT * FROM jsonb_array_elements(p_tool_params)
+    LOOP
+        v_max_attempts := COALESCE((v_param->>'max_attempts')::INTEGER, 2);
+
+        INSERT INTO agentpg_tool_executions (
+            run_id, iteration_id, tool_use_id, tool_name, tool_input,
+            is_agent_tool, agent_name, max_attempts
+        ) VALUES (
+            (v_param->>'run_id')::UUID,
+            (v_param->>'iteration_id')::UUID,
+            v_param->>'tool_use_id',
+            v_param->>'tool_name',
+            v_param->'tool_input',
+            COALESCE((v_param->>'is_agent_tool')::BOOLEAN, FALSE),
+            v_param->>'agent_name',
+            v_max_attempts
+        )
+        RETURNING * INTO v_exec;
+
+        RETURN NEXT v_exec;
+    END LOOP;
+
+    -- Update run state atomically
+    UPDATE agentpg_runs
+    SET state = p_new_state,
+        previous_state = state,
+        tool_iterations = COALESCE((p_run_updates->>'tool_iterations')::INTEGER, tool_iterations),
+        input_tokens = COALESCE((p_run_updates->>'input_tokens')::INTEGER, input_tokens),
+        output_tokens = COALESCE((p_run_updates->>'output_tokens')::INTEGER, output_tokens),
+        cache_creation_input_tokens = COALESCE((p_run_updates->>'cache_creation_input_tokens')::INTEGER, cache_creation_input_tokens),
+        cache_read_input_tokens = COALESCE((p_run_updates->>'cache_read_input_tokens')::INTEGER, cache_read_input_tokens),
+        iteration_count = COALESCE((p_run_updates->>'iteration_count')::INTEGER, iteration_count),
+        response_text = CASE WHEN p_run_updates ? 'response_text' THEN p_run_updates->>'response_text' ELSE response_text END,
+        stop_reason = CASE WHEN p_run_updates ? 'stop_reason' THEN p_run_updates->>'stop_reason' ELSE stop_reason END,
+        finalized_at = CASE
+            WHEN p_new_state IN ('completed', 'cancelled', 'failed') THEN
+                COALESCE((p_run_updates->>'finalized_at')::TIMESTAMPTZ, NOW())
+            ELSE finalized_at
+        END
+    WHERE id = p_run_id;
+
+    RETURN;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION agentpg_create_tool_executions_and_update_run IS
+'Atomically creates tool executions and updates run state. Prevents partial state on crash.';
+
+-- -----------------------------------------------------------------------------
+-- Complete tools and continue run atomically
+-- -----------------------------------------------------------------------------
+-- This procedure ensures that creating the tool_result message and updating
+-- the run state happen in a single transaction.
+--
+-- USAGE:
+--   SELECT * FROM agentpg_complete_tools_and_continue_run(
+--       'session-uuid',
+--       'run-uuid',
+--       '[{"type": "tool_result", "tool_result_for_use_id": "...", "tool_content": "...", "is_error": false}]'::jsonb
+--   );
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION agentpg_complete_tools_and_continue_run(
+    p_session_id UUID,
+    p_run_id UUID,
+    p_content_blocks JSONB
+) RETURNS agentpg_messages AS $$
+DECLARE
+    v_message agentpg_messages;
+    v_block JSONB;
+    v_block_index INTEGER := 0;
+BEGIN
+    -- Create the tool results message
+    INSERT INTO agentpg_messages (session_id, run_id, role)
+    VALUES (p_session_id, p_run_id, 'user')
+    RETURNING * INTO v_message;
+
+    -- Create content blocks for each tool result
+    FOR v_block IN SELECT * FROM jsonb_array_elements(p_content_blocks)
+    LOOP
+        INSERT INTO agentpg_content_blocks (
+            message_id, block_index, type,
+            tool_result_for_use_id, tool_content, is_error
+        ) VALUES (
+            v_message.id,
+            v_block_index,
+            (v_block->>'type')::agentpg_content_type,
+            v_block->>'tool_result_for_use_id',
+            v_block->>'tool_content',
+            COALESCE((v_block->>'is_error')::BOOLEAN, FALSE)
+        );
+        v_block_index := v_block_index + 1;
+    END LOOP;
+
+    -- Update run state back to pending for next iteration
+    UPDATE agentpg_runs
+    SET state = 'pending'::agentpg_run_state,
+        previous_state = state,
+        claimed_by_instance_id = NULL,
+        claimed_at = NULL
+    WHERE id = p_run_id;
+
+    RETURN v_message;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION agentpg_complete_tools_and_continue_run IS
+'Atomically creates tool_result message and transitions run to pending for next iteration.';

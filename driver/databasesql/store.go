@@ -602,6 +602,58 @@ func (s *Store) CreateToolExecutions(ctx context.Context, params []driver.Create
 	return execs, nil
 }
 
+func (s *Store) CreateToolExecutionsAndUpdateRunState(ctx context.Context, params []driver.CreateToolExecutionParams, runID uuid.UUID, state driver.RunState, runUpdates map[string]any) ([]*driver.ToolExecution, error) {
+	// Convert params to JSONB format expected by stored procedure
+	type toolParam struct {
+		RunID       string          `json:"run_id"`
+		IterationID string          `json:"iteration_id"`
+		ToolUseID   string          `json:"tool_use_id"`
+		ToolName    string          `json:"tool_name"`
+		ToolInput   json.RawMessage `json:"tool_input"`
+		IsAgentTool bool            `json:"is_agent_tool"`
+		AgentName   *string         `json:"agent_name"`
+		MaxAttempts int             `json:"max_attempts"`
+	}
+
+	toolParams := make([]toolParam, len(params))
+	for i, p := range params {
+		maxAttempts := p.MaxAttempts
+		if maxAttempts <= 0 {
+			maxAttempts = 2
+		}
+		toolParams[i] = toolParam{
+			RunID:       p.RunID.String(),
+			IterationID: p.IterationID.String(),
+			ToolUseID:   p.ToolUseID,
+			ToolName:    p.ToolName,
+			ToolInput:   p.ToolInput,
+			IsAgentTool: p.IsAgentTool,
+			AgentName:   p.AgentName,
+			MaxAttempts: maxAttempts,
+		}
+	}
+
+	toolParamsJSON, err := json.Marshal(toolParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal tool params: %w", err)
+	}
+
+	runUpdatesJSON, err := json.Marshal(runUpdates)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal run updates: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT * FROM agentpg_create_tool_executions_and_update_run($1, $2, $3::agentpg_run_state, $4)",
+		toolParamsJSON, runID, string(state), runUpdatesJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tool executions and update run: %w", err)
+	}
+	defer rows.Close()
+
+	return collectToolExecutions(rows)
+}
+
 func (s *Store) GetToolExecution(ctx context.Context, id uuid.UUID) (*driver.ToolExecution, error) {
 	var exec driver.ToolExecution
 	err := s.db.QueryRowContext(ctx, `
@@ -1428,6 +1480,52 @@ func (s *Store) DiscardToolExecution(ctx context.Context, id uuid.UUID, errorMsg
 		WHERE id = $1
 	`, id, errorMsg)
 	return err
+}
+
+func (s *Store) CompleteToolsAndContinueRun(ctx context.Context, sessionID, runID uuid.UUID, contentBlocks []driver.ContentBlock) (*driver.Message, error) {
+	// Convert content blocks to JSONB format expected by stored procedure
+	type contentBlock struct {
+		Type               string `json:"type"`
+		ToolResultForUseID string `json:"tool_result_for_use_id"`
+		ToolContent        string `json:"tool_content"`
+		IsError            bool   `json:"is_error"`
+	}
+
+	blocks := make([]contentBlock, len(contentBlocks))
+	for i, b := range contentBlocks {
+		blocks[i] = contentBlock{
+			Type:               b.Type,
+			ToolResultForUseID: b.ToolResultForUseID,
+			ToolContent:        b.ToolContent,
+			IsError:            b.IsError,
+		}
+	}
+
+	blocksJSON, err := json.Marshal(blocks)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal content blocks: %w", err)
+	}
+
+	var msg driver.Message
+	var usage, metadata []byte
+
+	err = s.db.QueryRowContext(ctx,
+		"SELECT * FROM agentpg_complete_tools_and_continue_run($1, $2, $3)",
+		sessionID, runID, blocksJSON,
+	).Scan(
+		&msg.ID, &msg.SessionID, &msg.RunID, &msg.Role,
+		&usage, &msg.IsPreserved, &msg.IsSummary, &metadata,
+		&msg.CreatedAt, &msg.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to complete tools and continue run: %w", err)
+	}
+
+	json.Unmarshal(usage, &msg.Usage)
+	json.Unmarshal(metadata, &msg.Metadata)
+	msg.Content = contentBlocks
+
+	return &msg, nil
 }
 
 // Run rescue operations

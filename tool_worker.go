@@ -155,11 +155,12 @@ func (w *toolWorker[TTx]) executeAgentTool(ctx context.Context, exec *driver.Too
 		return fmt.Errorf("failed to get parent run: %w", err)
 	}
 
-	// Create child run
+	// Create child run (inherit run mode from parent for consistent latency behavior)
 	childRun, err := store.CreateRun(ctx, driver.CreateRunParams{
 		SessionID:             parentRun.SessionID,
 		AgentName:             agentName,
 		Prompt:                input.Task,
+		RunMode:               parentRun.RunMode, // Inherit from parent
 		ParentRunID:           &exec.RunID,
 		ParentToolExecutionID: &exec.ID,
 		Depth:                 parentRun.Depth + 1,
@@ -332,24 +333,10 @@ func (w *toolWorker[TTx]) handleAllToolsComplete(ctx context.Context, runID uuid
 		})
 	}
 
-	// Create user message with tool results
-	_, err = store.CreateMessage(ctx, driver.CreateMessageParams{
-		SessionID: run.SessionID,
-		RunID:     &runID,
-		Role:      driver.MessageRole(MessageRoleUser),
-		Content:   contentBlocks,
-	})
+	// Atomically create tool results message AND update run state to pending
+	_, err = store.CompleteToolsAndContinueRun(ctx, run.SessionID, runID, contentBlocks)
 	if err != nil {
-		log.Error("failed to create tool results message", "error", err, "run_id", runID)
-		return
-	}
-
-	// Update run state back to pending for next iteration
-	if err := store.UpdateRunState(ctx, runID, driver.RunState(RunStatePending), map[string]any{
-		"claimed_by_instance_id": nil,
-		"claimed_at":             nil,
-	}); err != nil {
-		log.Error("failed to update run state", "error", err, "run_id", runID)
+		log.Error("failed to complete tools and continue run", "error", err, "run_id", runID)
 		return
 	}
 

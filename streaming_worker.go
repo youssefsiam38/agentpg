@@ -317,9 +317,19 @@ func (w *streamingWorker[TTx]) processResult(ctx context.Context, iter *driver.I
 		nextState = RunStatePendingTools
 		runUpdates["tool_iterations"] = run.ToolIterations + 1
 
-		// Create tool executions
-		if err := w.createToolExecutions(ctx, iter, run, msg.Content); err != nil {
-			return fmt.Errorf("failed to create tool executions: %w", err)
+		// Build tool execution params
+		toolParams := w.buildToolParams(iter, run, msg.Content)
+
+		// Atomically create tool executions AND update run state
+		if len(toolParams) > 0 {
+			if _, err := store.CreateToolExecutionsAndUpdateRunState(ctx, toolParams, iter.RunID, driver.RunState(nextState), runUpdates); err != nil {
+				return fmt.Errorf("failed to create tool executions and update run: %w", err)
+			}
+		} else {
+			// No tool params but still need to update state
+			if err := store.UpdateRunState(ctx, iter.RunID, driver.RunState(nextState), runUpdates); err != nil {
+				return fmt.Errorf("failed to update run state: %w", err)
+			}
 		}
 	} else {
 		// Run completed
@@ -327,10 +337,10 @@ func (w *streamingWorker[TTx]) processResult(ctx context.Context, iter *driver.I
 		runUpdates["response_text"] = responseText
 		runUpdates["stop_reason"] = string(msg.StopReason)
 		runUpdates["finalized_at"] = now
-	}
 
-	if err := store.UpdateRunState(ctx, iter.RunID, driver.RunState(nextState), runUpdates); err != nil {
-		return fmt.Errorf("failed to update run state: %w", err)
+		if err := store.UpdateRunState(ctx, iter.RunID, driver.RunState(nextState), runUpdates); err != nil {
+			return fmt.Errorf("failed to update run state: %w", err)
+		}
 	}
 
 	// Auto-compaction: check if session needs compaction after run completes
@@ -349,9 +359,7 @@ func (w *streamingWorker[TTx]) processResult(ctx context.Context, iter *driver.I
 	return nil
 }
 
-func (w *streamingWorker[TTx]) createToolExecutions(ctx context.Context, iter *driver.Iteration, run *driver.Run, content []anthropic.ContentBlockUnion) error {
-	store := w.client.driver.Store()
-
+func (w *streamingWorker[TTx]) buildToolParams(iter *driver.Iteration, run *driver.Run, content []anthropic.ContentBlockUnion) []driver.CreateToolExecutionParams {
 	var params []driver.CreateToolExecutionParams
 	for _, block := range content {
 		toolUse, ok := block.AsAny().(anthropic.ToolUseBlock)
@@ -383,13 +391,7 @@ func (w *streamingWorker[TTx]) createToolExecutions(ctx context.Context, iter *d
 		})
 	}
 
-	if len(params) > 0 {
-		if _, err := store.CreateToolExecutions(ctx, params); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return params
 }
 
 func (w *streamingWorker[TTx]) buildMessages(ctx context.Context, run *driver.Run) ([]anthropic.MessageParam, error) {

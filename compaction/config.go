@@ -19,15 +19,15 @@ const (
 // Default configuration values based on production patterns.
 const (
 	DefaultStrategy            = StrategyHybrid
-	DefaultTrigger             = 0.85    // 85% context usage
-	DefaultTargetTokens        = 80000   // Target 80K tokens after compaction
-	DefaultPreserveLastN       = 10      // Always keep last 10 messages
-	DefaultProtectedTokens     = 40000   // Never touch last 40K tokens
+	DefaultTrigger             = 0.85  // 85% context usage
+	DefaultTargetTokens        = 80000 // Target 80K tokens after compaction
+	DefaultPreserveLastN       = 10    // Always keep last 10 messages
+	DefaultProtectedTokens     = 40000 // Never touch last 40K tokens
 	DefaultSummarizerModel     = "claude-3-5-haiku-20241022"
-	DefaultMaxTokensForModel   = 200000  // Claude Sonnet 4.5 context window
-	DefaultPreserveToolOutputs = false   // Prune tool outputs by default
-	DefaultUseTokenCountingAPI = true    // Use Claude API for accurate counts
-	DefaultSummarizerMaxTokens = 4096    // Max tokens for summarization response
+	DefaultMaxTokensForModel   = 200000 // Claude Sonnet 4.5 context window
+	DefaultPreserveToolOutputs = false  // Prune tool outputs by default
+	DefaultUseTokenCountingAPI = true   // Use Claude API for accurate counts
+	DefaultSummarizerMaxTokens = 4096   // Max tokens for summarization response
 )
 
 // Config holds compaction configuration.

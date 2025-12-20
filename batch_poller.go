@@ -370,9 +370,19 @@ func (p *batchPoller[TTx]) processResult(ctx context.Context, iter *driver.Itera
 		nextState = RunStatePendingTools
 		runUpdates["tool_iterations"] = run.ToolIterations + 1
 
-		// Create tool executions
-		if err := p.createToolExecutions(ctx, iter, run, msg.Content); err != nil {
-			return fmt.Errorf("failed to create tool executions: %w", err)
+		// Build tool execution params
+		toolParams := p.buildToolParams(iter, run, msg.Content)
+
+		// Atomically create tool executions AND update run state
+		if len(toolParams) > 0 {
+			if _, err := store.CreateToolExecutionsAndUpdateRunState(ctx, toolParams, iter.RunID, driver.RunState(nextState), runUpdates); err != nil {
+				return fmt.Errorf("failed to create tool executions and update run: %w", err)
+			}
+		} else {
+			// No tool params but still need to update state
+			if err := store.UpdateRunState(ctx, iter.RunID, driver.RunState(nextState), runUpdates); err != nil {
+				return fmt.Errorf("failed to update run state: %w", err)
+			}
 		}
 	} else {
 		// Run completed
@@ -380,10 +390,10 @@ func (p *batchPoller[TTx]) processResult(ctx context.Context, iter *driver.Itera
 		runUpdates["response_text"] = responseText
 		runUpdates["stop_reason"] = msg.StopReason
 		runUpdates["finalized_at"] = now
-	}
 
-	if err := store.UpdateRunState(ctx, iter.RunID, driver.RunState(nextState), runUpdates); err != nil {
-		return fmt.Errorf("failed to update run state: %w", err)
+		if err := store.UpdateRunState(ctx, iter.RunID, driver.RunState(nextState), runUpdates); err != nil {
+			return fmt.Errorf("failed to update run state: %w", err)
+		}
 	}
 
 	// Auto-compaction: check if session needs compaction after run completes
@@ -402,15 +412,13 @@ func (p *batchPoller[TTx]) processResult(ctx context.Context, iter *driver.Itera
 	return nil
 }
 
-func (p *batchPoller[TTx]) createToolExecutions(ctx context.Context, iter *driver.Iteration, run *driver.Run, content []struct {
+func (p *batchPoller[TTx]) buildToolParams(iter *driver.Iteration, run *driver.Run, content []struct {
 	Type  string          `json:"type"`
 	Text  string          `json:"text,omitempty"`
 	ID    string          `json:"id,omitempty"`
 	Name  string          `json:"name,omitempty"`
 	Input json.RawMessage `json:"input,omitempty"`
-}) error {
-	store := p.client.driver.Store()
-
+}) []driver.CreateToolExecutionParams {
 	var params []driver.CreateToolExecutionParams
 	for _, block := range content {
 		if block.Type != ContentTypeToolUse {
@@ -438,13 +446,7 @@ func (p *batchPoller[TTx]) createToolExecutions(ctx context.Context, iter *drive
 		})
 	}
 
-	if len(params) > 0 {
-		if _, err := store.CreateToolExecutions(ctx, params); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return params
 }
 
 // checkAndCompact checks if the session needs compaction and performs it if needed.

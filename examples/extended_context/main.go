@@ -201,7 +201,7 @@ Please confirm you've received the document and provide a brief summary of its s
 
 	fmt.Println("\nSubmitting document for analysis...")
 
-	response1, err := client.RunSync(ctx, sessionID, "extended-context-demo", prompt)
+	response1, err := client.RunFastSync(ctx, sessionID, "extended-context-demo", prompt)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -238,7 +238,7 @@ Please confirm you've received the document and provide a brief summary of its s
 	for i, question := range questions {
 		fmt.Printf("Question %d: %s\n", i+1, question)
 
-		response, err := client.RunSync(ctx, sessionID, "extended-context-demo", question)
+		response, err := client.RunFastSync(ctx, sessionID, "extended-context-demo", question)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}
