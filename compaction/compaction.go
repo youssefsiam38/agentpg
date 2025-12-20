@@ -87,12 +87,12 @@ type Stats struct {
 // Compactor provides context compaction for agent sessions.
 // It uses the generic type parameter TTx to work with different database drivers.
 type Compactor[TTx any] struct {
-	store      driver.Store[TTx]
-	anthropic  *anthropic.Client
-	config     *Config
-	logger     Logger
-	strategy   StrategyExecutor
-	partitioner *Partitioner
+	store        driver.Store[TTx]
+	anthropic    *anthropic.Client
+	config       *Config
+	logger       Logger
+	strategy     StrategyExecutor
+	partitioner  *Partitioner
 	tokenCounter *TokenCounter
 }
 

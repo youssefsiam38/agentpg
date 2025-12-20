@@ -38,6 +38,8 @@ DROP FUNCTION IF EXISTS agentpg_notify_run_state_change();
 DROP FUNCTION IF EXISTS agentpg_notify_run_created();
 
 -- Stored procedures
+DROP FUNCTION IF EXISTS agentpg_complete_tools_and_continue_run(UUID, UUID, JSONB);
+DROP FUNCTION IF EXISTS agentpg_create_tool_executions_and_update_run(JSONB, UUID, agentpg_run_state, JSONB);
 DROP FUNCTION IF EXISTS agentpg_get_stuck_runs(INTERVAL, INTEGER, INTEGER);
 DROP FUNCTION IF EXISTS agentpg_get_iterations_for_poll(TEXT, INTERVAL, INTEGER);
 DROP FUNCTION IF EXISTS agentpg_claim_tool_executions(TEXT, INTEGER);

@@ -75,6 +75,9 @@ type Store[TTx any] interface {
 	// Tool execution operations
 	CreateToolExecution(ctx context.Context, params CreateToolExecutionParams) (*ToolExecution, error)
 	CreateToolExecutions(ctx context.Context, params []CreateToolExecutionParams) ([]*ToolExecution, error)
+	// CreateToolExecutionsAndUpdateRunState atomically creates tool executions and updates the run state.
+	// This prevents partial state on crash between tool creation and run state update.
+	CreateToolExecutionsAndUpdateRunState(ctx context.Context, params []CreateToolExecutionParams, runID uuid.UUID, state RunState, runUpdates map[string]any) ([]*ToolExecution, error)
 	GetToolExecution(ctx context.Context, id uuid.UUID) (*ToolExecution, error)
 	UpdateToolExecution(ctx context.Context, id uuid.UUID, updates map[string]any) error
 	ClaimToolExecutions(ctx context.Context, instanceID string, maxCount int) ([]*ToolExecution, error)
@@ -95,6 +98,11 @@ type Store[TTx any] interface {
 	// DiscardToolExecution marks a tool execution as permanently failed (no retry).
 	// Used for ToolCancel/ToolDiscard errors.
 	DiscardToolExecution(ctx context.Context, id uuid.UUID, errorMsg string) error
+
+	// CompleteToolsAndContinueRun atomically creates the tool_result message and transitions
+	// the run back to pending state for the next iteration. This prevents partial state
+	// on crash between message creation and run state update.
+	CompleteToolsAndContinueRun(ctx context.Context, sessionID, runID uuid.UUID, contentBlocks []ContentBlock) (*Message, error)
 
 	// Run rescue operations
 	// GetStuckRuns returns runs stuck in non-terminal states eligible for rescue.
