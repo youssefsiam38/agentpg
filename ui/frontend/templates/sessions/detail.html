@@ -1,0 +1,151 @@
+{{define "content"}}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="sm:flex sm:items-center sm:justify-between">
+        <div>
+            <nav class="flex" aria-label="Breadcrumb">
+                <ol class="flex items-center space-x-2">
+                    <li><a href="{{$.BasePath}}/sessions" class="text-gray-500 hover:text-gray-700">Sessions</a></li>
+                    <li><span class="text-gray-400">/</span></li>
+                    <li class="text-gray-900 font-medium">{{.Data.Session.Session.Identifier}}</li>
+                </ol>
+            </nav>
+            <h1 class="mt-2 text-2xl font-semibold text-gray-900">{{.Data.Session.Session.Identifier}}</h1>
+        </div>
+        <div class="mt-4 sm:mt-0 flex space-x-3">
+            <a href="{{$.BasePath}}/chat/session/{{.Data.Session.Session.ID}}" class="inline-flex items-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">
+                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                </svg>
+                Continue Chat
+            </a>
+        </div>
+    </div>
+
+    <!-- Session Info -->
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+            <h3 class="text-lg font-medium leading-6 text-gray-900">Session Details</h3>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            <dl class="grid grid-cols-1 gap-x-4 gap-y-6 sm:grid-cols-3">
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">ID</dt>
+                    <dd class="mt-1 text-sm text-gray-900 font-mono">{{.Data.Session.Session.ID}}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Tenant</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{.Data.Session.Session.TenantID}}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Depth</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{.Data.Session.Session.Depth}}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Runs</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{.Data.Session.RunCount}}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Messages</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{.Data.Session.MessageCount}}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Compactions</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{.Data.Session.Session.CompactionCount}}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Token Usage</dt>
+                    <dd class="mt-1 text-sm text-gray-900">
+                        {{formatTokens .Data.Session.TokenUsage.TotalTokens}} total
+                        <span class="text-gray-500">({{formatTokens .Data.Session.TokenUsage.InputTokens}} in / {{formatTokens .Data.Session.TokenUsage.OutputTokens}} out)</span>
+                    </dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Created</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{formatTime .Data.Session.Session.CreatedAt}}</dd>
+                </div>
+                <div>
+                    <dt class="text-sm font-medium text-gray-500">Updated</dt>
+                    <dd class="mt-1 text-sm text-gray-900">{{formatTime .Data.Session.Session.UpdatedAt}}</dd>
+                </div>
+            </dl>
+        </div>
+    </div>
+
+    <!-- Parent/Child Sessions -->
+    {{if or .Data.Session.ParentSession .Data.Session.ChildSessions}}
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+            <h3 class="text-lg font-medium leading-6 text-gray-900">Session Hierarchy</h3>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            {{if .Data.Session.ParentSession}}
+            <div class="mb-4">
+                <h4 class="text-sm font-medium text-gray-500 mb-2">Parent Session</h4>
+                <a href="{{$.BasePath}}/sessions/{{.Data.Session.ParentSession.ID}}" class="text-indigo-600 hover:text-indigo-900">
+                    {{.Data.Session.ParentSession.Identifier}}
+                </a>
+            </div>
+            {{end}}
+            {{if .Data.Session.ChildSessions}}
+            <div>
+                <h4 class="text-sm font-medium text-gray-500 mb-2">Child Sessions</h4>
+                <ul class="space-y-1">
+                    {{range .Data.Session.ChildSessions}}
+                    <li>
+                        <a href="{{$.BasePath}}/sessions/{{.ID}}" class="text-indigo-600 hover:text-indigo-900">{{.Identifier}}</a>
+                        <span class="text-gray-500 text-sm">({{.RunCount}} runs)</span>
+                    </li>
+                    {{end}}
+                </ul>
+            </div>
+            {{end}}
+        </div>
+    </div>
+    {{end}}
+
+    <!-- Recent Runs -->
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 flex justify-between items-center">
+            <h3 class="text-lg font-medium leading-6 text-gray-900">Recent Runs</h3>
+            <a href="{{$.BasePath}}/runs?session_id={{.Data.Session.Session.ID}}" class="text-sm text-indigo-600 hover:text-indigo-500">View all →</a>
+        </div>
+        <ul class="divide-y divide-gray-200">
+            {{range .Data.Session.RecentRuns}}
+            <li class="px-4 py-4 hover:bg-gray-50">
+                <a href="{{$.BasePath}}/runs/{{.ID}}" class="block">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-3">
+                            <span class="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium {{stateBgColor .State}}">
+                                {{.State}}
+                            </span>
+                            <span class="font-medium text-gray-900">{{.AgentName}}</span>
+                        </div>
+                        <span class="text-sm text-gray-500">{{formatTimeAgo .CreatedAt}}</span>
+                    </div>
+                    <div class="mt-1 flex items-center space-x-4 text-sm text-gray-500">
+                        <span>{{.IterationCount}} iterations</span>
+                        <span>{{formatTokens .TotalTokens}} tokens</span>
+                        {{if .Duration}}<span>{{formatDuration .Duration}}</span>{{end}}
+                    </div>
+                </a>
+            </li>
+            {{else}}
+            <li class="px-4 py-8 text-center text-gray-500">No runs yet</li>
+            {{end}}
+        </ul>
+    </div>
+
+    <!-- Metadata -->
+    {{if .Data.Session.Session.Metadata}}
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+            <h3 class="text-lg font-medium leading-6 text-gray-900">Metadata</h3>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            <pre class="text-sm text-gray-900 bg-gray-50 rounded-lg p-4 overflow-x-auto">{{json .Data.Session.Session.Metadata}}</pre>
+        </div>
+    </div>
+    {{end}}
+</div>
+{{end}}

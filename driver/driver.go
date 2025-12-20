@@ -64,6 +64,9 @@ type Store[TTx any] interface {
 	ClaimRuns(ctx context.Context, instanceID string, maxCount int, runMode string) ([]*Run, error)
 	GetRunsBySession(ctx context.Context, sessionID uuid.UUID, limit int) ([]*Run, error)
 	GetStuckPendingToolsRuns(ctx context.Context, limit int) ([]*Run, error)
+	// ListRuns returns runs with optional filtering and pagination.
+	// Returns (runs, totalCount, error). Used by admin UI for browsing all runs.
+	ListRuns(ctx context.Context, params ListRunsParams) ([]*Run, int, error)
 
 	// Iteration operations
 	CreateIteration(ctx context.Context, params CreateIterationParams) (*Iteration, error)
@@ -85,6 +88,9 @@ type Store[TTx any] interface {
 	GetToolExecutionsByRun(ctx context.Context, runID uuid.UUID) ([]*ToolExecution, error)
 	GetToolExecutionsByIteration(ctx context.Context, iterationID uuid.UUID) ([]*ToolExecution, error)
 	GetPendingToolExecutionsForRun(ctx context.Context, runID uuid.UUID) ([]*ToolExecution, error)
+	// ListToolExecutions returns tool executions with optional filtering and pagination.
+	// Returns (executions, totalCount, error). Used by admin UI for browsing all tool executions.
+	ListToolExecutions(ctx context.Context, params ListToolExecutionsParams) ([]*ToolExecution, int, error)
 
 	// Tool execution retry operations
 	// RetryToolExecution resets a failed tool execution to pending with a scheduled delay.
@@ -133,7 +139,12 @@ type Store[TTx any] interface {
 	ListInstances(ctx context.Context) ([]*Instance, error)
 	GetStaleInstances(ctx context.Context, ttl time.Duration) ([]string, error)
 	DeleteStaleInstances(ctx context.Context, ttl time.Duration) (int, error)
-	UpdateInstanceCounts(ctx context.Context, instanceID string, runDelta, toolDelta int) error
+	// GetInstanceActiveCounts returns the active run and tool counts for an instance.
+	// Counts are calculated on-the-fly by querying runs and tool_executions tables.
+	GetInstanceActiveCounts(ctx context.Context, instanceID string) (activeRuns, activeTools int, err error)
+	// GetAllInstanceActiveCounts returns the active run and tool counts for all instances.
+	// Returns a map of instance ID to [activeRuns, activeTools].
+	GetAllInstanceActiveCounts(ctx context.Context) (map[string][2]int, error)
 
 	// Instance capability operations
 	RegisterInstanceAgent(ctx context.Context, instanceID, agentName string) error
@@ -253,6 +264,28 @@ type CreateCompactionEventParams struct {
 	PreservedMessageIDs []uuid.UUID
 	ModelUsed           *string
 	DurationMS          *int64
+}
+
+// ListRunsParams contains parameters for listing runs with optional filtering.
+type ListRunsParams struct {
+	TenantID  string     // Filter by tenant (requires join with sessions)
+	SessionID *uuid.UUID // Filter by session
+	AgentName string     // Filter by agent name
+	State     string     // Filter by run state
+	RunMode   string     // Filter by run mode ("batch" or "streaming")
+	Limit     int        // Maximum number of results
+	Offset    int        // Offset for pagination
+}
+
+// ListToolExecutionsParams contains parameters for listing tool executions with optional filtering.
+type ListToolExecutionsParams struct {
+	RunID       *uuid.UUID // Filter by run
+	IterationID *uuid.UUID // Filter by iteration
+	ToolName    string     // Filter by tool name
+	State       string     // Filter by execution state
+	IsAgentTool *bool      // Filter by agent tool flag
+	Limit       int        // Maximum number of results
+	Offset      int        // Offset for pagination
 }
 
 // Type aliases for convenience (re-exported from main package)

@@ -1,0 +1,248 @@
+{{define "content"}}
+<div class="space-y-6">
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-semibold text-gray-900">Dashboard</h1>
+        <div class="flex items-center space-x-2 text-sm text-gray-500">
+            <span class="htmx-indicator">
+                <svg class="animate-spin h-4 w-4 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+            </span>
+            <span>Auto-refresh every {{.RefreshInterval}}s</span>
+        </div>
+    </div>
+
+    <!-- Stats Grid -->
+    <div id="stats-container"
+         hx-get="{{.BasePath}}/fragments/dashboard-stats"
+         hx-trigger="every {{.RefreshInterval}}s"
+         hx-swap="innerHTML">
+        {{template "dashboard-stats" .Data.Stats}}
+    </div>
+
+    <!-- Recent Activity -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Recent Runs -->
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+                <h3 class="text-lg font-medium leading-6 text-gray-900">Recent Runs</h3>
+            </div>
+            <ul class="divide-y divide-gray-200">
+                {{range .Data.Stats.RecentRuns}}
+                <li class="px-4 py-4 hover:bg-gray-50">
+                    <a href="{{$.BasePath}}/runs/{{.ID}}" class="block">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-3">
+                                <span class="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium {{stateBgColor .State}}">
+                                    {{.State}}
+                                </span>
+                                <span class="font-medium text-gray-900">{{.AgentName}}</span>
+                            </div>
+                            <span class="text-sm text-gray-500">{{formatTimeAgo .CreatedAt}}</span>
+                        </div>
+                        <div class="mt-1 flex items-center space-x-4 text-sm text-gray-500">
+                            <span>{{.IterationCount}} iterations</span>
+                            <span>{{formatTokens .TotalTokens}} tokens</span>
+                            {{if .Duration}}<span>{{formatDuration .Duration}}</span>{{end}}
+                        </div>
+                    </a>
+                </li>
+                {{else}}
+                <li class="px-4 py-8 text-center text-gray-500">No recent runs</li>
+                {{end}}
+            </ul>
+            <div class="px-4 py-3 bg-gray-50 border-t border-gray-200 rounded-b-lg">
+                <a href="{{$.BasePath}}/runs" class="text-sm text-indigo-600 hover:text-indigo-500">View all runs →</a>
+            </div>
+        </div>
+
+        <!-- Recent Tool Errors -->
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+                <h3 class="text-lg font-medium leading-6 text-gray-900">Recent Tool Errors</h3>
+            </div>
+            <ul class="divide-y divide-gray-200">
+                {{range .Data.Stats.RecentToolErrors}}
+                <li class="px-4 py-4 hover:bg-gray-50">
+                    <a href="{{$.BasePath}}/tool-executions/{{.ID}}" class="block">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-3">
+                                <span class="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium bg-red-100 text-red-800">
+                                    {{.State}}
+                                </span>
+                                <span class="font-medium text-gray-900">{{.ToolName}}</span>
+                            </div>
+                            <span class="text-sm text-gray-500">{{formatTimeAgo .CreatedAt}}</span>
+                        </div>
+                        <div class="mt-1 text-sm text-gray-500">
+                            Attempt {{.AttemptCount}}/{{.MaxAttempts}}
+                        </div>
+                    </a>
+                </li>
+                {{else}}
+                <li class="px-4 py-8 text-center text-gray-500">No recent errors</li>
+                {{end}}
+            </ul>
+            <div class="px-4 py-3 bg-gray-50 border-t border-gray-200 rounded-b-lg">
+                <a href="{{$.BasePath}}/tool-executions?state=failed" class="text-sm text-indigo-600 hover:text-indigo-500">View all errors →</a>
+            </div>
+        </div>
+    </div>
+</div>
+{{end}}
+
+{{define "dashboard-stats"}}
+<div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+    <!-- Sessions -->
+    <div class="bg-white overflow-hidden shadow rounded-lg">
+        <div class="p-5">
+            <div class="flex items-center">
+                <div class="flex-shrink-0">
+                    <svg class="h-6 w-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path>
+                    </svg>
+                </div>
+                <div class="ml-5 w-0 flex-1">
+                    <dl>
+                        <dt class="text-sm font-medium text-gray-500 truncate">Total Sessions</dt>
+                        <dd class="text-lg font-semibold text-gray-900">{{.TotalSessions}}</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+        <div class="bg-gray-50 px-5 py-3">
+            <div class="text-sm">
+                <span class="text-gray-500">Active: </span>
+                <span class="font-medium text-gray-900">{{.ActiveSessions}}</span>
+                <span class="text-gray-500 ml-2">Today: </span>
+                <span class="font-medium text-gray-900">{{.SessionsToday}}</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Runs -->
+    <div class="bg-white overflow-hidden shadow rounded-lg">
+        <div class="p-5">
+            <div class="flex items-center">
+                <div class="flex-shrink-0">
+                    <svg class="h-6 w-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                    </svg>
+                </div>
+                <div class="ml-5 w-0 flex-1">
+                    <dl>
+                        <dt class="text-sm font-medium text-gray-500 truncate">Active Runs</dt>
+                        <dd class="text-lg font-semibold text-gray-900">{{.ActiveRuns}}</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+        <div class="bg-gray-50 px-5 py-3">
+            <div class="text-sm">
+                <span class="text-gray-500">Pending: </span>
+                <span class="font-medium text-yellow-600">{{.PendingRuns}}</span>
+                <span class="text-gray-500 ml-2">24h: </span>
+                <span class="font-medium text-green-600">{{.CompletedRuns24h}}</span>
+                <span class="font-medium text-red-600 ml-1">/ {{.FailedRuns24h}}</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tools -->
+    <div class="bg-white overflow-hidden shadow rounded-lg">
+        <div class="p-5">
+            <div class="flex items-center">
+                <div class="flex-shrink-0">
+                    <svg class="h-6 w-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                    </svg>
+                </div>
+                <div class="ml-5 w-0 flex-1">
+                    <dl>
+                        <dt class="text-sm font-medium text-gray-500 truncate">Tool Queue</dt>
+                        <dd class="text-lg font-semibold text-gray-900">{{.PendingTools}}</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+        <div class="bg-gray-50 px-5 py-3">
+            <div class="text-sm">
+                <span class="text-gray-500">Running: </span>
+                <span class="font-medium text-blue-600">{{.RunningTools}}</span>
+                <span class="text-gray-500 ml-2">Failed 24h: </span>
+                <span class="font-medium text-red-600">{{.FailedTools24h}}</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Instances -->
+    <div class="bg-white overflow-hidden shadow rounded-lg">
+        <div class="p-5">
+            <div class="flex items-center">
+                <div class="flex-shrink-0">
+                    <svg class="h-6 w-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path>
+                    </svg>
+                </div>
+                <div class="ml-5 w-0 flex-1">
+                    <dl>
+                        <dt class="text-sm font-medium text-gray-500 truncate">Active Instances</dt>
+                        <dd class="text-lg font-semibold text-gray-900">{{.ActiveInstances}}</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+        <div class="bg-gray-50 px-5 py-3">
+            <div class="text-sm">
+                {{if .LeaderInstanceID}}
+                <span class="text-gray-500">Leader: </span>
+                <span class="font-medium text-gray-900 truncate">{{.LeaderInstanceID | truncate 12}}</span>
+                {{else}}
+                <span class="text-gray-500">No leader elected</span>
+                {{end}}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Queue Breakdown -->
+<div class="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2">
+    <!-- Runs by State -->
+    <div class="bg-white overflow-hidden shadow rounded-lg">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+            <h3 class="text-lg font-medium leading-6 text-gray-900">Runs by State</h3>
+        </div>
+        <div class="px-4 py-4">
+            <div class="flex flex-wrap gap-2">
+                {{range $state, $count := .RunsByState}}
+                <span class="inline-flex items-center rounded-md px-2.5 py-1 text-sm font-medium {{stateBgColor $state}}">
+                    {{$state}}: {{$count}}
+                </span>
+                {{else}}
+                <span class="text-gray-500">No runs</span>
+                {{end}}
+            </div>
+        </div>
+    </div>
+
+    <!-- Tools by State -->
+    <div class="bg-white overflow-hidden shadow rounded-lg">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+            <h3 class="text-lg font-medium leading-6 text-gray-900">Tools by State</h3>
+        </div>
+        <div class="px-4 py-4">
+            <div class="flex flex-wrap gap-2">
+                {{range $state, $count := .ToolsByState}}
+                <span class="inline-flex items-center rounded-md px-2.5 py-1 text-sm font-medium {{stateBgColor $state}}">
+                    {{$state}}: {{$count}}
+                </span>
+                {{else}}
+                <span class="text-gray-500">No tool executions</span>
+                {{end}}
+            </div>
+        </div>
+    </div>
+</div>
+{{end}}
