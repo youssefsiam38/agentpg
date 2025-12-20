@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AgentPG Admin</title>
+    <link rel="icon" type="image/svg+xml" href="{{.BasePath}}/static/favicon.svg">
     <script src="https://unpkg.com/htmx.org@2.0.0"></script>
     <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
     <style>
@@ -18,7 +19,7 @@
         {{template "sidebar" .}}
 
         <main class="flex-1 overflow-auto bg-gray-900">
-            <div class="h-full p-8">
+            <div class="min-h-full p-8">
                 {{if .Flash}}
                 <div class="mb-4 rounded-md border {{if eq .Flash.Type "error"}}bg-red-500/10 border-red-500/30{{else if eq .Flash.Type "success"}}bg-green-500/10 border-green-500/30{{else}}bg-blue-500/10 border-blue-500/30{{end}} p-4">
                     <div class="flex">
@@ -45,7 +46,10 @@
 <aside class="flex-shrink-0 w-56 bg-gray-900 text-white flex flex-col">
     <!-- Logo -->
     <div class="p-4 border-b border-gray-800">
-        <a href="{{.BasePath}}/dashboard" class="text-xl font-bold text-white">AgentPG</a>
+        <a href="{{.BasePath}}/dashboard" class="flex items-center gap-3">
+            <img src="{{.BasePath}}/static/logo.svg" alt="AgentPG" class="h-8 w-8">
+            <span class="text-xl font-bold text-white">AgentPG</span>
+        </a>
     </div>
 
     <!-- Navigation -->
