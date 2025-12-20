@@ -214,8 +214,39 @@ func (s *Service[TTx]) GetRunDetail(ctx context.Context, id uuid.UUID) (*RunDeta
 		}
 	}
 
-	// Get child runs (runs that have this run as parent)
-	// TODO: Add GetChildRuns method to driver.Store
+	// Get child runs by looking at tool executions with child_run_id
+	// (reuse toolExecs from above if already fetched, otherwise fetch again)
+	if toolExecs == nil {
+		toolExecs, _ = s.store.GetToolExecutionsByRun(ctx, id)
+	}
+	for _, exec := range toolExecs {
+		if exec.ChildRunID != nil {
+			childRun, childErr := s.store.GetRun(ctx, *exec.ChildRunID)
+			if childErr == nil && childRun != nil {
+				var childDuration *time.Duration
+				if childRun.FinalizedAt != nil && childRun.StartedAt != nil {
+					d := childRun.FinalizedAt.Sub(*childRun.StartedAt)
+					childDuration = &d
+				}
+				detail.ChildRuns = append(detail.ChildRuns, &RunSummary{
+					ID:             childRun.ID,
+					SessionID:      childRun.SessionID,
+					AgentName:      childRun.AgentName,
+					RunMode:        childRun.RunMode,
+					State:          string(childRun.State),
+					Depth:          childRun.Depth,
+					HasParent:      childRun.ParentRunID != nil,
+					IterationCount: childRun.IterationCount,
+					ToolIterations: childRun.ToolIterations,
+					TotalTokens:    childRun.InputTokens + childRun.OutputTokens,
+					Duration:       childDuration,
+					ErrorMessage:   childRun.ErrorMessage,
+					CreatedAt:      childRun.CreatedAt,
+					FinalizedAt:    childRun.FinalizedAt,
+				})
+			}
+		}
+	}
 
 	return detail, nil
 }

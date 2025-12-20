@@ -145,6 +145,120 @@ func (s *Store) UpdateSession(ctx context.Context, id uuid.UUID, updates map[str
 	return err
 }
 
+func (s *Store) ListSessions(ctx context.Context, params driver.ListSessionsParams) ([]*driver.Session, int, error) {
+	// Build dynamic query with filters
+	baseQuery := `
+		SELECT id, tenant_id, identifier, parent_session_id, depth, metadata, compaction_count, created_at, updated_at
+		FROM agentpg_sessions`
+
+	countQuery := "SELECT COUNT(*) FROM agentpg_sessions"
+
+	var whereClauses []string
+	var args []any
+	argNum := 1
+
+	if params.TenantID != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("tenant_id = $%d", argNum))
+		args = append(args, params.TenantID)
+		argNum++
+	}
+
+	whereClause := ""
+	if len(whereClauses) > 0 {
+		whereClause = " WHERE " + whereClauses[0]
+		for i := 1; i < len(whereClauses); i++ {
+			whereClause += " AND " + whereClauses[i]
+		}
+	}
+
+	// Get total count
+	var total int
+	err := s.pool.QueryRow(ctx, countQuery+whereClause, args...).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count sessions: %w", err)
+	}
+
+	// Determine order column
+	orderBy := "created_at"
+	switch params.OrderBy {
+	case "updated_at", "identifier", "created_at":
+		orderBy = params.OrderBy
+	}
+	orderDir := "DESC"
+	if params.OrderDir == "asc" {
+		orderDir = "ASC"
+	}
+
+	// Add ordering and pagination
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	baseQuery += whereClause + fmt.Sprintf(" ORDER BY %s %s LIMIT $%d OFFSET $%d", orderBy, orderDir, argNum, argNum+1)
+	args = append(args, limit, offset)
+
+	rows, err := s.pool.Query(ctx, baseQuery, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []*driver.Session
+	for rows.Next() {
+		var session driver.Session
+		var metadata []byte
+		if err := rows.Scan(
+			&session.ID, &session.TenantID, &session.Identifier, &session.ParentSessionID,
+			&session.Depth, &metadata, &session.CompactionCount, &session.CreatedAt, &session.UpdatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("failed to scan session: %w", err)
+		}
+		if err := json.Unmarshal(metadata, &session.Metadata); err != nil {
+			session.Metadata = make(map[string]any)
+		}
+		sessions = append(sessions, &session)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("failed to iterate sessions: %w", err)
+	}
+
+	return sessions, total, nil
+}
+
+func (s *Store) ListTenants(ctx context.Context) ([]driver.TenantInfo, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT tenant_id, COUNT(*) as session_count
+		FROM agentpg_sessions
+		GROUP BY tenant_id
+		ORDER BY session_count DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tenants: %w", err)
+	}
+	defer rows.Close()
+
+	var tenants []driver.TenantInfo
+	for rows.Next() {
+		var tenant driver.TenantInfo
+		if err := rows.Scan(&tenant.TenantID, &tenant.SessionCount); err != nil {
+			return nil, fmt.Errorf("failed to scan tenant: %w", err)
+		}
+		tenants = append(tenants, tenant)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate tenants: %w", err)
+	}
+
+	return tenants, nil
+}
+
 // Agent operations
 
 func (s *Store) UpsertAgent(ctx context.Context, agent *driver.AgentDefinition) error {
@@ -495,8 +609,8 @@ func (s *Store) ListRuns(ctx context.Context, params driver.ListRunsParams) ([]*
 
 	// Join with sessions for tenant filtering
 	if params.TenantID != "" {
-		baseQuery = baseQuery[:len(baseQuery)] + " JOIN agentpg_sessions s ON r.session_id = s.id"
-		countQuery = countQuery + " JOIN agentpg_sessions s ON r.session_id = s.id"
+		baseQuery += " JOIN agentpg_sessions s ON r.session_id = s.id"
+		countQuery += " JOIN agentpg_sessions s ON r.session_id = s.id"
 		whereClauses = append(whereClauses, fmt.Sprintf("s.tenant_id = $%d", argNum))
 		args = append(args, params.TenantID)
 		argNum++
@@ -1752,6 +1866,24 @@ func (s *Store) GetCompactionEvents(ctx context.Context, sessionID uuid.UUID, li
 		events = append(events, &event)
 	}
 	return events, rows.Err()
+}
+
+func (s *Store) GetCompactionStats(ctx context.Context) (*driver.CompactionStats, error) {
+	var stats driver.CompactionStats
+
+	err := s.pool.QueryRow(ctx, `
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(original_tokens - compacted_tokens), 0),
+			COALESCE(SUM(messages_removed), 0),
+			COALESCE(AVG(1.0 - (compacted_tokens::float / NULLIF(original_tokens, 0))), 0)
+		FROM agentpg_compaction_events
+	`).Scan(&stats.TotalCompactions, &stats.TotalTokensSaved, &stats.TotalMessagesArchived, &stats.AvgReductionPercent)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get compaction stats: %w", err)
+	}
+
+	return &stats, nil
 }
 
 // Helper functions

@@ -71,7 +71,7 @@ func main() {
 	drv := pgxv5.New(pool)
 	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
 		APIKey:            os.Getenv("ANTHROPIC_API_KEY"),
-		Name:              "admin-ui-full-example",
+		Name:              "admin-ui-full-example-2",
 		MaxConcurrentRuns: 5,
 	})
 	if err != nil {
@@ -133,7 +133,7 @@ func main() {
 
 	// Start server
 	server := &http.Server{
-		Addr:    ":8080",
+		Addr:    ":8090",
 		Handler: logRequests(mux),
 	}
 

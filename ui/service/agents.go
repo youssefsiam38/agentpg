@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+
+	"github.com/youssefsiam38/agentpg/driver"
 )
 
 // ListAgents returns all agents with statistics.
@@ -29,9 +31,31 @@ func (s *Service[TTx]) ListAgents(ctx context.Context) ([]*AgentWithStats, error
 			RegisteredOn: agentInstances[agent.Name],
 		}
 
-		// Get run statistics
-		// TODO: Add queries to count runs by agent
-		// For now, we leave the stats as zeros
+		// Get run statistics using ListRuns with agent filter
+		runs, total, err := s.store.ListRuns(ctx, driver.ListRunsParams{
+			AgentName: agent.Name,
+			Limit:     1000, // Get enough to compute stats
+		})
+		if err == nil {
+			stats.TotalRuns = total
+
+			var totalTokens int
+			for _, run := range runs {
+				totalTokens += run.InputTokens + run.OutputTokens
+				switch run.State {
+				case "pending", "batch_submitting", "batch_pending", "batch_processing", "streaming", "pending_tools":
+					stats.ActiveRuns++
+				case "completed":
+					stats.CompletedRuns++
+				case "failed":
+					stats.FailedRuns++
+				}
+			}
+
+			if len(runs) > 0 {
+				stats.AvgTokensPerRun = totalTokens / len(runs)
+			}
+		}
 
 		results = append(results, stats)
 	}
@@ -90,8 +114,25 @@ func (s *Service[TTx]) ListTools(ctx context.Context) ([]*ToolWithStats, error) 
 			RegisteredOn: toolInstances[tool.Name],
 		}
 
-		// Get execution statistics
-		// TODO: Add queries to count executions by tool
+		// Get execution statistics using ListToolExecutions with tool filter
+		execs, total, err := s.store.ListToolExecutions(ctx, driver.ListToolExecutionsParams{
+			ToolName: tool.Name,
+			Limit:    1000, // Get enough to compute stats
+		})
+		if err == nil {
+			stats.TotalExecutions = total
+
+			for _, exec := range execs {
+				switch exec.State {
+				case "pending":
+					stats.PendingCount++
+				case "completed":
+					stats.CompletedCount++
+				case "failed":
+					stats.FailedCount++
+				}
+			}
+		}
 
 		results = append(results, stats)
 	}

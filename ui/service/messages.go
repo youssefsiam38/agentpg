@@ -23,12 +23,22 @@ func (s *Service[TTx]) GetConversation(ctx context.Context, sessionID uuid.UUID,
 		return nil, err
 	}
 
+	// Get the agent name from the first run in the session
+	var agentName string
+	runs, err := s.store.GetRunsBySession(ctx, sessionID, 1000)
+	if err == nil && len(runs) > 0 {
+		// Runs are ordered by created_at DESC, so first run is last in slice
+		agentName = runs[len(runs)-1].AgentName
+	}
+
 	view := &ConversationView{
 		SessionID: sessionID,
+		AgentName: agentName,
 		Session: &SessionSummary{
 			ID:         session.ID,
 			TenantID:   session.TenantID,
 			Identifier: session.Identifier,
+			AgentName:  agentName,
 			Depth:      session.Depth,
 			CreatedAt:  session.CreatedAt,
 		},
