@@ -1,0 +1,27 @@
+{{define "fragments/session-list.html"}}
+<div class="space-y-3">
+    {{range .Sessions}}
+    <a href="{{$.BasePath}}/sessions/{{.ID}}" class="block p-4 bg-white rounded-lg shadow hover:shadow-md transition-shadow">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <span class="font-medium text-gray-900">{{.Identifier}}</span>
+                <span class="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">{{.TenantID}}</span>
+            </div>
+            <span class="text-sm text-gray-500">{{formatTimeAgo .LastActivityAt}}</span>
+        </div>
+        <div class="mt-2 flex items-center space-x-4 text-sm text-gray-500">
+            <span>{{.RunCount}} runs</span>
+            <span>{{.MessageCount}} messages</span>
+        </div>
+    </a>
+    {{else}}
+    <div class="text-center py-8 text-gray-500">No sessions found</div>
+    {{end}}
+
+    {{if .HasMore}}
+    <div class="text-center py-4">
+        <a href="{{$.BasePath}}/sessions" class="text-sm text-indigo-600 hover:text-indigo-500">Load more...</a>
+    </div>
+    {{end}}
+</div>
+{{end}}

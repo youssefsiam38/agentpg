@@ -1058,9 +1058,9 @@ CREATE UNLOGGED TABLE agentpg_instances (
     -- Maximum concurrent tool executions
     max_concurrent_tools INTEGER NOT NULL DEFAULT 50,
 
-    -- Current active counts (updated by workers atomically)
-    active_run_count INTEGER NOT NULL DEFAULT 0,
-    active_tool_count INTEGER NOT NULL DEFAULT 0,
+    -- NOTE: Active run/tool counts are calculated on-the-fly by querying
+    -- agentpg_runs and agentpg_tool_executions tables rather than stored here.
+    -- This avoids consistency issues with triggers and ensures accurate counts.
 
     -- ==========================================================================
     -- METADATA & TIMESTAMPS
@@ -1083,9 +1083,6 @@ COMMENT ON TABLE agentpg_instances IS
 
 COMMENT ON COLUMN agentpg_instances.name IS
 'Service name for grouping. Multiple instances can share the same name.';
-
-COMMENT ON COLUMN agentpg_instances.active_run_count IS
-'Current runs being processed. Used for load balancing decisions.';
 
 COMMENT ON COLUMN agentpg_instances.max_concurrent_runs IS
 'Maximum runs this instance will process concurrently.';
@@ -1271,20 +1268,23 @@ BEGIN
         ORDER BY r.created_at ASC
         LIMIT p_max_count
         FOR UPDATE OF r SKIP LOCKED
+    ),
+    claimed AS (
+        UPDATE agentpg_runs r
+        SET claimed_by_instance_id = p_instance_id,
+            claimed_at = NOW(),
+            -- Transition to appropriate state based on run mode
+            state = CASE
+                WHEN r.run_mode = 'batch' THEN 'batch_submitting'::agentpg_run_state
+                WHEN r.run_mode = 'streaming' THEN 'streaming'::agentpg_run_state
+            END,
+            previous_state = 'pending',
+            started_at = COALESCE(started_at, NOW())
+        FROM claimable c
+        WHERE r.id = c.id
+        RETURNING r.*
     )
-    UPDATE agentpg_runs r
-    SET claimed_by_instance_id = p_instance_id,
-        claimed_at = NOW(),
-        -- Transition to appropriate state based on run mode
-        state = CASE
-            WHEN r.run_mode = 'batch' THEN 'batch_submitting'::agentpg_run_state
-            WHEN r.run_mode = 'streaming' THEN 'streaming'::agentpg_run_state
-        END,
-        previous_state = 'pending',
-        started_at = COALESCE(started_at, NOW())
-    FROM claimable c
-    WHERE r.id = c.id
-    RETURNING r.*;
+    SELECT * FROM claimed;
 END;
 $$ LANGUAGE plpgsql;
 

@@ -1,0 +1,210 @@
+{{define "content"}}
+<div class="flex h-[calc(100vh-12rem)]">
+    <!-- Sidebar: Session List -->
+    <div class="w-64 flex-shrink-0 bg-white border-r border-gray-200 overflow-y-auto">
+        <div class="p-4 border-b border-gray-200">
+            <a href="{{$.BasePath}}/chat/new" class="w-full inline-flex items-center justify-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">
+                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                </svg>
+                New Chat
+            </a>
+        </div>
+        <div class="p-2">
+            <h3 class="px-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">Recent Sessions</h3>
+            <ul class="mt-2 space-y-1">
+                {{$selectedSessionID := ""}}
+                {{if .Data.Session}}{{$selectedSessionID = printf "%s" .Data.Session.Session.ID}}{{end}}
+                {{range .Data.Sessions}}
+                <li>
+                    <a href="{{$.BasePath}}/chat/session/{{.ID}}" class="block px-2 py-2 text-sm text-gray-700 rounded-md hover:bg-gray-100 {{if eq (printf "%s" .ID) $selectedSessionID}}bg-gray-100{{end}}">
+                        <div class="font-medium truncate">{{.Identifier}}</div>
+                        <div class="text-xs text-gray-500">{{formatTimeAgo .LastActivityAt}}</div>
+                    </a>
+                </li>
+                {{else}}
+                <li class="px-2 py-4 text-center text-sm text-gray-500">No sessions yet</li>
+                {{end}}
+            </ul>
+        </div>
+    </div>
+
+    <!-- Main Chat Area -->
+    <div class="flex-1 flex flex-col bg-gray-50">
+        {{if .Data.Session}}
+        <!-- Session Header -->
+        <div class="flex-shrink-0 bg-white border-b border-gray-200 px-4 py-3">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-lg font-medium text-gray-900">{{.Data.Session.Session.Identifier}}</h2>
+                    <p class="text-sm text-gray-500">Tenant: {{.Data.Session.Session.TenantID}}</p>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <span class="text-sm text-gray-500">{{.Data.Conversation.MessageCount}} messages</span>
+                    <span class="text-sm text-gray-500">{{formatTokens .Data.Conversation.TotalTokens}} tokens</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Messages -->
+        <div id="messages-container" class="flex-1 overflow-y-auto p-4 space-y-4">
+            {{range .Data.Conversation.Messages}}
+            {{template "message-bubble" (dict "Msg" . "BasePath" $.BasePath)}}
+            {{else}}
+            <div class="flex items-center justify-center h-full text-gray-500">
+                <div class="text-center">
+                    <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                    </svg>
+                    <p class="mt-2">No messages yet. Start a conversation!</p>
+                </div>
+            </div>
+            {{end}}
+
+            <!-- Pending response container -->
+            <div id="pending-response">
+                {{if .Data.PendingRunID}}
+                <!-- Assistant response (pending) - auto-poll for completion -->
+                <div id="run-{{.Data.PendingRunID}}"
+                     class="flex justify-start"
+                     hx-get="{{$.BasePath}}/chat/poll/{{.Data.PendingRunID}}"
+                     hx-trigger="every 1s"
+                     hx-swap="outerHTML">
+                    <div class="max-w-3xl bg-white border border-gray-200 rounded-lg px-4 py-3 shadow-sm">
+                        <div class="flex items-center space-x-2">
+                            <svg class="animate-spin h-4 w-4 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span class="text-sm text-gray-600">Processing...</span>
+                        </div>
+                    </div>
+                </div>
+                {{end}}
+            </div>
+        </div>
+
+        <!-- Input Form -->
+        {{if not $.ReadOnly}}
+        <div class="flex-shrink-0 bg-white border-t border-gray-200 p-4">
+            <form id="chat-form"
+                  hx-post="{{$.BasePath}}/chat/send"
+                  hx-target="#pending-response"
+                  hx-swap="innerHTML"
+                  class="flex space-x-3">
+                <input type="hidden" name="session_id" value="{{.Data.Session.Session.ID}}">
+                <div class="flex-shrink-0">
+                    <select name="agent_name" class="block w-full rounded-md border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 sm:text-sm">
+                        {{range .Data.Agents}}
+                        <option value="{{.Agent.Name}}">{{.Agent.Name}}</option>
+                        {{end}}
+                    </select>
+                </div>
+                <div class="flex-1">
+                    <input type="text" name="message"
+                           placeholder="Type your message..."
+                           class="block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 sm:text-sm"
+                           autocomplete="off">
+                </div>
+                <button type="submit" class="inline-flex items-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">
+                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
+                    </svg>
+                    Send
+                </button>
+            </form>
+        </div>
+        {{end}}
+        {{else}}
+        <!-- No Session Selected -->
+        <div class="flex-1 flex items-center justify-center">
+            <div class="text-center">
+                <svg class="mx-auto h-16 w-16 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                </svg>
+                <h3 class="mt-4 text-lg font-medium text-gray-900">Start a conversation</h3>
+                <p class="mt-2 text-sm text-gray-500">Select an existing session or create a new one.</p>
+                <a href="{{$.BasePath}}/chat/new" class="mt-4 inline-flex items-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">
+                    New Chat
+                </a>
+            </div>
+        </div>
+        {{end}}
+    </div>
+</div>
+
+<script>
+// Scroll to bottom when new messages arrive
+document.body.addEventListener('htmx:afterSwap', function(evt) {
+    if (evt.detail.target.id === 'pending-response' || evt.detail.target.id === 'messages-container') {
+        var container = document.getElementById('messages-container');
+        container.scrollTop = container.scrollHeight;
+    }
+});
+
+// Clear input after sending
+document.body.addEventListener('htmx:afterRequest', function(evt) {
+    if (evt.detail.elt.id === 'chat-form') {
+        evt.detail.elt.querySelector('input[name="message"]').value = '';
+    }
+});
+</script>
+{{end}}
+
+{{define "message-bubble"}}
+<div class="flex {{if eq .Msg.Message.Role "user"}}justify-end{{else}}justify-start{{end}}">
+    <div class="max-w-3xl {{if eq .Msg.Message.Role "user"}}bg-indigo-600 text-white{{else}}bg-white border border-gray-200{{end}} rounded-lg px-4 py-3 shadow-sm">
+        {{if .Msg.RunInfo}}
+        <div class="flex items-center space-x-2 mb-2 {{if eq .Msg.Message.Role "user"}}text-indigo-200{{else}}text-gray-500{{end}} text-xs">
+            <span>{{.Msg.RunInfo.AgentName}}</span>
+            <span>•</span>
+            <a href="{{.BasePath}}/runs/{{.Msg.RunInfo.ID}}" class="hover:underline">View Run</a>
+        </div>
+        {{end}}
+
+        {{$msgRole := .Msg.Message.Role}}
+        {{range .Msg.ContentBlocks}}
+        {{if eq .Type "text"}}
+        <div class="prose prose-sm {{if eq $msgRole "user"}}prose-invert{{end}} max-w-none">
+            <p class="whitespace-pre-wrap">{{.Text}}</p>
+        </div>
+        {{else if eq .Type "tool_use"}}
+        <div class="mt-2 p-3 rounded-md {{if eq $msgRole "user"}}bg-indigo-700{{else}}bg-gray-50{{end}}">
+            <div class="flex items-center space-x-2">
+                <svg class="w-4 h-4 {{if eq $msgRole "user"}}text-indigo-300{{else}}text-purple-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                </svg>
+                <span class="font-medium {{if eq $msgRole "user"}}text-white{{else}}text-gray-900{{end}}">{{.ToolName}}</span>
+            </div>
+            <details class="mt-2">
+                <summary class="text-xs {{if eq $msgRole "user"}}text-indigo-300{{else}}text-gray-500{{end}} cursor-pointer">View Input</summary>
+                <pre class="mt-1 text-xs {{if eq $msgRole "user"}}text-indigo-200{{else}}text-gray-600{{end}} overflow-x-auto">{{json .ToolInput}}</pre>
+            </details>
+        </div>
+        {{else if eq .Type "tool_result"}}
+        <div class="mt-2 p-3 rounded-md {{if .IsError}}bg-red-50 border border-red-200{{else if eq $msgRole "user"}}bg-indigo-700{{else}}bg-green-50 border border-green-200{{end}}">
+            <div class="flex items-center space-x-2">
+                {{if .IsError}}
+                <svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                </svg>
+                <span class="font-medium text-red-800">Error</span>
+                {{else}}
+                <svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                </svg>
+                <span class="font-medium {{if eq $msgRole "user"}}text-white{{else}}text-green-800{{end}}">Result</span>
+                {{end}}
+            </div>
+            <p class="mt-1 text-sm {{if .IsError}}text-red-700{{else if eq $msgRole "user"}}text-indigo-200{{else}}text-green-700{{end}} whitespace-pre-wrap">{{.ToolContent | truncate 500}}</p>
+        </div>
+        {{end}}
+        {{end}}
+
+        <div class="mt-2 text-xs {{if eq .Msg.Message.Role "user"}}text-indigo-300{{else}}text-gray-400{{end}}">
+            {{formatTimeAgo .Msg.Message.CreatedAt}}
+        </div>
+    </div>
+</div>
+{{end}}

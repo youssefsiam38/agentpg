@@ -476,6 +476,98 @@ func (s *Store) GetStuckPendingToolsRuns(ctx context.Context, limit int) ([]*dri
 	return collectRuns(rows)
 }
 
+func (s *Store) ListRuns(ctx context.Context, params driver.ListRunsParams) ([]*driver.Run, int, error) {
+	// Build dynamic query with filters
+	baseQuery := `
+		SELECT r.id, r.session_id, r.agent_name, r.run_mode, r.parent_run_id, r.parent_tool_execution_id, r.depth, r.state, r.previous_state,
+			r.prompt, r.current_iteration, r.current_iteration_id, r.response_text, r.stop_reason,
+			r.input_tokens, r.output_tokens, r.cache_creation_input_tokens, r.cache_read_input_tokens,
+			r.iteration_count, r.tool_iterations, r.error_message, r.error_type,
+			r.created_by_instance_id, r.claimed_by_instance_id, r.claimed_at, r.metadata, r.created_at, r.started_at, r.finalized_at,
+			r.rescue_attempts, r.last_rescue_at
+		FROM agentpg_runs r`
+
+	countQuery := "SELECT COUNT(*) FROM agentpg_runs r"
+
+	var whereClauses []string
+	var args []any
+	argNum := 1
+
+	// Join with sessions for tenant filtering
+	if params.TenantID != "" {
+		baseQuery = baseQuery[:len(baseQuery)] + " JOIN agentpg_sessions s ON r.session_id = s.id"
+		countQuery = countQuery + " JOIN agentpg_sessions s ON r.session_id = s.id"
+		whereClauses = append(whereClauses, fmt.Sprintf("s.tenant_id = $%d", argNum))
+		args = append(args, params.TenantID)
+		argNum++
+	}
+
+	if params.SessionID != nil {
+		whereClauses = append(whereClauses, fmt.Sprintf("r.session_id = $%d", argNum))
+		args = append(args, *params.SessionID)
+		argNum++
+	}
+
+	if params.AgentName != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("r.agent_name = $%d", argNum))
+		args = append(args, params.AgentName)
+		argNum++
+	}
+
+	if params.State != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("r.state = $%d", argNum))
+		args = append(args, params.State)
+		argNum++
+	}
+
+	if params.RunMode != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("r.run_mode = $%d", argNum))
+		args = append(args, params.RunMode)
+		argNum++
+	}
+
+	whereClause := ""
+	if len(whereClauses) > 0 {
+		whereClause = " WHERE " + whereClauses[0]
+		for i := 1; i < len(whereClauses); i++ {
+			whereClause += " AND " + whereClauses[i]
+		}
+	}
+
+	// Get total count
+	var total int
+	err := s.pool.QueryRow(ctx, countQuery+whereClause, args...).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count runs: %w", err)
+	}
+
+	// Add ordering and pagination
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	baseQuery += whereClause + fmt.Sprintf(" ORDER BY r.created_at DESC LIMIT $%d OFFSET $%d", argNum, argNum+1)
+	args = append(args, limit, offset)
+
+	rows, err := s.pool.Query(ctx, baseQuery, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list runs: %w", err)
+	}
+	defer rows.Close()
+
+	runs, err := collectRuns(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return runs, total, nil
+}
+
 // Iteration operations
 
 func (s *Store) CreateIteration(ctx context.Context, params driver.CreateIterationParams) (*driver.Iteration, error) {
@@ -784,6 +876,92 @@ func (s *Store) GetPendingToolExecutionsForRun(ctx context.Context, runID uuid.U
 	defer rows.Close()
 
 	return collectToolExecutions(rows)
+}
+
+func (s *Store) ListToolExecutions(ctx context.Context, params driver.ListToolExecutionsParams) ([]*driver.ToolExecution, int, error) {
+	// Build dynamic query with filters
+	baseQuery := `
+		SELECT id, run_id, iteration_id, state, tool_use_id, tool_name, tool_input, is_agent_tool, agent_name, child_run_id,
+			tool_output, is_error, error_message, claimed_by_instance_id, claimed_at, attempt_count, max_attempts,
+			scheduled_at, snooze_count, last_error, created_at, started_at, completed_at
+		FROM agentpg_tool_executions`
+
+	countQuery := "SELECT COUNT(*) FROM agentpg_tool_executions"
+
+	var whereClauses []string
+	var args []any
+	argNum := 1
+
+	if params.RunID != nil {
+		whereClauses = append(whereClauses, fmt.Sprintf("run_id = $%d", argNum))
+		args = append(args, *params.RunID)
+		argNum++
+	}
+
+	if params.IterationID != nil {
+		whereClauses = append(whereClauses, fmt.Sprintf("iteration_id = $%d", argNum))
+		args = append(args, *params.IterationID)
+		argNum++
+	}
+
+	if params.ToolName != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("tool_name = $%d", argNum))
+		args = append(args, params.ToolName)
+		argNum++
+	}
+
+	if params.State != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("state = $%d", argNum))
+		args = append(args, params.State)
+		argNum++
+	}
+
+	if params.IsAgentTool != nil {
+		whereClauses = append(whereClauses, fmt.Sprintf("is_agent_tool = $%d", argNum))
+		args = append(args, *params.IsAgentTool)
+		argNum++
+	}
+
+	whereClause := ""
+	if len(whereClauses) > 0 {
+		whereClause = " WHERE " + whereClauses[0]
+		for i := 1; i < len(whereClauses); i++ {
+			whereClause += " AND " + whereClauses[i]
+		}
+	}
+
+	// Get total count
+	var total int
+	err := s.pool.QueryRow(ctx, countQuery+whereClause, args...).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count tool executions: %w", err)
+	}
+
+	// Add ordering and pagination
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	baseQuery += whereClause + fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", argNum, argNum+1)
+	args = append(args, limit, offset)
+
+	rows, err := s.pool.Query(ctx, baseQuery, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list tool executions: %w", err)
+	}
+	defer rows.Close()
+
+	executions, err := collectToolExecutions(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return executions, total, nil
 }
 
 // Tool execution retry operations
@@ -1225,11 +1403,11 @@ func (s *Store) GetInstance(ctx context.Context, instanceID string) (*driver.Ins
 	var metadata []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, name, hostname, pid, version, max_concurrent_runs, max_concurrent_tools,
-			active_run_count, active_tool_count, metadata, created_at, last_heartbeat_at
+			metadata, created_at, last_heartbeat_at
 		FROM agentpg_instances WHERE id = $1
 	`, instanceID).Scan(
 		&inst.ID, &inst.Name, &inst.Hostname, &inst.PID, &inst.Version,
-		&inst.MaxConcurrentRuns, &inst.MaxConcurrentTools, &inst.ActiveRunCount, &inst.ActiveToolCount,
+		&inst.MaxConcurrentRuns, &inst.MaxConcurrentTools,
 		&metadata, &inst.CreatedAt, &inst.LastHeartbeatAt,
 	)
 	if err == pgx.ErrNoRows {
@@ -1239,13 +1417,14 @@ func (s *Store) GetInstance(ctx context.Context, instanceID string) (*driver.Ins
 		return nil, err
 	}
 	json.Unmarshal(metadata, &inst.Metadata)
+	// ActiveRunCount and ActiveToolCount are calculated on-the-fly via GetInstanceActiveCounts
 	return &inst, nil
 }
 
 func (s *Store) ListInstances(ctx context.Context) ([]*driver.Instance, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, name, hostname, pid, version, max_concurrent_runs, max_concurrent_tools,
-			active_run_count, active_tool_count, metadata, created_at, last_heartbeat_at
+			metadata, created_at, last_heartbeat_at
 		FROM agentpg_instances ORDER BY created_at
 	`)
 	if err != nil {
@@ -1259,12 +1438,13 @@ func (s *Store) ListInstances(ctx context.Context) ([]*driver.Instance, error) {
 		var metadata []byte
 		if err := rows.Scan(
 			&inst.ID, &inst.Name, &inst.Hostname, &inst.PID, &inst.Version,
-			&inst.MaxConcurrentRuns, &inst.MaxConcurrentTools, &inst.ActiveRunCount, &inst.ActiveToolCount,
+			&inst.MaxConcurrentRuns, &inst.MaxConcurrentTools,
 			&metadata, &inst.CreatedAt, &inst.LastHeartbeatAt,
 		); err != nil {
 			return nil, err
 		}
 		json.Unmarshal(metadata, &inst.Metadata)
+		// ActiveRunCount and ActiveToolCount are calculated on-the-fly via GetAllInstanceActiveCounts
 		instances = append(instances, &inst)
 	}
 	return instances, rows.Err()
@@ -1300,14 +1480,92 @@ func (s *Store) DeleteStaleInstances(ctx context.Context, ttl time.Duration) (in
 	return int(result.RowsAffected()), nil
 }
 
-func (s *Store) UpdateInstanceCounts(ctx context.Context, instanceID string, runDelta, toolDelta int) error {
-	_, err := s.pool.Exec(ctx, `
-		UPDATE agentpg_instances
-		SET active_run_count = GREATEST(0, active_run_count + $2),
-			active_tool_count = GREATEST(0, active_tool_count + $3)
-		WHERE id = $1
-	`, instanceID, runDelta, toolDelta)
-	return err
+// GetInstanceActiveCounts returns the active run and tool counts for an instance.
+// Counts are calculated on-the-fly by querying runs and tool_executions tables.
+func (s *Store) GetInstanceActiveCounts(ctx context.Context, instanceID string) (activeRuns, activeTools int, err error) {
+	// Count active runs claimed by this instance
+	err = s.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM agentpg_runs
+		WHERE claimed_by_instance_id = $1
+		  AND state NOT IN ('completed', 'cancelled', 'failed')
+	`, instanceID).Scan(&activeRuns)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	// Count active tool executions claimed by this instance
+	err = s.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM agentpg_tool_executions
+		WHERE claimed_by_instance_id = $1
+		  AND state = 'running'
+	`, instanceID).Scan(&activeTools)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return activeRuns, activeTools, nil
+}
+
+// GetAllInstanceActiveCounts returns the active run and tool counts for all instances.
+// Returns a map of instance ID to [activeRuns, activeTools].
+func (s *Store) GetAllInstanceActiveCounts(ctx context.Context) (map[string][2]int, error) {
+	result := make(map[string][2]int)
+
+	// Get active run counts by instance
+	rows, err := s.pool.Query(ctx, `
+		SELECT claimed_by_instance_id, COUNT(*)
+		FROM agentpg_runs
+		WHERE claimed_by_instance_id IS NOT NULL
+		  AND state NOT IN ('completed', 'cancelled', 'failed')
+		GROUP BY claimed_by_instance_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var instanceID string
+		var count int
+		if err := rows.Scan(&instanceID, &count); err != nil {
+			return nil, err
+		}
+		counts := result[instanceID]
+		counts[0] = count
+		result[instanceID] = counts
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Get active tool counts by instance
+	rows, err = s.pool.Query(ctx, `
+		SELECT claimed_by_instance_id, COUNT(*)
+		FROM agentpg_tool_executions
+		WHERE claimed_by_instance_id IS NOT NULL
+		  AND state = 'running'
+		GROUP BY claimed_by_instance_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var instanceID string
+		var count int
+		if err := rows.Scan(&instanceID, &count); err != nil {
+			return nil, err
+		}
+		counts := result[instanceID]
+		counts[1] = count
+		result[instanceID] = counts
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 // Instance capability operations
