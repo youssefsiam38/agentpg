@@ -14,29 +14,63 @@ func (s *Service[TTx]) ListSessions(ctx context.Context, params SessionListParam
 		params.Limit = 25
 	}
 
-	// For now, we'll query all sessions and filter/paginate in memory
-	// In production, you'd want to add pagination methods to the driver.Store interface
-	sessions := make([]*SessionSummary, 0)
-
-	// Get all runs to count per session
-	runs, err := s.store.GetRunsBySession(ctx, uuid.Nil, 10000)
+	// Use the driver's ListSessions method with filtering and pagination
+	driverSessions, total, err := s.store.ListSessions(ctx, driver.ListSessionsParams{
+		TenantID: params.TenantID,
+		Limit:    params.Limit,
+		Offset:   params.Offset,
+		OrderBy:  params.OrderBy,
+		OrderDir: params.OrderDir,
+	})
 	if err != nil {
-		runs = []*driver.Run{}
+		return nil, err
 	}
 
-	// We need to iterate through sessions we can access
-	// For now, we'll use a simplified approach
-	// TODO: Add ListSessions method to driver.Store with pagination
-	// For now, store run info for future use when ListSessions is implemented
-	_ = runs
+	// Convert to summaries with additional computed fields
+	summaries := make([]*SessionSummary, 0, len(driverSessions))
+	for _, session := range driverSessions {
+		summary := &SessionSummary{
+			ID:              session.ID,
+			TenantID:        session.TenantID,
+			Identifier:      session.Identifier,
+			Depth:           session.Depth,
+			CompactionCount: session.CompactionCount,
+			CreatedAt:       session.CreatedAt,
+			LastActivityAt:  session.UpdatedAt, // Use UpdatedAt as last activity
+		}
 
-	// Return empty list for now if no sessions found
-	// The actual implementation would query the sessions table
+		// Get run count for this session
+		runs, err := s.store.GetRunsBySession(ctx, session.ID, 1000)
+		if err == nil {
+			summary.RunCount = len(runs)
+			// Get agent name from the first run (oldest = last in the slice since ordered by created_at desc)
+			if len(runs) > 0 {
+				summary.AgentName = runs[len(runs)-1].AgentName
+			}
+			// Update last activity from most recent run
+			for _, run := range runs {
+				if run.CreatedAt.After(summary.LastActivityAt) {
+					summary.LastActivityAt = run.CreatedAt
+				}
+				if run.FinalizedAt != nil && run.FinalizedAt.After(summary.LastActivityAt) {
+					summary.LastActivityAt = *run.FinalizedAt
+				}
+			}
+		}
+
+		// Get message count for this session
+		messages, err := s.store.GetMessages(ctx, session.ID, 1000)
+		if err == nil {
+			summary.MessageCount = len(messages)
+		}
+
+		summaries = append(summaries, summary)
+	}
 
 	return &SessionList{
-		Sessions:   sessions,
-		TotalCount: len(sessions),
-		HasMore:    false,
+		Sessions:   summaries,
+		TotalCount: total,
+		HasMore:    params.Offset+len(summaries) < total,
 	}, nil
 }
 
@@ -169,6 +203,12 @@ func (s *Service[TTx]) GetSessionDetail(ctx context.Context, id uuid.UUID) (*Ses
 		}
 	}
 
+	// Get full conversation for the session
+	conversation, err := s.GetConversation(ctx, id, 100)
+	if err == nil {
+		detail.Conversation = conversation
+	}
+
 	return detail, nil
 }
 
@@ -183,8 +223,30 @@ func (s *Service[TTx]) CreateSession(ctx context.Context, req CreateSessionReque
 
 // ListTenants returns a list of all tenants with session counts.
 func (s *Service[TTx]) ListTenants(ctx context.Context) ([]*TenantInfo, error) {
-	// This would require a custom query to get tenant info
-	// For now, return empty list
-	// TODO: Add ListTenants query to driver.Store
-	return []*TenantInfo{}, nil
+	driverTenants, err := s.store.ListTenants(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	tenants := make([]*TenantInfo, 0, len(driverTenants))
+	for _, t := range driverTenants {
+		tenant := &TenantInfo{
+			TenantID:     t.TenantID,
+			SessionCount: t.SessionCount,
+		}
+
+		// Get run count for this tenant using ListRuns
+		runs, total, err := s.store.ListRuns(ctx, driver.ListRunsParams{
+			TenantID: t.TenantID,
+			Limit:    1, // We only need the count
+		})
+		if err == nil {
+			_ = runs // Not used, just need total
+			tenant.RunCount = total
+		}
+
+		tenants = append(tenants, tenant)
+	}
+
+	return tenants, nil
 }

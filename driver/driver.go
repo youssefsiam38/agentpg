@@ -41,6 +41,11 @@ type Store[TTx any] interface {
 	GetSession(ctx context.Context, id uuid.UUID) (*Session, error)
 	GetSessionByIdentifier(ctx context.Context, tenantID, identifier string) (*Session, error)
 	UpdateSession(ctx context.Context, id uuid.UUID, updates map[string]any) error
+	// ListSessions returns sessions with optional filtering and pagination.
+	// Returns (sessions, totalCount, error). Used by admin UI for browsing all sessions.
+	ListSessions(ctx context.Context, params ListSessionsParams) ([]*Session, int, error)
+	// ListTenants returns distinct tenant IDs with session counts.
+	ListTenants(ctx context.Context) ([]TenantInfo, error)
 
 	// Agent operations
 	UpsertAgent(ctx context.Context, agent *AgentDefinition) error
@@ -165,6 +170,16 @@ type Store[TTx any] interface {
 	CreateCompactionEvent(ctx context.Context, params CreateCompactionEventParams) (*CompactionEvent, error)
 	ArchiveMessage(ctx context.Context, compactionEventID, messageID, sessionID uuid.UUID, originalMessage map[string]any) error
 	GetCompactionEvents(ctx context.Context, sessionID uuid.UUID, limit int) ([]*CompactionEvent, error)
+	// GetCompactionStats returns aggregate statistics for all compaction events.
+	GetCompactionStats(ctx context.Context) (*CompactionStats, error)
+}
+
+// CompactionStats contains aggregate compaction statistics.
+type CompactionStats struct {
+	TotalCompactions      int
+	TotalTokensSaved      int
+	TotalMessagesArchived int
+	AvgReductionPercent   float64
 }
 
 // Listener provides LISTEN/NOTIFY functionality.
@@ -286,6 +301,21 @@ type ListToolExecutionsParams struct {
 	IsAgentTool *bool      // Filter by agent tool flag
 	Limit       int        // Maximum number of results
 	Offset      int        // Offset for pagination
+}
+
+// ListSessionsParams contains parameters for listing sessions with optional filtering.
+type ListSessionsParams struct {
+	TenantID string // Filter by tenant
+	Limit    int    // Maximum number of results
+	Offset   int    // Offset for pagination
+	OrderBy  string // Field to order by (created_at, updated_at, identifier)
+	OrderDir string // Order direction (asc, desc)
+}
+
+// TenantInfo contains tenant information with session count.
+type TenantInfo struct {
+	TenantID     string
+	SessionCount int
 }
 
 // Type aliases for convenience (re-exported from main package)

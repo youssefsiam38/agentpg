@@ -225,6 +225,29 @@ func (rt *router[TTx]) handleConversation(w http.ResponseWriter, r *http.Request
 	}
 }
 
+func (rt *router[TTx]) handleSessionConversation(w http.ResponseWriter, r *http.Request) {
+	sessionID, err := parseUUID(r.PathValue("sessionId"))
+	if err != nil {
+		http.Error(w, "Invalid session ID", http.StatusBadRequest)
+		return
+	}
+
+	conversation, err := rt.svc.GetConversation(r.Context(), sessionID, 100)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	data := map[string]any{
+		"Title":        "Conversation",
+		"Conversation": conversation,
+	}
+
+	if err := rt.renderer.render(w, r, "messages/conversation.html", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
 func (rt *router[TTx]) handleToolExecutions(w http.ResponseWriter, r *http.Request) {
 	params := service.ToolExecutionListParams{
 		ToolName: r.URL.Query().Get("tool_name"),
@@ -424,8 +447,8 @@ func (rt *router[TTx]) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	message := r.FormValue("message")
 	isNewSession := r.FormValue("new_session") == "true"
 
-	if agentName == "" || message == "" {
-		http.Error(w, "Missing required fields", http.StatusBadRequest)
+	if message == "" {
+		http.Error(w, "Missing message", http.StatusBadRequest)
 		return
 	}
 
@@ -433,6 +456,12 @@ func (rt *router[TTx]) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if isNewSession {
+		// For new sessions, agent_name is required
+		if agentName == "" {
+			http.Error(w, "Missing agent_name for new session", http.StatusBadRequest)
+			return
+		}
+
 		// Create a new session
 		tenantID := r.FormValue("tenant_id")
 		if tenantID == "" {
@@ -458,6 +487,20 @@ func (rt *router[TTx]) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			http.Error(w, "Invalid session ID", http.StatusBadRequest)
 			return
+		}
+
+		// For existing sessions, get agent from the session's first run if not provided
+		if agentName == "" {
+			conversation, err := rt.svc.GetConversation(r.Context(), sessionID, 1)
+			if err != nil {
+				http.Error(w, "Failed to get session agent", http.StatusInternalServerError)
+				return
+			}
+			agentName = conversation.AgentName
+			if agentName == "" {
+				http.Error(w, "Session has no agent", http.StatusBadRequest)
+				return
+			}
 		}
 	}
 
@@ -508,11 +551,37 @@ func (rt *router[TTx]) handleChatPoll(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{
 		"BasePath":       rt.config.BasePath,
 		"Run":            run,
+		"SessionID":      run.SessionID,
 		"ToolExecutions": toolExecs,
 		"IsComplete":     run.State == "completed" || run.State == "failed" || run.State == "cancelled",
 	}
 
 	if err := rt.renderer.renderFragment(w, "chat/response.html", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (rt *router[TTx]) handleChatMessages(w http.ResponseWriter, r *http.Request) {
+	sessionIDStr := r.PathValue("sessionId")
+	sessionID, err := parseUUID(sessionIDStr)
+	if err != nil {
+		http.Error(w, "Invalid session ID", http.StatusBadRequest)
+		return
+	}
+
+	// Get conversation
+	conversation, err := rt.svc.GetConversation(r.Context(), sessionID, 100)
+	if err != nil {
+		http.Error(w, "Failed to load conversation", http.StatusInternalServerError)
+		return
+	}
+
+	data := map[string]any{
+		"BasePath": rt.config.BasePath,
+		"Messages": conversation.Messages,
+	}
+
+	if err := rt.renderer.renderFragment(w, "chat/messages.html", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }

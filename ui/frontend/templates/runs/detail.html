@@ -142,7 +142,7 @@
             <h3 class="text-lg font-medium leading-6 text-gray-900">Run Hierarchy</h3>
         </div>
         <div class="px-4 py-5 sm:p-6">
-            {{template "hierarchy-node" .Data.Hierarchy.Root}}
+            {{template "hierarchy-node" (dict "Node" .Data.Hierarchy.Root "BasePath" $.BasePath)}}
         </div>
     </div>
     {{end}}
@@ -238,18 +238,18 @@
 {{end}}
 
 {{define "hierarchy-node"}}
-<div class="ml-{{mul .Run.Depth 4}} {{if gt .Run.Depth 0}}mt-2 pl-4 border-l-2 border-gray-200{{end}}">
+<div class="ml-{{mul .Node.Run.Depth 4}} {{if gt .Node.Run.Depth 0}}mt-2 pl-4 border-l-2 border-gray-200{{end}}">
     <div class="flex items-center space-x-2">
-        <span class="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium {{stateBgColor .Run.State}}">
-            {{.Run.State}}
+        <span class="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium {{stateBgColor .Node.Run.State}}">
+            {{.Node.Run.State}}
         </span>
-        <a href="{{$.BasePath}}/runs/{{.Run.ID}}" class="font-medium text-indigo-600 hover:text-indigo-900">
-            {{.Run.AgentName}}
+        <a href="{{.BasePath}}/runs/{{.Node.Run.ID}}" class="font-medium text-indigo-600 hover:text-indigo-900">
+            {{.Node.Run.AgentName}}
         </a>
-        <span class="text-sm text-gray-500">{{formatTimeAgo .Run.CreatedAt}}</span>
+        <span class="text-sm text-gray-500">{{formatTimeAgo .Node.Run.CreatedAt}}</span>
     </div>
-    {{range .Children}}
-    {{template "hierarchy-node" .}}
+    {{range .Node.Children}}
+    {{template "hierarchy-node" (dict "Node" . "BasePath" $.BasePath)}}
     {{end}}
 </div>
 {{end}}

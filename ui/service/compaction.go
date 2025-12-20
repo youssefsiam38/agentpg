@@ -174,11 +174,15 @@ func (s *Service[TTx]) GetSessionCompactionHistory(ctx context.Context, sessionI
 
 // GetCompactionStats returns overall compaction statistics.
 func (s *Service[TTx]) GetCompactionStats(ctx context.Context) (*CompactionStats, error) {
-	stats := &CompactionStats{}
+	driverStats, err := s.store.GetCompactionStats(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	// This would require dedicated queries in the driver
-	// For now, return empty stats
-	// TODO: Add compaction stats queries to driver.Store
-
-	return stats, nil
+	return &CompactionStats{
+		TotalCompactions:      driverStats.TotalCompactions,
+		TotalTokensSaved:      driverStats.TotalTokensSaved,
+		TotalMessagesArchived: driverStats.TotalMessagesArchived,
+		AvgReductionPercent:   driverStats.AvgReductionPercent,
+	}, nil
 }

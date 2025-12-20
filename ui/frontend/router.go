@@ -73,7 +73,9 @@ func NewRouter[TTx any](svc *service.Service[TTx], client *agentpg.Client[TTx], 
 		Funcs(templateFuncs()).
 		ParseFS(templatesFS,
 			"templates/base.html",
-			"templates/dashboard.html", // Contains dashboard-stats fragment
+			"templates/dashboard.html",
+			"templates/fragments/dashboard-stats.html",
+			"templates/chat/message-bubble.html",
 		))
 
 	r := &router[TTx]{
@@ -103,6 +105,7 @@ func NewRouter[TTx any](svc *service.Service[TTx], client *agentpg.Client[TTx], 
 	mux.HandleFunc("GET /agents", r.handleAgents)
 	mux.HandleFunc("GET /instances", r.handleInstances)
 	mux.HandleFunc("GET /compaction", r.handleCompaction)
+	mux.HandleFunc("GET /messages/session/{sessionId}", r.handleSessionConversation)
 
 	// Chat interface
 	mux.HandleFunc("GET /chat", r.handleChat)
@@ -110,6 +113,7 @@ func NewRouter[TTx any](svc *service.Service[TTx], client *agentpg.Client[TTx], 
 	mux.HandleFunc("POST /chat/send", r.handleChatSend)
 	mux.HandleFunc("GET /chat/poll/{runId}", r.handleChatPoll)
 	mux.HandleFunc("GET /chat/session/{sessionId}", r.handleChatSession)
+	mux.HandleFunc("GET /chat/session/{sessionId}/messages", r.handleChatMessages)
 
 	// HTMX fragments
 	mux.HandleFunc("GET /fragments/dashboard-stats", r.handleFragmentDashboardStats)
@@ -152,11 +156,13 @@ func templateFuncs() template.FuncMap {
 		"stateBgColor":   stateBgColor,
 		"json":           jsonEncode,
 		"safeHTML":       safeHTML,
+		"markdown":       markdown,
 		"add":            add,
 		"sub":            sub,
 		"mul":            mul,
 		"mulFloat":       mulFloat,
 		"div":            div,
+		"div64":          div64,
 		"seq":            seq,
 		"contains":       contains,
 		"default":        defaultVal,

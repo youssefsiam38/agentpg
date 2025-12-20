@@ -1,6 +1,7 @@
 package frontend
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -8,6 +9,11 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/microcosm-cc/bluemonday"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/renderer/html"
 )
 
 // renderer handles template rendering.
@@ -253,6 +259,42 @@ func safeHTML(s string) template.HTML {
 	return template.HTML(s)
 }
 
+// markdown converts markdown text to sanitized HTML.
+// It uses goldmark for parsing and bluemonday for sanitization.
+var (
+	mdParser   goldmark.Markdown
+	mdSanitize *bluemonday.Policy
+)
+
+func init() {
+	// Configure goldmark with GFM extensions
+	mdParser = goldmark.New(
+		goldmark.WithExtensions(
+			extension.GFM, // GitHub Flavored Markdown (tables, strikethrough, autolinks, task lists)
+		),
+		goldmark.WithRendererOptions(
+			html.WithHardWraps(), // Convert single newlines to <br>
+			html.WithUnsafe(),    // Allow raw HTML (will be sanitized by bluemonday)
+		),
+	)
+
+	// Configure bluemonday for safe HTML output
+	mdSanitize = bluemonday.UGCPolicy()
+	// Allow code highlighting classes
+	mdSanitize.AllowAttrs("class").Matching(bluemonday.SpaceSeparatedTokens).OnElements("code", "pre", "span")
+}
+
+func markdown(s string) template.HTML {
+	var buf bytes.Buffer
+	if err := mdParser.Convert([]byte(s), &buf); err != nil {
+		// On error, escape and return as-is
+		return template.HTML(template.HTMLEscapeString(s))
+	}
+	// Sanitize the HTML output
+	safe := mdSanitize.SanitizeBytes(buf.Bytes())
+	return template.HTML(safe)
+}
+
 func add(a, b int) int {
 	return a + b
 }
@@ -270,6 +312,13 @@ func mulFloat(a float64, b int) float64 {
 }
 
 func div(a, b int) int {
+	if b == 0 {
+		return 0
+	}
+	return a / b
+}
+
+func div64(a, b int64) int64 {
 	if b == 0 {
 		return 0
 	}

@@ -41,6 +41,46 @@ type DashboardStats struct {
 
 	// Tenant breakdown (for admin mode)
 	TenantCounts map[string]int `json:"tenant_counts,omitempty"`
+
+	// Token usage insights
+	TotalTokens24h       int `json:"total_tokens_24h"`
+	TotalInputTokens24h  int `json:"total_input_tokens_24h"`
+	TotalOutputTokens24h int `json:"total_output_tokens_24h"`
+	AvgTokensPerRun      int `json:"avg_tokens_per_run"`
+
+	// Performance insights
+	AvgRunDurationMs    int64   `json:"avg_run_duration_ms"`
+	SuccessRate24h      float64 `json:"success_rate_24h"`
+	AvgIterationsPerRun float64 `json:"avg_iterations_per_run"`
+
+	// Agent breakdown
+	RunsByAgent map[string]int `json:"runs_by_agent"`
+	TopAgents   []*AgentStats  `json:"top_agents"`
+
+	// Tool breakdown
+	ToolExecutions24h int          `json:"tool_executions_24h"`
+	TopTools          []*ToolStats `json:"top_tools"`
+
+	// Recent sessions for quick access
+	RecentSessions []*SessionSummary `json:"recent_sessions"`
+}
+
+// AgentStats contains statistics for a specific agent.
+type AgentStats struct {
+	Name           string  `json:"name"`
+	RunCount       int     `json:"run_count"`
+	CompletedCount int     `json:"completed_count"`
+	FailedCount    int     `json:"failed_count"`
+	SuccessRate    float64 `json:"success_rate"`
+	TotalTokens    int     `json:"total_tokens"`
+}
+
+// ToolStats contains statistics for a specific tool.
+type ToolStats struct {
+	Name           string `json:"name"`
+	ExecutionCount int    `json:"execution_count"`
+	FailedCount    int    `json:"failed_count"`
+	AvgDurationMs  int64  `json:"avg_duration_ms"`
 }
 
 // SessionListParams contains parameters for listing sessions.
@@ -64,6 +104,7 @@ type SessionSummary struct {
 	ID              uuid.UUID `json:"id"`
 	TenantID        string    `json:"tenant_id"`
 	Identifier      string    `json:"identifier"`
+	AgentName       string    `json:"agent_name,omitempty"` // Agent from first run
 	Depth           int       `json:"depth"`
 	RunCount        int       `json:"run_count"`
 	MessageCount    int       `json:"message_count"`
@@ -82,6 +123,7 @@ type SessionDetail struct {
 	TokenUsage     TokenUsageSummary `json:"token_usage"`
 	RecentRuns     []*RunSummary     `json:"recent_runs"`
 	RecentMessages []*MessageSummary `json:"recent_messages"`
+	Conversation   *ConversationView `json:"conversation,omitempty"`
 }
 
 // RunListParams contains parameters for listing runs.
@@ -245,6 +287,7 @@ type MessageWithBlocks struct {
 type ConversationView struct {
 	SessionID    uuid.UUID            `json:"session_id"`
 	Session      *SessionSummary      `json:"session"`
+	AgentName    string               `json:"agent_name,omitempty"` // Agent from first run
 	Messages     []*MessageWithBlocks `json:"messages"`
 	TotalTokens  int                  `json:"total_tokens"`
 	MessageCount int                  `json:"message_count"`

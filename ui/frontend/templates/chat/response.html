@@ -1,53 +1,9 @@
 {{define "chat/response.html"}}
 {{if .IsComplete}}
-<div id="run-{{.Run.ID}}" class="flex justify-start">
-    <div class="max-w-3xl bg-white border border-gray-200 rounded-lg px-4 py-3 shadow-sm">
-        {{if .Run.ErrorMessage}}
-        <div class="flex items-center space-x-2 text-red-600 mb-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
-            </svg>
-            <span class="font-medium">Error</span>
-        </div>
-        <p class="text-sm text-red-700">{{.Run.ErrorMessage}}</p>
-        {{else}}
-        <!-- Tool Executions -->
-        {{range .ToolExecutions}}
-        <div class="mb-3 p-3 rounded-md bg-gray-50 border border-gray-200">
-            <div class="flex items-center justify-between">
-                <div class="flex items-center space-x-2">
-                    <svg class="w-4 h-4 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                    </svg>
-                    <span class="font-medium text-gray-900">{{.ToolName}}</span>
-                    <span class="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium {{stateBgColor .State}}">{{.State}}</span>
-                </div>
-                <a href="{{$.BasePath}}/tool-executions/{{.ID}}" class="text-xs text-indigo-600 hover:text-indigo-500">View Details →</a>
-            </div>
-            {{if .IsAgentTool}}
-            <p class="mt-1 text-xs text-gray-500">Delegated to agent: {{.AgentName}}</p>
-            {{end}}
-        </div>
-        {{end}}
-
-        <!-- Response Text -->
-        {{if .Run.ResponseText}}
-        <div class="prose prose-sm max-w-none [&_pre]:bg-gray-900 [&_pre]:text-gray-100 [&_pre]:rounded-lg [&_pre]:p-4 [&_pre]:overflow-x-auto [&_code]:bg-gray-100 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-sm [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:w-full [&_th]:bg-gray-100 [&_th]:px-3 [&_th]:py-2 [&_td]:px-3 [&_td]:py-2 [&_td]:border [&_th]:border">
-            {{markdown .Run.ResponseText}}
-        </div>
-        {{end}}
-        {{end}}
-
-        <div class="mt-2 flex items-center justify-between text-xs text-gray-400">
-            <div class="flex items-center space-x-2">
-                <span>{{.Run.IterationCount}} iterations</span>
-                <span>•</span>
-                <span>{{formatTokens (add .Run.InputTokens .Run.OutputTokens)}} tokens</span>
-            </div>
-            <a href="{{.BasePath}}/runs/{{.Run.ID}}" class="text-indigo-600 hover:text-indigo-500">View Run →</a>
-        </div>
-    </div>
+<!-- Empty div replaces the polling element, messages loaded via OOB swap -->
+<div hx-get="{{.BasePath}}/chat/session/{{.SessionID}}/messages"
+     hx-trigger="load"
+     hx-swap="none">
 </div>
 {{else}}
 <div id="run-{{.Run.ID}}"
