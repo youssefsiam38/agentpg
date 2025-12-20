@@ -504,6 +504,16 @@ CREATE TABLE agentpg_runs (
     finalized_at TIMESTAMPTZ,               -- When reached terminal state
 
     -- ==========================================================================
+    -- RESCUE TRACKING
+    -- ==========================================================================
+
+    -- Number of times this run has been rescued from a stuck state
+    rescue_attempts INTEGER NOT NULL DEFAULT 0,
+
+    -- Timestamp of the last rescue attempt
+    last_rescue_at TIMESTAMPTZ,
+
+    -- ==========================================================================
     -- CONSTRAINTS
     -- ==========================================================================
 
@@ -567,6 +577,10 @@ CREATE INDEX idx_runs_parent ON agentpg_runs(parent_run_id)
 
 CREATE INDEX idx_runs_claimed_instance ON agentpg_runs(claimed_by_instance_id)
     WHERE claimed_by_instance_id IS NOT NULL;
+
+-- Index for stuck runs rescue (efficient rescue queries)
+CREATE INDEX idx_runs_stuck_rescue ON agentpg_runs(claimed_at, rescue_attempts)
+    WHERE state IN ('batch_submitting', 'batch_pending', 'batch_processing', 'streaming', 'pending_tools');
 
 -- =============================================================================
 -- MESSAGES TABLE
@@ -936,8 +950,17 @@ CREATE TABLE agentpg_tool_executions (
     -- Number of execution attempts
     attempt_count INTEGER NOT NULL DEFAULT 0,
 
-    -- Maximum attempts before giving up
-    max_attempts INTEGER NOT NULL DEFAULT 3,
+    -- Maximum attempts before giving up (2 = 1 retry for snappy experience)
+    max_attempts INTEGER NOT NULL DEFAULT 2,
+
+    -- When this execution is scheduled to run (for retry delays and snoozing)
+    scheduled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Number of times this execution has been snoozed (does not count as attempts)
+    snooze_count INTEGER NOT NULL DEFAULT 0,
+
+    -- The error message from the last failed attempt
+    last_error TEXT,
 
     -- ==========================================================================
     -- TIMESTAMPS
@@ -984,6 +1007,10 @@ ALTER TABLE agentpg_runs
 
 -- Indexes for worker claiming with SKIP LOCKED
 CREATE INDEX idx_tool_exec_pending ON agentpg_tool_executions(state, created_at)
+    WHERE state = 'pending' AND claimed_by_instance_id IS NULL;
+
+-- Index for scheduled tool executions (efficient polling for due retries)
+CREATE INDEX idx_tool_exec_pending_scheduled ON agentpg_tool_executions(scheduled_at, created_at)
     WHERE state = 'pending' AND claimed_by_instance_id IS NULL;
 
 CREATE INDEX idx_tool_exec_running ON agentpg_tool_executions(state, started_at)
@@ -1284,6 +1311,8 @@ BEGIN
         FROM agentpg_tool_executions te
         WHERE te.state = 'pending'
           AND te.claimed_by_instance_id IS NULL
+          -- Only claim if scheduled time has passed (for retry delays and snoozing)
+          AND te.scheduled_at <= NOW()
           -- Only claim if instance has capability for this tool
           AND (
               -- Regular tools: check instance_tools
@@ -1300,7 +1329,7 @@ BEGIN
                     AND ia.agent_name = te.agent_name
               ))
           )
-        ORDER BY te.created_at ASC
+        ORDER BY te.scheduled_at ASC, te.created_at ASC
         LIMIT p_max_count
         FOR UPDATE OF te SKIP LOCKED
     )
@@ -1317,7 +1346,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION agentpg_claim_tool_executions IS
-'Race-safe tool claiming. Routes agent-tools to capable instances.';
+'Race-safe tool claiming. Routes agent-tools to capable instances. Respects scheduled_at for retry delays.';
 
 -- -----------------------------------------------------------------------------
 -- Get iterations needing batch polling
@@ -1348,6 +1377,47 @@ $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION agentpg_get_iterations_for_poll IS
 'Returns iterations owned by instance that need batch status polling.';
+
+-- -----------------------------------------------------------------------------
+-- Get stuck runs for rescue
+-- -----------------------------------------------------------------------------
+-- Returns runs that are stuck in non-terminal states and eligible for rescue.
+-- A run is considered stuck if:
+-- - It is in a non-terminal state (batch_submitting, batch_pending, batch_processing, streaming, pending_tools)
+-- - It was claimed more than p_timeout ago
+-- - It has fewer than p_max_rescue_attempts rescue attempts
+-- - It does NOT have any tool executions pending (e.g., scheduled for retry with backoff)
+--
+-- USAGE:
+--   SELECT * FROM agentpg_get_stuck_runs('5 minutes', 3, 100);
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION agentpg_get_stuck_runs(
+    p_timeout INTERVAL DEFAULT '5 minutes',
+    p_max_rescue_attempts INTEGER DEFAULT 3,
+    p_limit INTEGER DEFAULT 100
+) RETURNS SETOF agentpg_runs AS $$
+BEGIN
+    RETURN QUERY
+    SELECT r.*
+    FROM agentpg_runs r
+    WHERE r.state IN ('batch_submitting', 'batch_pending', 'batch_processing', 'streaming', 'pending_tools')
+      AND r.claimed_at IS NOT NULL
+      AND r.claimed_at < NOW() - p_timeout
+      AND r.rescue_attempts < p_max_rescue_attempts
+      -- Don't rescue runs that have pending tool executions (e.g., scheduled for retry)
+      AND NOT EXISTS (
+          SELECT 1 FROM agentpg_tool_executions te
+          WHERE te.run_id = r.id
+            AND te.state IN ('pending', 'running')
+      )
+    ORDER BY r.claimed_at ASC
+    LIMIT p_limit
+    FOR UPDATE OF r SKIP LOCKED;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION agentpg_get_stuck_runs IS
+'Returns runs that are stuck in non-terminal states and eligible for rescue. Excludes runs with pending/running tool executions.';
 
 -- =============================================================================
 -- NOTIFICATION TRIGGERS
@@ -1582,6 +1652,10 @@ BEGIN
       AND NOT EXISTS (
           SELECT 1 FROM agentpg_instance_agents
           WHERE agent_name = OLD.agent_name
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM agentpg_runs
+          WHERE agent_name = OLD.agent_name
       );
     RETURN OLD;
 END;
@@ -1605,6 +1679,10 @@ BEGIN
     WHERE name = OLD.tool_name
       AND NOT EXISTS (
           SELECT 1 FROM agentpg_instance_tools
+          WHERE tool_name = OLD.tool_name
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM agentpg_tool_executions
           WHERE tool_name = OLD.tool_name
       );
     RETURN OLD;

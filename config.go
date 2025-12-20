@@ -1,6 +1,8 @@
 package agentpg
 
 import (
+	"math"
+	"math/rand"
 	"os"
 	"time"
 
@@ -95,6 +97,14 @@ type ClientConfig struct {
 	// If nil, default compaction configuration is used.
 	// Only used if AutoCompactionEnabled is true or when calling Compact() manually.
 	CompactionConfig *compaction.Config
+
+	// ToolRetryConfig configures tool execution retry behavior.
+	// If nil, default retry configuration is used.
+	ToolRetryConfig *ToolRetryConfig
+
+	// RunRescueConfig configures run rescue behavior for stuck runs.
+	// If nil, default rescue configuration is used.
+	RunRescueConfig *RunRescueConfig
 }
 
 // Default configuration values.
@@ -111,6 +121,15 @@ const (
 	DefaultInstanceTTL                = 2 * time.Minute
 	DefaultCleanupInterval            = 1 * time.Minute
 	DefaultMaxToolRetries             = 3
+
+	// Default tool retry configuration
+	DefaultToolRetryMaxAttempts = 2   // Fast default: 2 attempts total (1 retry)
+	DefaultToolRetryJitter      = 0.0 // No jitter by default for instant retry
+
+	// Default run rescue configuration
+	DefaultRescueInterval    = 1 * time.Minute
+	DefaultRescueTimeout     = 5 * time.Minute // Should match StuckRunTimeout
+	DefaultMaxRescueAttempts = 3
 )
 
 // validate validates the configuration and sets defaults.
@@ -201,5 +220,88 @@ func DefaultConfig() *ClientConfig {
 		StuckRunTimeout:            DefaultStuckRunTimeout,
 		InstanceTTL:                DefaultInstanceTTL,
 		CleanupInterval:            DefaultCleanupInterval,
+	}
+}
+
+// ToolRetryConfig configures tool execution retry behavior.
+// Uses River's attempt^4 formula for exponential backoff.
+type ToolRetryConfig struct {
+	// MaxAttempts is the maximum number of execution attempts.
+	// After this many attempts, the tool is marked as permanently failed.
+	// Default: 3
+	MaxAttempts int
+
+	// Jitter adds randomness to prevent thundering herd.
+	// Range: 0.0 to 1.0 (proportion of delay to randomize).
+	// Default: 0.1 (10% jitter)
+	Jitter float64
+}
+
+// DefaultToolRetryConfig returns the default tool retry configuration.
+func DefaultToolRetryConfig() *ToolRetryConfig {
+	return &ToolRetryConfig{
+		MaxAttempts: DefaultToolRetryMaxAttempts,
+		Jitter:      DefaultToolRetryJitter,
+	}
+}
+
+// NextRetryDelay calculates the delay before the next retry attempt.
+// By default returns 0 for instant retry (snappy user experience).
+// If Jitter > 0, uses River's attempt^4 formula with jitter for backoff.
+func (c *ToolRetryConfig) NextRetryDelay(attemptCount int) time.Duration {
+	// Default: instant retry (no delay) for snappy experience
+	if c.Jitter <= 0 {
+		return 0
+	}
+
+	// If jitter is configured, use exponential backoff
+	if attemptCount <= 0 {
+		attemptCount = 1
+	}
+
+	// River's attempt^4 formula: delay = attempt^4 seconds
+	base := math.Pow(float64(attemptCount), 4)
+	delay := time.Duration(base) * time.Second
+
+	// Apply jitter (±jitter%)
+	jitterRange := float64(delay) * c.Jitter
+	jitterOffset := (rand.Float64() * 2 * jitterRange) - jitterRange
+	delay = time.Duration(float64(delay) + jitterOffset)
+
+	// Ensure delay is at least 1 second when using backoff
+	if delay < time.Second {
+		delay = time.Second
+	}
+
+	return delay
+}
+
+// RunRescueConfig configures run rescue behavior for stuck runs.
+// Runs stuck in non-terminal states are periodically rescued by the leader.
+type RunRescueConfig struct {
+	// RescueInterval is how often to check for stuck runs.
+	// Only the leader performs rescue operations.
+	// Default: 1 minute
+	RescueInterval time.Duration
+
+	// RescueTimeout is how long a run can be stuck before rescue.
+	// A run is considered stuck if it's been in a non-terminal state
+	// (batch_submitting, batch_pending, batch_processing, streaming, pending_tools)
+	// for longer than this duration.
+	// Default: 5 minutes (matches StuckRunTimeout)
+	RescueTimeout time.Duration
+
+	// MaxRescueAttempts is the maximum times a run can be rescued.
+	// After this many rescue attempts, the run is marked as permanently failed.
+	// Default: 3
+	MaxRescueAttempts int
+}
+
+// DefaultRunRescueConfig returns the default run rescue configuration.
+func DefaultRunRescueConfig() *RunRescueConfig {
+	return &RunRescueConfig{
+		RescueInterval:    DefaultRescueInterval,
+		RescueTimeout:     DefaultRescueTimeout,
+		MaxRescueAttempts: DefaultMaxRescueAttempts,
 	}
 }

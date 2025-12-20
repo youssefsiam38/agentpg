@@ -83,6 +83,27 @@ type Store[TTx any] interface {
 	GetToolExecutionsByIteration(ctx context.Context, iterationID uuid.UUID) ([]*ToolExecution, error)
 	GetPendingToolExecutionsForRun(ctx context.Context, runID uuid.UUID) ([]*ToolExecution, error)
 
+	// Tool execution retry operations
+	// RetryToolExecution resets a failed tool execution to pending with a scheduled delay.
+	// Used for regular errors that should be retried with exponential backoff.
+	RetryToolExecution(ctx context.Context, id uuid.UUID, scheduledAt time.Time, lastError string) error
+
+	// SnoozeToolExecution resets a tool execution to pending without consuming an attempt.
+	// Decrements attempt_count and increments snooze_count.
+	SnoozeToolExecution(ctx context.Context, id uuid.UUID, scheduledAt time.Time) error
+
+	// DiscardToolExecution marks a tool execution as permanently failed (no retry).
+	// Used for ToolCancel/ToolDiscard errors.
+	DiscardToolExecution(ctx context.Context, id uuid.UUID, errorMsg string) error
+
+	// Run rescue operations
+	// GetStuckRuns returns runs stuck in non-terminal states eligible for rescue.
+	GetStuckRuns(ctx context.Context, timeout time.Duration, maxRescueAttempts, limit int) ([]*Run, error)
+
+	// RescueRun resets a stuck run to pending state for reprocessing.
+	// Increments rescue_attempts and sets last_rescue_at.
+	RescueRun(ctx context.Context, id uuid.UUID) error
+
 	// Message operations
 	CreateMessage(ctx context.Context, params CreateMessageParams) (*Message, error)
 	GetMessage(ctx context.Context, id uuid.UUID) (*Message, error)
@@ -296,6 +317,9 @@ type (
 		CreatedAt                time.Time
 		StartedAt                *time.Time
 		FinalizedAt              *time.Time
+		// Rescue tracking
+		RescueAttempts int
+		LastRescueAt   *time.Time
 	}
 
 	RunState = string
@@ -352,9 +376,14 @@ type (
 		ClaimedAt           *time.Time
 		AttemptCount        int
 		MaxAttempts         int
-		CreatedAt           time.Time
-		StartedAt           *time.Time
-		CompletedAt         *time.Time
+		// Retry scheduling
+		ScheduledAt time.Time
+		SnoozeCount int
+		LastError   *string
+		// Timestamps
+		CreatedAt   time.Time
+		StartedAt   *time.Time
+		CompletedAt *time.Time
 	}
 
 	ToolExecutionState = string

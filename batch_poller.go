@@ -434,7 +434,7 @@ func (p *batchPoller[TTx]) createToolExecutions(ctx context.Context, iter *drive
 			ToolInput:   block.Input,
 			IsAgentTool: isAgentTool,
 			AgentName:   agentName,
-			MaxAttempts: 3,
+			MaxAttempts: p.client.toolMaxAttempts(),
 		})
 	}
 

@@ -161,6 +161,23 @@ go run examples/context_compaction/04_compaction_monitoring/main.go
 
 ---
 
+### retry_rescue/
+Tool retry and run rescue patterns.
+
+| Example | Description |
+|---------|-------------|
+| `01_instant_retry/` | Default instant retry (2 attempts, no delay) for snappy UX |
+| `02_error_types/` | ToolCancel, ToolDiscard, ToolSnooze error types |
+| `03_exponential_backoff/` | Opt-in backoff with Jitter > 0 for rate-limited APIs |
+
+```bash
+go run examples/retry_rescue/01_instant_retry/main.go
+go run examples/retry_rescue/02_error_types/main.go
+go run examples/retry_rescue/03_exponential_backoff/main.go
+```
+
+---
+
 ### extended_context/
 **Location**: `examples/extended_context/main.go`
 
@@ -223,6 +240,9 @@ go run examples/advanced/08_error_recovery/main.go
 | Custom strategy | context_compaction/03_custom_strategy |
 | Compaction hooks | context_compaction/04_compaction_monitoring |
 | Extended context (1M) | extended_context/ |
+| Instant retry | retry_rescue/01_instant_retry |
+| Tool error types | retry_rescue/02_error_types |
+| Exponential backoff | retry_rescue/03_exponential_backoff |
 | Multi-tenant | advanced/01_multi_tenant |
 | Observability hooks | advanced/02_observability |
 | Cost tracking | advanced/03_cost_tracking |

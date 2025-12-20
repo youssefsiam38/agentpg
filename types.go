@@ -144,6 +144,10 @@ type Run struct {
 	ClaimedByInstanceID *string    `json:"claimed_by_instance_id,omitempty"`
 	ClaimedAt           *time.Time `json:"claimed_at,omitempty"`
 
+	// Rescue tracking
+	RescueAttempts int        `json:"rescue_attempts"`
+	LastRescueAt   *time.Time `json:"last_rescue_at,omitempty"`
+
 	// Metadata
 	Metadata map[string]any `json:"metadata,omitempty"`
 
@@ -317,6 +321,11 @@ type ToolExecution struct {
 	// Retry logic
 	AttemptCount int `json:"attempt_count"`
 	MaxAttempts  int `json:"max_attempts"`
+
+	// Retry scheduling
+	ScheduledAt time.Time `json:"scheduled_at"`
+	SnoozeCount int       `json:"snooze_count"`
+	LastError   *string   `json:"last_error,omitempty"`
 
 	// Timestamps
 	CreatedAt   time.Time  `json:"created_at"`
