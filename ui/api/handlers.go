@@ -57,6 +57,7 @@ func parseUUID(s string) (uuid.UUID, error) {
 }
 
 // parseInt parses an integer from a query parameter with a default.
+// It applies bounds validation to prevent resource exhaustion.
 func parseInt(r *http.Request, key string, defaultVal int) int {
 	val := r.URL.Query().Get(key)
 	if val == "" {
@@ -66,7 +67,20 @@ func parseInt(r *http.Request, key string, defaultVal int) int {
 	if err != nil {
 		return defaultVal
 	}
-	return i
+	return service.ValidateLimit(i)
+}
+
+// parseOffset parses an offset from a query parameter with a default.
+func parseOffset(r *http.Request, key string, defaultVal int) int {
+	val := r.URL.Query().Get(key)
+	if val == "" {
+		return defaultVal
+	}
+	i, err := strconv.Atoi(val)
+	if err != nil {
+		return defaultVal
+	}
+	return service.ValidateOffset(i)
 }
 
 // Dashboard handlers
@@ -112,12 +126,15 @@ func (rt *router[TTx]) handleListSessions(w http.ResponseWriter, r *http.Request
 	params := service.SessionListParams{
 		TenantID: rt.config.TenantID,
 		Limit:    parseInt(r, "limit", rt.config.PageSize),
-		Offset:   parseInt(r, "offset", 0),
-		OrderBy:  r.URL.Query().Get("order_by"),
-		OrderDir: r.URL.Query().Get("order_dir"),
+		Offset:   parseOffset(r, "offset", 0),
+		OrderBy:  service.ValidateOrderBy(r.URL.Query().Get("order_by"), service.AllowedSessionOrderBy),
+		OrderDir: service.ValidateOrderDir(r.URL.Query().Get("order_dir")),
 	}
-	if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
-		params.TenantID = tenantID
+	// Only allow tenant_id override if config.TenantID is empty (admin mode)
+	if rt.config.TenantID == "" {
+		if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
+			params.TenantID = tenantID
+		}
 	}
 
 	list, err := rt.svc.ListSessions(r.Context(), params)
@@ -175,12 +192,15 @@ func (rt *router[TTx]) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		State:     r.URL.Query().Get("state"),
 		RunMode:   r.URL.Query().Get("run_mode"),
 		Limit:     parseInt(r, "limit", rt.config.PageSize),
-		Offset:    parseInt(r, "offset", 0),
-		OrderBy:   r.URL.Query().Get("order_by"),
-		OrderDir:  r.URL.Query().Get("order_dir"),
+		Offset:    parseOffset(r, "offset", 0),
+		OrderBy:   service.ValidateOrderBy(r.URL.Query().Get("order_by"), service.AllowedRunOrderBy),
+		OrderDir:  service.ValidateOrderDir(r.URL.Query().Get("order_dir")),
 	}
-	if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
-		params.TenantID = tenantID
+	// Only allow tenant_id override if config.TenantID is empty (admin mode)
+	if rt.config.TenantID == "" {
+		if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
+			params.TenantID = tenantID
+		}
 	}
 	if sessionID := r.URL.Query().Get("session_id"); sessionID != "" {
 		if id, err := parseUUID(sessionID); err == nil {
@@ -329,7 +349,7 @@ func (rt *router[TTx]) handleListToolExecutions(w http.ResponseWriter, r *http.R
 		ToolName: r.URL.Query().Get("tool_name"),
 		State:    r.URL.Query().Get("state"),
 		Limit:    parseInt(r, "limit", rt.config.PageSize),
-		Offset:   parseInt(r, "offset", 0),
+		Offset:   parseOffset(r, "offset", 0),
 	}
 	if runID := r.URL.Query().Get("run_id"); runID != "" {
 		if id, err := parseUUID(runID); err == nil {
@@ -509,7 +529,7 @@ func (rt *router[TTx]) handleListCompactionEvents(w http.ResponseWriter, r *http
 	params := service.CompactionEventListParams{
 		SessionID: sessionID,
 		Limit:     parseInt(r, "limit", rt.config.PageSize),
-		Offset:    parseInt(r, "offset", 0),
+		Offset:    parseOffset(r, "offset", 0),
 	}
 
 	events, err := rt.svc.ListCompactionEvents(r.Context(), params)

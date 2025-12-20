@@ -3,29 +3,29 @@
     <!-- Page Header -->
     <div class="flex items-center justify-between">
         <div>
-            <h1 class="text-2xl font-bold text-gray-900">Tool Execution</h1>
-            <p class="mt-1 text-sm text-gray-500 font-mono">
+            <h1 class="text-2xl font-bold text-gray-100">Tool Execution</h1>
+            <p class="mt-1 text-sm text-gray-400 font-mono">
                 {{slice (printf "%s" .Data.Execution.ID) 0 8}}...
             </p>
         </div>
-        <a href="{{$.BasePath}}/tool-executions" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200">
+        <a href="{{$.BasePath}}/tool-executions" class="px-4 py-2 bg-gray-700 text-gray-200 rounded-md hover:bg-gray-600 ring-1 ring-gray-600">
             Back to List
         </a>
     </div>
 
     <!-- Execution Details -->
-    <div class="bg-white rounded-lg shadow overflow-hidden">
-        <div class="px-6 py-4 border-b border-gray-200">
-            <h2 class="text-lg font-medium text-gray-900">Execution Details</h2>
+    <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-700">
+            <h2 class="text-lg font-medium text-gray-100">Execution Details</h2>
         </div>
         <div class="p-6">
             <dl class="grid grid-cols-2 gap-x-4 gap-y-6">
                 <div>
-                    <dt class="text-sm font-medium text-gray-500">Tool Name</dt>
-                    <dd class="mt-1 text-sm text-gray-900 font-medium">{{.Data.Execution.ToolName}}</dd>
+                    <dt class="text-sm font-medium text-gray-400">Tool Name</dt>
+                    <dd class="mt-1 text-sm text-gray-100 font-medium">{{.Data.Execution.ToolName}}</dd>
                 </div>
                 <div>
-                    <dt class="text-sm font-medium text-gray-500">State</dt>
+                    <dt class="text-sm font-medium text-gray-400">State</dt>
                     <dd class="mt-1">
                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {{stateBgColor (printf "%s" .Data.Execution.State)}}">
                             {{.Data.Execution.State}}
@@ -33,26 +33,26 @@
                     </dd>
                 </div>
                 <div>
-                    <dt class="text-sm font-medium text-gray-500">Is Agent Tool</dt>
-                    <dd class="mt-1 text-sm text-gray-900">
+                    <dt class="text-sm font-medium text-gray-400">Is Agent Tool</dt>
+                    <dd class="mt-1 text-sm text-gray-200">
                         {{if .Data.Execution.IsAgentTool}}
-                        <span class="text-purple-600">Yes{{if .Data.Execution.AgentName}} ({{.Data.Execution.AgentName}}){{end}}</span>
+                        <span class="text-purple-400">Yes{{if .Data.Execution.AgentName}} ({{.Data.Execution.AgentName}}){{end}}</span>
                         {{else}}
                         No
                         {{end}}
                     </dd>
                 </div>
                 <div>
-                    <dt class="text-sm font-medium text-gray-500">Attempts</dt>
-                    <dd class="mt-1 text-sm text-gray-900">{{.Data.Execution.AttemptCount}} / {{.Data.Execution.MaxAttempts}}</dd>
+                    <dt class="text-sm font-medium text-gray-400">Attempts</dt>
+                    <dd class="mt-1 text-sm text-gray-200">{{.Data.Execution.AttemptCount}} / {{.Data.Execution.MaxAttempts}}</dd>
                 </div>
                 <div>
-                    <dt class="text-sm font-medium text-gray-500">Created At</dt>
-                    <dd class="mt-1 text-sm text-gray-900">{{formatTime .Data.Execution.CreatedAt}}</dd>
+                    <dt class="text-sm font-medium text-gray-400">Created At</dt>
+                    <dd class="mt-1 text-sm text-gray-200">{{formatTime .Data.Execution.CreatedAt}}</dd>
                 </div>
                 <div>
-                    <dt class="text-sm font-medium text-gray-500">Completed At</dt>
-                    <dd class="mt-1 text-sm text-gray-900">
+                    <dt class="text-sm font-medium text-gray-400">Completed At</dt>
+                    <dd class="mt-1 text-sm text-gray-200">
                         {{if .Data.Execution.CompletedAt}}
                         {{formatTime .Data.Execution.CompletedAt}}
                         {{else}}
@@ -65,31 +65,31 @@
     </div>
 
     <!-- Tool Input -->
-    <div class="bg-white rounded-lg shadow overflow-hidden">
-        <div class="px-6 py-4 border-b border-gray-200">
-            <h2 class="text-lg font-medium text-gray-900">Input</h2>
+    <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-700">
+            <h2 class="text-lg font-medium text-gray-100">Input</h2>
         </div>
         <div class="p-6">
-            <pre class="text-sm bg-gray-50 p-4 rounded-lg overflow-x-auto">{{json .Data.Execution.ToolInput}}</pre>
+            <pre class="text-sm text-green-400 bg-gray-950 p-4 rounded-lg border border-gray-700 overflow-x-auto">{{json .Data.Execution.ToolInput}}</pre>
         </div>
     </div>
 
     <!-- Tool Output -->
     {{if .Data.Execution.ToolOutput}}
-    <div class="bg-white rounded-lg shadow overflow-hidden">
-        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-            <h2 class="text-lg font-medium text-gray-900">Output</h2>
+    <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+            <h2 class="text-lg font-medium text-gray-100">Output</h2>
             {{if .Data.Execution.IsError}}
-            <span class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">Error</span>
+            <span class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-500/20 text-red-400 ring-1 ring-red-500/30">Error</span>
             {{end}}
         </div>
         <div class="p-6">
             {{if .Data.Execution.IsAgentTool}}
-            <div class="prose prose-sm max-w-none [&_pre]:bg-gray-900 [&_pre]:text-gray-100 [&_pre]:rounded-lg [&_pre]:p-4 [&_pre]:overflow-x-auto [&_code]:bg-gray-100 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-sm [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:w-full [&_th]:bg-gray-100 [&_th]:px-3 [&_th]:py-2 [&_td]:px-3 [&_td]:py-2 [&_td]:border [&_th]:border">
-                {{.Data.Execution.ToolOutput}}
+            <div class="prose prose-sm prose-invert max-w-none [&_pre]:bg-gray-950 [&_pre]:text-green-400 [&_pre]:border [&_pre]:border-gray-700 [&_pre]:rounded-lg [&_pre]:p-4 [&_pre]:overflow-x-auto [&_code]:bg-gray-700 [&_code]:text-cyan-400 [&_pre_code]:bg-transparent [&_pre_code]:text-green-400 [&_a]:text-cyan-400">
+                {{.Data.Execution.ToolOutput | markdown}}
             </div>
             {{else}}
-            <pre class="text-sm bg-gray-50 p-4 rounded-lg overflow-x-auto whitespace-pre-wrap">{{.Data.Execution.ToolOutput}}</pre>
+            <pre class="text-sm text-green-400 bg-gray-950 p-4 rounded-lg border border-gray-700 overflow-x-auto whitespace-pre-wrap">{{.Data.Execution.ToolOutput}}</pre>
             {{end}}
         </div>
     </div>
@@ -97,21 +97,21 @@
 
     <!-- Related Run -->
     {{if .Data.Run}}
-    <div class="bg-white rounded-lg shadow overflow-hidden">
-        <div class="px-6 py-4 border-b border-gray-200">
-            <h2 class="text-lg font-medium text-gray-900">Related Run</h2>
+    <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-700">
+            <h2 class="text-lg font-medium text-gray-100">Related Run</h2>
         </div>
         <div class="p-6">
             <div class="flex items-center justify-between">
                 <div>
-                    <p class="font-medium text-gray-900">{{.Data.Run.AgentName}}</p>
-                    <p class="text-sm text-gray-500 font-mono">{{slice (printf "%s" .Data.Run.ID) 0 8}}...</p>
+                    <p class="font-medium text-gray-100">{{.Data.Run.AgentName}}</p>
+                    <p class="text-sm text-gray-400 font-mono">{{slice (printf "%s" .Data.Run.ID) 0 8}}...</p>
                 </div>
                 <div class="flex items-center space-x-4">
                     <span class="px-2.5 py-0.5 rounded-full text-xs font-medium {{stateBgColor .Data.Run.State}}">
                         {{.Data.Run.State}}
                     </span>
-                    <a href="{{$.BasePath}}/runs/{{.Data.Run.ID}}" class="text-indigo-600 hover:text-indigo-800 text-sm">
+                    <a href="{{$.BasePath}}/runs/{{.Data.Run.ID}}" class="text-cyan-400 hover:text-cyan-300 text-sm">
                         View Run
                     </a>
                 </div>
@@ -122,21 +122,21 @@
 
     <!-- Child Run (for agent tools) -->
     {{if .Data.ChildRun}}
-    <div class="bg-white rounded-lg shadow overflow-hidden">
-        <div class="px-6 py-4 border-b border-gray-200">
-            <h2 class="text-lg font-medium text-gray-900">Child Run</h2>
+    <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-700">
+            <h2 class="text-lg font-medium text-gray-100">Child Run</h2>
         </div>
         <div class="p-6">
             <div class="flex items-center justify-between">
                 <div>
-                    <p class="font-medium text-gray-900">{{.Data.ChildRun.AgentName}}</p>
-                    <p class="text-sm text-gray-500 font-mono">{{slice (printf "%s" .Data.ChildRun.ID) 0 8}}...</p>
+                    <p class="font-medium text-gray-100">{{.Data.ChildRun.AgentName}}</p>
+                    <p class="text-sm text-gray-400 font-mono">{{slice (printf "%s" .Data.ChildRun.ID) 0 8}}...</p>
                 </div>
                 <div class="flex items-center space-x-4">
                     <span class="px-2.5 py-0.5 rounded-full text-xs font-medium {{stateBgColor .Data.ChildRun.State}}">
                         {{.Data.ChildRun.State}}
                     </span>
-                    <a href="{{$.BasePath}}/runs/{{.Data.ChildRun.ID}}" class="text-indigo-600 hover:text-indigo-800 text-sm">
+                    <a href="{{$.BasePath}}/runs/{{.Data.ChildRun.ID}}" class="text-cyan-400 hover:text-cyan-300 text-sm">
                         View Child Run
                     </a>
                 </div>

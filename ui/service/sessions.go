@@ -10,9 +10,14 @@ import (
 
 // ListSessions returns a paginated list of sessions.
 func (s *Service[TTx]) ListSessions(ctx context.Context, params SessionListParams) (*SessionList, error) {
+	// Apply validation and defaults
 	if params.Limit <= 0 {
 		params.Limit = 25
 	}
+	params.Limit = ValidateLimit(params.Limit)
+	params.Offset = ValidateOffset(params.Offset)
+	params.OrderBy = ValidateOrderBy(params.OrderBy, AllowedSessionOrderBy)
+	params.OrderDir = ValidateOrderDir(params.OrderDir)
 
 	// Use the driver's ListSessions method with filtering and pagination
 	driverSessions, total, err := s.store.ListSessions(ctx, driver.ListSessionsParams{

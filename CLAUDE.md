@@ -2070,3 +2070,369 @@ See the [Go documentation](https://pkg.go.dev/github.com/youssefsiam38/agentpg) 
 - `CompactIfNeeded()` - Conditional compaction
 - `NeedsCompaction()` - Check compaction threshold
 - `GetCompactionStats()` - Get session compaction statistics
+
+---
+
+## Admin UI and REST API
+
+AgentPG includes an embedded admin UI and REST API for monitoring and managing agents. The UI is built with HTMX + Tailwind CSS and provides server-side rendering for a fast, responsive experience.
+
+### Overview
+
+The `ui` package provides three handler functions:
+
+| Handler | Description |
+|---------|-------------|
+| `ui.UIHandler()` | SSR frontend with HTMX + Tailwind |
+| `ui.APIHandler()` | REST API with JSON responses |
+| `ui.Handler()` | Combined handler (UI + API under one path) |
+
+### Basic Setup
+
+```go
+import (
+    "net/http"
+    "github.com/youssefsiam38/agentpg/ui"
+)
+
+// Create driver and client as usual
+drv := pgxv5.New(pool)
+client, _ := agentpg.NewClient(drv, clientConfig)
+
+// Mount UI at /ui/
+uiConfig := &ui.Config{
+    BasePath:        "/ui",
+    PageSize:        25,
+    RefreshInterval: 5 * time.Second,
+}
+http.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(drv.Store(), client, uiConfig)))
+
+// Mount API at /api/
+http.Handle("/api/", http.StripPrefix("/api", ui.APIHandler(drv.Store(), uiConfig)))
+```
+
+### Configuration Options
+
+```go
+type Config struct {
+    // BasePath is the URL prefix where the UI is mounted.
+    // For example, if mounted at "/ui/", set BasePath to "/ui".
+    // All navigation links will be prefixed with this path.
+    BasePath string
+
+    // TenantID filters data to a single tenant.
+    // If empty, shows all tenants (admin mode) with a tenant selector.
+    TenantID string
+
+    // ReadOnly disables write operations (chat, session creation).
+    // Useful for monitoring-only deployments.
+    ReadOnly bool
+
+    // AuthMiddleware is optional authentication middleware.
+    // Applied to both API and frontend handlers.
+    AuthMiddleware func(http.Handler) http.Handler
+
+    // Logger for structured logging.
+    Logger Logger
+
+    // RefreshInterval for SSE updates and auto-refresh.
+    // Defaults to 5 seconds.
+    RefreshInterval time.Duration
+
+    // PageSize for pagination.
+    // Defaults to 25.
+    PageSize int
+}
+```
+
+### Admin Mode vs Single-Tenant Mode
+
+```go
+// Admin mode: shows all tenants with a selector
+adminConfig := &ui.Config{
+    BasePath: "/admin",
+    // TenantID is empty = admin mode
+}
+
+// Single-tenant mode: filters to one tenant only
+tenantConfig := &ui.Config{
+    BasePath: "/ui",
+    TenantID: "tenant-123",  // Only shows this tenant's data
+}
+```
+
+### Read-Only Monitoring Mode
+
+```go
+// Full admin UI with chat
+fullUIConfig := &ui.Config{
+    BasePath: "/ui",
+}
+http.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(store, client, fullUIConfig)))
+
+// Read-only monitoring (no chat, no write operations)
+monitorConfig := &ui.Config{
+    BasePath: "/monitor",
+    ReadOnly: true,  // Disables chat and session creation
+}
+// Pass nil for client when ReadOnly is true
+http.Handle("/monitor/", http.StripPrefix("/monitor", ui.UIHandler(store, nil, monitorConfig)))
+```
+
+### Authentication Middleware
+
+```go
+// Add authentication to UI and API
+authConfig := &ui.Config{
+    BasePath: "/ui",
+    AuthMiddleware: func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            if !isAuthenticated(r) {
+                http.Error(w, "Unauthorized", http.StatusUnauthorized)
+                return
+            }
+            next.ServeHTTP(w, r)
+        })
+    },
+}
+```
+
+### Frontend Pages
+
+The UI provides these pages:
+
+| Path | Description |
+|------|-------------|
+| `/` | Redirects to dashboard |
+| `/dashboard` | Overview with stats, recent runs, active instances |
+| `/sessions` | Session list with pagination and filtering |
+| `/sessions/{id}` | Session detail with runs, messages, token usage |
+| `/runs` | Run list with state filtering |
+| `/runs/{id}` | Run detail with iterations, tool executions, messages |
+| `/runs/{id}/conversation` | Full conversation view for a run |
+| `/tool-executions` | Tool execution list with state filtering |
+| `/tool-executions/{id}` | Tool execution detail with input/output |
+| `/agents` | Registered agents across all instances |
+| `/instances` | Active worker instances with health status |
+| `/compaction` | Compaction events history |
+| `/chat` | Interactive chat interface |
+| `/chat/session/{id}` | Chat with existing session |
+
+### Chat Interface
+
+The chat interface allows real-time interaction with agents:
+
+```go
+// Chat is enabled when:
+// 1. ReadOnly is false (default)
+// 2. A client is provided to UIHandler
+
+// Full UI with chat
+http.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(store, client, config)))
+
+// To disable chat, either:
+// Option 1: Set ReadOnly to true
+config.ReadOnly = true
+
+// Option 2: Pass nil for client
+http.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(store, nil, config)))
+```
+
+Chat features:
+- Create new sessions with custom identifiers
+- Select from registered agents
+- Send messages and see real-time responses
+- View tool executions inline
+- Automatic polling for run completion
+
+### REST API Endpoints
+
+All API endpoints return JSON responses.
+
+#### Dashboard
+```
+GET /dashboard          - Dashboard statistics
+GET /dashboard/events   - Real-time dashboard events (SSE)
+```
+
+#### Sessions
+```
+GET  /sessions          - List sessions (paginated)
+GET  /sessions/{id}     - Get session detail
+POST /sessions          - Create new session
+```
+
+Query parameters for list:
+- `tenant_id` - Filter by tenant (admin mode only)
+- `limit` - Page size (default: 25, max: 1000)
+- `offset` - Pagination offset
+- `order_by` - Sort field: `created_at`, `updated_at`
+- `order_dir` - Sort direction: `asc`, `desc`
+
+#### Runs
+```
+GET /runs                       - List runs (paginated)
+GET /runs/{id}                  - Get run detail
+GET /runs/{id}/hierarchy        - Get run hierarchy (for nested agents)
+GET /runs/{id}/iterations       - Get run iterations
+GET /runs/{id}/tool-executions  - Get run tool executions
+GET /runs/{id}/messages         - Get run messages
+```
+
+Query parameters for list:
+- `tenant_id` - Filter by tenant
+- `session_id` - Filter by session
+- `agent_name` - Filter by agent
+- `state` - Filter by state
+- `run_mode` - Filter by mode (`batch`, `streaming`)
+- `limit`, `offset`, `order_by`, `order_dir` - Pagination
+
+#### Iterations
+```
+GET /iterations        - List iterations (paginated)
+GET /iterations/{id}   - Get iteration detail
+```
+
+#### Tool Executions
+```
+GET /tool-executions        - List tool executions (paginated)
+GET /tool-executions/{id}   - Get tool execution detail
+```
+
+Query parameters:
+- `run_id` - Filter by run
+- `tool_name` - Filter by tool
+- `state` - Filter by state: `pending`, `running`, `completed`, `failed`
+
+#### Messages
+```
+GET /messages        - List messages (paginated)
+GET /messages/{id}   - Get message with content blocks
+```
+
+#### Registry
+```
+GET /agents          - List registered agents
+GET /agents/{name}   - Get agent details
+GET /tools           - List registered tools
+GET /tools/{name}    - Get tool details
+```
+
+#### Instances
+```
+GET /instances       - List active instances
+GET /instances/{id}  - Get instance details with agents/tools
+```
+
+#### Compaction
+```
+GET /compaction-events        - List compaction events
+GET /compaction-events/{id}   - Get compaction event detail
+```
+
+#### Tenants (Admin Mode)
+```
+GET /tenants         - List all tenants with session/run counts
+```
+
+### API Response Format
+
+Success responses return the data directly:
+```json
+{
+  "sessions": [...],
+  "total_count": 100,
+  "has_more": true
+}
+```
+
+Error responses use a standard format:
+```json
+{
+  "error": {
+    "code": "not_found",
+    "message": "Session not found"
+  }
+}
+```
+
+### Complete Example
+
+```go
+package main
+
+import (
+    "log"
+    "net/http"
+    "os"
+    "time"
+
+    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/youssefsiam38/agentpg"
+    "github.com/youssefsiam38/agentpg/driver/pgxv5"
+    "github.com/youssefsiam38/agentpg/ui"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Connect to PostgreSQL
+    pool, _ := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+    defer pool.Close()
+
+    // Create driver and client
+    drv := pgxv5.New(pool)
+    client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    })
+
+    // Register agents and tools
+    client.RegisterAgent(&agentpg.AgentDefinition{
+        Name:         "assistant",
+        Model:        "claude-sonnet-4-5-20250929",
+        SystemPrompt: "You are a helpful assistant.",
+    })
+
+    client.Start(ctx)
+    defer client.Stop(context.Background())
+
+    // Setup HTTP handlers
+    mux := http.NewServeMux()
+
+    // Full admin UI with chat
+    fullConfig := &ui.Config{
+        BasePath:        "/ui",
+        PageSize:        25,
+        RefreshInterval: 5 * time.Second,
+    }
+    mux.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(drv.Store(), client, fullConfig)))
+
+    // REST API
+    mux.Handle("/api/", http.StripPrefix("/api", ui.APIHandler(drv.Store(), fullConfig)))
+
+    // Read-only monitoring (separate endpoint)
+    monitorConfig := &ui.Config{
+        BasePath: "/monitor",
+        ReadOnly: true,
+        PageSize: 50,
+    }
+    mux.Handle("/monitor/", http.StripPrefix("/monitor", ui.UIHandler(drv.Store(), nil, monitorConfig)))
+
+    log.Println("Server starting on :8080")
+    log.Println("  /ui/      - Admin UI with chat")
+    log.Println("  /api/     - REST API")
+    log.Println("  /monitor/ - Read-only monitoring")
+    http.ListenAndServe(":8080", mux)
+}
+```
+
+### Using Combined Handler
+
+For simpler setups, use the combined handler:
+
+```go
+// Mounts both API and UI under /admin/
+// - /admin/api/* - REST API
+// - /admin/*     - Frontend UI
+mux.Handle("/admin/", http.StripPrefix("/admin", ui.Handler(store, client, config)))
+```

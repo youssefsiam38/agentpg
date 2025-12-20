@@ -167,6 +167,7 @@ func templateFuncs() template.FuncMap {
 		"contains":       contains,
 		"default":        defaultVal,
 		"dict":           dictFunc,
+		"slice":          sliceFunc,
 	}
 }
 

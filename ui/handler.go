@@ -24,6 +24,11 @@ func APIHandler[TTx any](store driver.Store[TTx], cfg *Config) http.Handler {
 		cfg.applyDefaults()
 	}
 
+	// Validate configuration (panic on invalid config as this is a programmer error)
+	if err := cfg.validate(); err != nil {
+		panic("ui: invalid configuration: " + err.Error())
+	}
+
 	svc := service.New(store)
 	handler := api.NewRouter(svc, &api.Config{
 		TenantID: cfg.TenantID,
@@ -53,6 +58,11 @@ func UIHandler[TTx any](store driver.Store[TTx], client *agentpg.Client[TTx], cf
 		cfg = DefaultConfig()
 	} else {
 		cfg.applyDefaults()
+	}
+
+	// Validate configuration (panic on invalid config as this is a programmer error)
+	if err := cfg.validate(); err != nil {
+		panic("ui: invalid configuration: " + err.Error())
 	}
 
 	svc := service.New(store)
@@ -88,6 +98,11 @@ func Handler[TTx any](store driver.Store[TTx], client *agentpg.Client[TTx], cfg 
 		cfg = DefaultConfig()
 	} else {
 		cfg.applyDefaults()
+	}
+
+	// Validate configuration (panic on invalid config as this is a programmer error)
+	if err := cfg.validate(); err != nil {
+		panic("ui: invalid configuration: " + err.Error())
 	}
 
 	mux := http.NewServeMux()

@@ -1,8 +1,8 @@
 {{define "fragments/dashboard-stats.html"}}
 <!-- Performance Summary Bar -->
-<div class="bg-gradient-to-r from-gray-900 via-gray-800 to-gray-900 rounded-xl p-5 shadow-lg">
+<div class="bg-gradient-to-r from-gray-800 via-gray-800 to-gray-800 rounded-xl p-5 shadow-lg border border-gray-700">
     <div class="flex items-center justify-between flex-wrap gap-4">
-        <div class="flex items-center divide-x divide-gray-700">
+        <div class="flex items-center divide-x divide-gray-600">
             <!-- Success Rate -->
             <div class="flex items-center space-x-4 pr-8">
                 <div class="w-14 h-14 rounded-full flex items-center justify-center {{if ge .SuccessRate24h 90.0}}bg-green-500/20 border-2 border-green-500{{else if ge .SuccessRate24h 70.0}}bg-yellow-500/20 border-2 border-yellow-500{{else}}bg-red-500/20 border-2 border-red-500{{end}}">
@@ -10,28 +10,28 @@
                 </div>
                 <div>
                     <p class="text-xs text-gray-400 uppercase tracking-wider mb-1">Success Rate</p>
-                    <p class="text-sm font-medium text-white">{{.CompletedRuns24h}} / {{add .CompletedRuns24h .FailedRuns24h}} runs</p>
+                    <p class="text-sm font-medium text-gray-100">{{.CompletedRuns24h}} / {{add .CompletedRuns24h .FailedRuns24h}} runs</p>
                 </div>
             </div>
             <!-- Avg Duration -->
             <div class="hidden sm:flex flex-col justify-center px-8 min-w-[120px]">
                 <p class="text-xs text-gray-400 uppercase tracking-wider mb-1">Avg Duration</p>
-                <p class="text-xl font-semibold text-white">{{if gt .AvgRunDurationMs 0}}{{div64 .AvgRunDurationMs 1000}}s{{else}}-{{end}}</p>
+                <p class="text-xl font-semibold text-gray-100">{{if gt .AvgRunDurationMs 0}}{{div64 .AvgRunDurationMs 1000}}s{{else}}-{{end}}</p>
             </div>
             <!-- Avg Iterations -->
             <div class="hidden sm:flex flex-col justify-center px-8 min-w-[120px]">
                 <p class="text-xs text-gray-400 uppercase tracking-wider mb-1">Avg Iterations</p>
-                <p class="text-xl font-semibold text-white">{{printf "%.1f" .AvgIterationsPerRun}}</p>
+                <p class="text-xl font-semibold text-gray-100">{{printf "%.1f" .AvgIterationsPerRun}}</p>
             </div>
             <!-- Tokens 24h -->
             <div class="hidden md:flex flex-col justify-center pl-8 min-w-[120px]">
                 <p class="text-xs text-gray-400 uppercase tracking-wider mb-1">Tokens (24h)</p>
-                <p class="text-xl font-semibold text-white">{{formatTokens .TotalTokens24h}}</p>
+                <p class="text-xl font-semibold text-gray-100">{{formatTokens .TotalTokens24h}}</p>
             </div>
         </div>
         <div class="flex items-center">
             <!-- Pipeline Status -->
-            <div class="flex items-center space-x-2 bg-gray-800/80 rounded-lg px-4 py-2.5">
+            <div class="flex items-center space-x-2 bg-gray-700/80 rounded-lg px-4 py-2.5">
                 {{if gt .PendingRuns 0}}
                 <span class="relative flex h-2.5 w-2.5">
                     <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
@@ -56,30 +56,30 @@
 <!-- Main Stats Grid -->
 <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
     <!-- Sessions -->
-    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 hover:shadow-md transition-shadow">
+    <div class="bg-gray-800 rounded-xl shadow-lg shadow-gray-900/50 border border-gray-700 p-5 hover:border-gray-600 transition-colors">
         <div class="flex items-center justify-between">
-            <div class="bg-indigo-100 rounded-lg p-2.5">
-                <svg class="h-5 w-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="bg-cyan-500/20 rounded-lg p-2.5">
+                <svg class="h-5 w-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path>
                 </svg>
             </div>
-            <span class="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded">+{{.SessionsToday}} today</span>
+            <span class="text-xs text-gray-400 bg-gray-700 px-2 py-0.5 rounded">+{{.SessionsToday}} today</span>
         </div>
-        <p class="mt-4 text-3xl font-bold text-gray-900">{{.TotalSessions}}</p>
-        <p class="text-sm text-gray-500">Total Sessions</p>
-        <div class="mt-2 text-xs text-gray-400">{{.ActiveSessions}} active in 24h</div>
+        <p class="mt-4 text-3xl font-bold text-gray-100">{{.TotalSessions}}</p>
+        <p class="text-sm text-gray-400">Total Sessions</p>
+        <div class="mt-2 text-xs text-gray-500">{{.ActiveSessions}} active in 24h</div>
     </div>
 
     <!-- Runs -->
-    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 hover:shadow-md transition-shadow">
+    <div class="bg-gray-800 rounded-xl shadow-lg shadow-gray-900/50 border border-gray-700 p-5 hover:border-gray-600 transition-colors">
         <div class="flex items-center justify-between">
-            <div class="bg-emerald-100 rounded-lg p-2.5">
-                <svg class="h-5 w-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="bg-emerald-500/20 rounded-lg p-2.5">
+                <svg class="h-5 w-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
                 </svg>
             </div>
             {{if gt .ActiveRuns 0}}
-            <span class="text-xs text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded flex items-center">
+            <span class="text-xs text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded flex items-center">
                 <span class="relative flex h-1.5 w-1.5 mr-1">
                     <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                     <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
@@ -87,30 +87,30 @@
                 {{.ActiveRuns}} active
             </span>
             {{else}}
-            <span class="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded">idle</span>
+            <span class="text-xs text-gray-400 bg-gray-700 px-2 py-0.5 rounded">idle</span>
             {{end}}
         </div>
-        <p class="mt-4 text-3xl font-bold text-gray-900">{{.TotalRuns}}</p>
-        <p class="text-sm text-gray-500">Total Runs</p>
+        <p class="mt-4 text-3xl font-bold text-gray-100">{{.TotalRuns}}</p>
+        <p class="text-sm text-gray-400">Total Runs</p>
         <div class="mt-2 flex items-center space-x-2 text-xs">
-            <span class="text-green-600">{{.CompletedRuns24h}} done</span>
-            <span class="text-gray-300">|</span>
-            <span class="text-red-600">{{.FailedRuns24h}} failed</span>
-            <span class="text-gray-400">(24h)</span>
+            <span class="text-green-400">{{.CompletedRuns24h}} done</span>
+            <span class="text-gray-600">|</span>
+            <span class="text-red-400">{{.FailedRuns24h}} failed</span>
+            <span class="text-gray-500">(24h)</span>
         </div>
     </div>
 
     <!-- Tools -->
-    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 hover:shadow-md transition-shadow">
+    <div class="bg-gray-800 rounded-xl shadow-lg shadow-gray-900/50 border border-gray-700 p-5 hover:border-gray-600 transition-colors">
         <div class="flex items-center justify-between">
-            <div class="bg-purple-100 rounded-lg p-2.5">
-                <svg class="h-5 w-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="bg-purple-500/20 rounded-lg p-2.5">
+                <svg class="h-5 w-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
                 </svg>
             </div>
             {{if gt .RunningTools 0}}
-            <span class="text-xs text-purple-600 bg-purple-100 px-2 py-0.5 rounded flex items-center">
+            <span class="text-xs text-purple-400 bg-purple-500/20 px-2 py-0.5 rounded flex items-center">
                 <span class="relative flex h-1.5 w-1.5 mr-1">
                     <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
                     <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-purple-500"></span>
@@ -118,45 +118,45 @@
                 {{.RunningTools}} running
             </span>
             {{else if gt .PendingTools 0}}
-            <span class="text-xs text-yellow-600 bg-yellow-100 px-2 py-0.5 rounded">{{.PendingTools}} queued</span>
+            <span class="text-xs text-yellow-400 bg-yellow-500/20 px-2 py-0.5 rounded">{{.PendingTools}} queued</span>
             {{else}}
-            <span class="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded">idle</span>
+            <span class="text-xs text-gray-400 bg-gray-700 px-2 py-0.5 rounded">idle</span>
             {{end}}
         </div>
-        <p class="mt-4 text-3xl font-bold text-gray-900">{{.ToolExecutions24h}}</p>
-        <p class="text-sm text-gray-500">Tool Executions (24h)</p>
+        <p class="mt-4 text-3xl font-bold text-gray-100">{{.ToolExecutions24h}}</p>
+        <p class="text-sm text-gray-400">Tool Executions (24h)</p>
         <div class="mt-2 flex items-center space-x-2 text-xs">
-            <span class="text-yellow-600">{{.PendingTools}} pending</span>
-            <span class="text-gray-300">|</span>
-            <span class="text-red-600">{{.FailedTools24h}} failed</span>
+            <span class="text-yellow-400">{{.PendingTools}} pending</span>
+            <span class="text-gray-600">|</span>
+            <span class="text-red-400">{{.FailedTools24h}} failed</span>
         </div>
     </div>
 
     <!-- Instances -->
-    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 hover:shadow-md transition-shadow">
+    <div class="bg-gray-800 rounded-xl shadow-lg shadow-gray-900/50 border border-gray-700 p-5 hover:border-gray-600 transition-colors">
         <div class="flex items-center justify-between">
-            <div class="bg-gray-800 rounded-lg p-2.5">
-                <svg class="h-5 w-5 text-gray-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="bg-gray-600 rounded-lg p-2.5">
+                <svg class="h-5 w-5 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path>
                 </svg>
             </div>
             {{if .LeaderInstanceID}}
-            <span class="text-xs text-green-600 bg-green-100 px-2 py-0.5 rounded flex items-center">
+            <span class="text-xs text-green-400 bg-green-500/20 px-2 py-0.5 rounded flex items-center">
                 <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
                     <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
                 </svg>
                 leader
             </span>
             {{else}}
-            <span class="text-xs text-red-600 bg-red-100 px-2 py-0.5 rounded">no leader</span>
+            <span class="text-xs text-red-400 bg-red-500/20 px-2 py-0.5 rounded">no leader</span>
             {{end}}
         </div>
-        <p class="mt-4 text-3xl font-bold text-gray-900">{{.ActiveInstances}}</p>
-        <p class="text-sm text-gray-500">Active Workers</p>
+        <p class="mt-4 text-3xl font-bold text-gray-100">{{.ActiveInstances}}</p>
+        <p class="text-sm text-gray-400">Active Workers</p>
         {{if .LeaderInstanceID}}
-        <div class="mt-2 text-xs text-gray-400 font-mono truncate">{{.LeaderInstanceID | truncate 20}}</div>
+        <div class="mt-2 text-xs text-gray-500 font-mono truncate">{{.LeaderInstanceID | truncate 20}}</div>
         {{else}}
-        <div class="mt-2 text-xs text-red-500">Election pending...</div>
+        <div class="mt-2 text-xs text-red-400">Election pending...</div>
         {{end}}
     </div>
 </div>
@@ -166,95 +166,95 @@
     <!-- Left: Recent Activity -->
     <div class="lg:col-span-2 space-y-6">
         <!-- Live Run Feed -->
-        <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div class="bg-gray-800 rounded-xl shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden">
+            <div class="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
                 <div class="flex items-center space-x-2">
                     <span class="relative flex h-2 w-2">
                         <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
                         <span class="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
                     </span>
-                    <h3 class="font-semibold text-gray-900">Live Activity</h3>
+                    <h3 class="font-semibold text-gray-100">Live Activity</h3>
                 </div>
-                <a href="/ui/runs" class="text-sm text-indigo-600 hover:text-indigo-500">View all</a>
+                <a href="/ui/runs" class="text-sm text-cyan-400 hover:text-cyan-300">View all</a>
             </div>
-            <div class="divide-y divide-gray-50 max-h-80 overflow-y-auto">
+            <div class="divide-y divide-gray-700/50 max-h-80 overflow-y-auto">
                 {{range .RecentRuns}}
-                <a href="/ui/runs/{{.ID}}" class="flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors">
+                <a href="/ui/runs/{{.ID}}" class="flex items-center justify-between px-5 py-3 hover:bg-gray-700/50 transition-colors">
                     <div class="flex items-center space-x-3 min-w-0">
                         <div class="flex-shrink-0">
                             {{if eq .State "pending"}}
-                            <span class="flex h-8 w-8 items-center justify-center rounded-full bg-yellow-100">
+                            <span class="flex h-8 w-8 items-center justify-center rounded-full bg-yellow-500/20">
                                 <span class="relative flex h-2 w-2">
                                     <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
                                     <span class="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
                                 </span>
                             </span>
                             {{else if or (eq .State "batch_processing") (eq .State "streaming") (eq .State "pending_tools")}}
-                            <span class="flex h-8 w-8 items-center justify-center rounded-full bg-blue-100">
-                                <svg class="animate-spin h-4 w-4 text-blue-600" fill="none" viewBox="0 0 24 24">
+                            <span class="flex h-8 w-8 items-center justify-center rounded-full bg-blue-500/20">
+                                <svg class="animate-spin h-4 w-4 text-blue-400" fill="none" viewBox="0 0 24 24">
                                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                     <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                                 </svg>
                             </span>
                             {{else if eq .State "completed"}}
-                            <span class="flex h-8 w-8 items-center justify-center rounded-full bg-green-100">
-                                <svg class="h-4 w-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <span class="flex h-8 w-8 items-center justify-center rounded-full bg-green-500/20">
+                                <svg class="h-4 w-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
                                 </svg>
                             </span>
                             {{else if eq .State "failed"}}
-                            <span class="flex h-8 w-8 items-center justify-center rounded-full bg-red-100">
-                                <svg class="h-4 w-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <span class="flex h-8 w-8 items-center justify-center rounded-full bg-red-500/20">
+                                <svg class="h-4 w-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                                 </svg>
                             </span>
                             {{else}}
-                            <span class="flex h-8 w-8 items-center justify-center rounded-full bg-gray-100">
-                                <span class="h-2 w-2 rounded-full bg-gray-400"></span>
+                            <span class="flex h-8 w-8 items-center justify-center rounded-full bg-gray-700">
+                                <span class="h-2 w-2 rounded-full bg-gray-500"></span>
                             </span>
                             {{end}}
                         </div>
                         <div class="min-w-0">
-                            <p class="text-sm font-medium text-gray-900 truncate">{{.AgentName}}</p>
-                            <p class="text-xs text-gray-500">{{.IterationCount}} iter | {{formatTokens .TotalTokens}}</p>
+                            <p class="text-sm font-medium text-gray-100 truncate">{{.AgentName}}</p>
+                            <p class="text-xs text-gray-400">{{.IterationCount}} iter | {{formatTokens .TotalTokens}}</p>
                         </div>
                     </div>
                     <div class="flex items-center space-x-3 flex-shrink-0">
                         <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium {{stateBgColor .State}}">{{.State}}</span>
-                        <span class="text-xs text-gray-400 font-mono">{{formatTimeAgo .CreatedAt}}</span>
+                        <span class="text-xs text-gray-500 font-mono">{{formatTimeAgo .CreatedAt}}</span>
                     </div>
                 </a>
                 {{else}}
                 <div class="px-5 py-8 text-center">
-                    <svg class="mx-auto h-10 w-10 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg class="mx-auto h-10 w-10 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
                     </svg>
-                    <p class="mt-2 text-sm text-gray-500">No recent activity</p>
+                    <p class="mt-2 text-sm text-gray-400">No recent activity</p>
                 </div>
                 {{end}}
             </div>
         </div>
 
         <!-- Recent Sessions -->
-        <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-                <h3 class="font-semibold text-gray-900">Recent Sessions</h3>
-                <a href="/ui/sessions" class="text-sm text-indigo-600 hover:text-indigo-500">View all</a>
+        <div class="bg-gray-800 rounded-xl shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden">
+            <div class="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
+                <h3 class="font-semibold text-gray-100">Recent Sessions</h3>
+                <a href="/ui/sessions" class="text-sm text-cyan-400 hover:text-cyan-300">View all</a>
             </div>
-            <div class="divide-y divide-gray-50">
+            <div class="divide-y divide-gray-700/50">
                 {{range .RecentSessions}}
-                <a href="/ui/sessions/{{.ID}}" class="flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors">
+                <a href="/ui/sessions/{{.ID}}" class="flex items-center justify-between px-5 py-3 hover:bg-gray-700/50 transition-colors">
                     <div class="min-w-0">
-                        <p class="text-sm font-medium text-gray-900 truncate">{{.Identifier}}</p>
-                        <p class="text-xs text-gray-500">{{.RunCount}} runs | {{.MessageCount}} messages</p>
+                        <p class="text-sm font-medium text-gray-100 truncate">{{.Identifier}}</p>
+                        <p class="text-xs text-gray-400">{{.RunCount}} runs | {{.MessageCount}} messages</p>
                     </div>
                     <div class="flex items-center space-x-3 flex-shrink-0">
-                        <span class="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded">{{.TenantID}}</span>
-                        <span class="text-xs text-gray-400">{{formatTimeAgo .LastActivityAt}}</span>
+                        <span class="text-xs text-gray-400 bg-gray-700 px-2 py-0.5 rounded">{{.TenantID}}</span>
+                        <span class="text-xs text-gray-500">{{formatTimeAgo .LastActivityAt}}</span>
                     </div>
                 </a>
                 {{else}}
-                <div class="px-5 py-6 text-center text-sm text-gray-500">No sessions yet</div>
+                <div class="px-5 py-6 text-center text-sm text-gray-400">No sessions yet</div>
                 {{end}}
             </div>
         </div>
@@ -263,37 +263,37 @@
     <!-- Right: Insights & Breakdown -->
     <div class="space-y-6">
         <!-- Top Agents -->
-        <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div class="px-5 py-4 border-b border-gray-100">
-                <h3 class="font-semibold text-gray-900">Top Agents</h3>
+        <div class="bg-gray-800 rounded-xl shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden">
+            <div class="px-5 py-4 border-b border-gray-700">
+                <h3 class="font-semibold text-gray-100">Top Agents</h3>
             </div>
             <div class="p-4 space-y-3">
                 {{range .TopAgents}}
                 <div class="flex items-center justify-between">
                     <div class="flex items-center space-x-3 min-w-0">
-                        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center flex-shrink-0">
+                        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 to-purple-500 flex items-center justify-center flex-shrink-0">
                             <span class="text-xs font-bold text-white">{{slice .Name 0 1 | printf "%s" }}</span>
                         </div>
                         <div class="min-w-0">
-                            <p class="text-sm font-medium text-gray-900 truncate">{{.Name}}</p>
-                            <p class="text-xs text-gray-500">{{formatTokens .TotalTokens}} tokens</p>
+                            <p class="text-sm font-medium text-gray-100 truncate">{{.Name}}</p>
+                            <p class="text-xs text-gray-400">{{formatTokens .TotalTokens}} tokens</p>
                         </div>
                     </div>
                     <div class="text-right flex-shrink-0">
-                        <p class="text-sm font-semibold text-gray-900">{{.RunCount}}</p>
-                        <p class="text-xs {{if ge .SuccessRate 90.0}}text-green-600{{else if ge .SuccessRate 70.0}}text-yellow-600{{else}}text-red-600{{end}}">{{printf "%.0f" .SuccessRate}}% ok</p>
+                        <p class="text-sm font-semibold text-gray-100">{{.RunCount}}</p>
+                        <p class="text-xs {{if ge .SuccessRate 90.0}}text-green-400{{else if ge .SuccessRate 70.0}}text-yellow-400{{else}}text-red-400{{end}}">{{printf "%.0f" .SuccessRate}}% ok</p>
                     </div>
                 </div>
                 {{else}}
-                <div class="text-center py-4 text-sm text-gray-500">No agent data</div>
+                <div class="text-center py-4 text-sm text-gray-400">No agent data</div>
                 {{end}}
             </div>
         </div>
 
         <!-- Top Tools -->
-        <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div class="px-5 py-4 border-b border-gray-100">
-                <h3 class="font-semibold text-gray-900">Top Tools</h3>
+        <div class="bg-gray-800 rounded-xl shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden">
+            <div class="px-5 py-4 border-b border-gray-700">
+                <h3 class="font-semibold text-gray-100">Top Tools</h3>
             </div>
             <div class="p-4 space-y-3">
                 {{range .TopTools}}
@@ -306,39 +306,39 @@
                             </svg>
                         </div>
                         <div class="min-w-0">
-                            <p class="text-sm font-medium text-gray-900 truncate">{{.Name}}</p>
-                            <p class="text-xs text-gray-500">{{if gt .AvgDurationMs 0}}~{{.AvgDurationMs}}ms{{else}}-{{end}}</p>
+                            <p class="text-sm font-medium text-gray-100 truncate">{{.Name}}</p>
+                            <p class="text-xs text-gray-400">{{if gt .AvgDurationMs 0}}~{{.AvgDurationMs}}ms{{else}}-{{end}}</p>
                         </div>
                     </div>
                     <div class="text-right flex-shrink-0">
-                        <p class="text-sm font-semibold text-gray-900">{{.ExecutionCount}}</p>
+                        <p class="text-sm font-semibold text-gray-100">{{.ExecutionCount}}</p>
                         {{if gt .FailedCount 0}}
-                        <p class="text-xs text-red-600">{{.FailedCount}} failed</p>
+                        <p class="text-xs text-red-400">{{.FailedCount}} failed</p>
                         {{else}}
-                        <p class="text-xs text-green-600">0 failed</p>
+                        <p class="text-xs text-green-400">0 failed</p>
                         {{end}}
                     </div>
                 </div>
                 {{else}}
-                <div class="text-center py-4 text-sm text-gray-500">No tool data</div>
+                <div class="text-center py-4 text-sm text-gray-400">No tool data</div>
                 {{end}}
             </div>
         </div>
 
         <!-- Errors -->
         {{if .RecentToolErrors}}
-        <div class="bg-red-50 rounded-xl border border-red-200 overflow-hidden">
-            <div class="px-5 py-4 border-b border-red-200 flex items-center space-x-2">
-                <svg class="h-5 w-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div class="bg-red-500/10 rounded-xl border border-red-500/30 overflow-hidden">
+            <div class="px-5 py-4 border-b border-red-500/30 flex items-center space-x-2">
+                <svg class="h-5 w-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
                 </svg>
-                <h3 class="font-semibold text-red-800">Recent Errors</h3>
+                <h3 class="font-semibold text-red-400">Recent Errors</h3>
             </div>
-            <div class="divide-y divide-red-100">
+            <div class="divide-y divide-red-500/20">
                 {{range .RecentToolErrors}}
-                <a href="/ui/tool-executions/{{.ID}}" class="block px-5 py-3 hover:bg-red-100/50 transition-colors">
-                    <p class="text-sm font-medium text-red-900">{{.ToolName}}</p>
-                    <p class="text-xs text-red-600">Attempt {{.AttemptCount}}/{{.MaxAttempts}} | {{formatTimeAgo .CreatedAt}}</p>
+                <a href="/ui/tool-executions/{{.ID}}" class="block px-5 py-3 hover:bg-red-500/10 transition-colors">
+                    <p class="text-sm font-medium text-red-300">{{.ToolName}}</p>
+                    <p class="text-xs text-red-400/80">Attempt {{.AttemptCount}}/{{.MaxAttempts}} | {{formatTimeAgo .CreatedAt}}</p>
                 </a>
                 {{end}}
             </div>
@@ -346,9 +346,9 @@
         {{end}}
 
         <!-- Queue Breakdown -->
-        <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div class="px-5 py-4 border-b border-gray-100">
-                <h3 class="font-semibold text-gray-900">Run States</h3>
+        <div class="bg-gray-800 rounded-xl shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden">
+            <div class="px-5 py-4 border-b border-gray-700">
+                <h3 class="font-semibold text-gray-100">Run States</h3>
             </div>
             <div class="p-4">
                 <div class="flex flex-wrap gap-2">
@@ -357,7 +357,7 @@
                         {{$state}}: {{$count}}
                     </span>
                     {{else}}
-                    <span class="text-sm text-gray-500">No runs</span>
+                    <span class="text-sm text-gray-400">No runs</span>
                     {{end}}
                 </div>
             </div>
@@ -367,25 +367,25 @@
 
 <!-- Quick Actions -->
 <div class="mt-6 flex items-center justify-center space-x-3">
-    <a href="/ui/chat/new" class="inline-flex items-center space-x-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 transition-colors shadow-sm">
+    <a href="/ui/chat/new" class="inline-flex items-center space-x-2 px-4 py-2 bg-cyan-600 text-white rounded-lg hover:bg-cyan-500 transition-colors shadow-sm">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
         </svg>
         <span class="font-medium text-sm">New Chat</span>
     </a>
-    <a href="/ui/sessions" class="inline-flex items-center space-x-2 px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+    <a href="/ui/sessions" class="inline-flex items-center space-x-2 px-4 py-2 bg-gray-800 text-gray-300 border border-gray-600 rounded-lg hover:bg-gray-700 transition-colors">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
         </svg>
         <span class="font-medium text-sm">Sessions</span>
     </a>
-    <a href="/ui/agents" class="inline-flex items-center space-x-2 px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+    <a href="/ui/agents" class="inline-flex items-center space-x-2 px-4 py-2 bg-gray-800 text-gray-300 border border-gray-600 rounded-lg hover:bg-gray-700 transition-colors">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
         </svg>
         <span class="font-medium text-sm">Agents</span>
     </a>
-    <a href="/ui/instances" class="inline-flex items-center space-x-2 px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+    <a href="/ui/instances" class="inline-flex items-center space-x-2 px-4 py-2 bg-gray-800 text-gray-300 border border-gray-600 rounded-lg hover:bg-gray-700 transition-colors">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"></path>
         </svg>

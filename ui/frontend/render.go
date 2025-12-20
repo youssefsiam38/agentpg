@@ -190,42 +190,42 @@ func truncate(n int, v any) string {
 func stateColor(state string) string {
 	switch state {
 	case "pending":
-		return "text-yellow-600"
+		return "text-yellow-400"
 	case "batch_submitting", "batch_pending", "batch_processing", "streaming":
-		return "text-blue-600"
+		return "text-blue-400"
 	case "pending_tools":
-		return "text-purple-600"
+		return "text-purple-400"
 	case "completed":
-		return "text-green-600"
+		return "text-green-400"
 	case "failed":
-		return "text-red-600"
+		return "text-red-400"
 	case "cancelled":
-		return "text-gray-600"
+		return "text-gray-400"
 	case "running":
-		return "text-blue-600"
+		return "text-blue-400"
 	default:
-		return "text-gray-600"
+		return "text-gray-400"
 	}
 }
 
 func stateBgColor(state string) string {
 	switch state {
 	case "pending":
-		return "bg-yellow-100 text-yellow-800"
+		return "bg-yellow-500/20 text-yellow-400 ring-1 ring-yellow-500/30"
 	case "batch_submitting", "batch_pending", "batch_processing", "streaming":
-		return "bg-blue-100 text-blue-800"
+		return "bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/30"
 	case "pending_tools":
-		return "bg-purple-100 text-purple-800"
+		return "bg-purple-500/20 text-purple-400 ring-1 ring-purple-500/30"
 	case "completed":
-		return "bg-green-100 text-green-800"
+		return "bg-green-500/20 text-green-400 ring-1 ring-green-500/30"
 	case "failed":
-		return "bg-red-100 text-red-800"
+		return "bg-red-500/20 text-red-400 ring-1 ring-red-500/30"
 	case "cancelled":
-		return "bg-gray-100 text-gray-800"
+		return "bg-gray-600/30 text-gray-400 ring-1 ring-gray-500/30"
 	case "running":
-		return "bg-blue-100 text-blue-800"
+		return "bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/30"
 	default:
-		return "bg-gray-100 text-gray-800"
+		return "bg-gray-600/30 text-gray-400 ring-1 ring-gray-500/30"
 	}
 }
 
@@ -255,8 +255,11 @@ func jsonEncode(v any) string {
 	return string(b)
 }
 
+// safeHTML sanitizes HTML using bluemonday and returns safe HTML.
+// This prevents XSS attacks while allowing safe HTML content.
 func safeHTML(s string) template.HTML {
-	return template.HTML(s)
+	safe := mdSanitize.Sanitize(s)
+	return template.HTML(safe)
 }
 
 // markdown converts markdown text to sanitized HTML.
@@ -355,4 +358,23 @@ func defaultVal(val, def any) any {
 		}
 	}
 	return val
+}
+
+// sliceFunc returns a substring of a string from start to end indices.
+// If end is greater than the string length, it returns up to the end of the string.
+// Usage: {{slice "hello world" 0 5}} -> "hello"
+func sliceFunc(s string, start, end int) string {
+	if start < 0 {
+		start = 0
+	}
+	if start >= len(s) {
+		return ""
+	}
+	if end > len(s) {
+		end = len(s)
+	}
+	if end <= start {
+		return ""
+	}
+	return s[start:end]
 }
