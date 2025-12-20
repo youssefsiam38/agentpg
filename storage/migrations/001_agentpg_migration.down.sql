@@ -38,6 +38,7 @@ DROP FUNCTION IF EXISTS agentpg_notify_run_state_change();
 DROP FUNCTION IF EXISTS agentpg_notify_run_created();
 
 -- Stored procedures
+DROP FUNCTION IF EXISTS agentpg_get_stuck_runs(INTERVAL, INTEGER, INTEGER);
 DROP FUNCTION IF EXISTS agentpg_get_iterations_for_poll(TEXT, INTERVAL, INTEGER);
 DROP FUNCTION IF EXISTS agentpg_claim_tool_executions(TEXT, INTEGER);
 DROP FUNCTION IF EXISTS agentpg_claim_runs(TEXT, INTEGER, agentpg_run_mode);
@@ -70,6 +71,7 @@ DROP INDEX IF EXISTS idx_instance_agents_by_agent;
 DROP INDEX IF EXISTS idx_instances_heartbeat;
 
 -- Tool execution indexes
+DROP INDEX IF EXISTS idx_tool_exec_pending_scheduled;
 DROP INDEX IF EXISTS idx_tool_exec_child_run;
 DROP INDEX IF EXISTS idx_tool_exec_iteration;
 DROP INDEX IF EXISTS idx_tool_exec_run;
@@ -91,6 +93,7 @@ DROP INDEX IF EXISTS idx_messages_run;
 DROP INDEX IF EXISTS idx_messages_session;
 
 -- Run indexes
+DROP INDEX IF EXISTS idx_runs_stuck_rescue;
 DROP INDEX IF EXISTS idx_runs_claimed_instance;
 DROP INDEX IF EXISTS idx_runs_parent;
 DROP INDEX IF EXISTS idx_runs_session;

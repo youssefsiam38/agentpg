@@ -379,7 +379,7 @@ func (w *streamingWorker[TTx]) createToolExecutions(ctx context.Context, iter *d
 			ToolInput:   inputBytes,
 			IsAgentTool: isAgentTool,
 			AgentName:   agentName,
-			MaxAttempts: 3,
+			MaxAttempts: w.client.toolMaxAttempts(),
 		})
 	}
 

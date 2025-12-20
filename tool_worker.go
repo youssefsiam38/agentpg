@@ -3,11 +3,13 @@ package agentpg
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/youssefsiam38/agentpg/driver"
+	"github.com/youssefsiam38/agentpg/tool"
 )
 
 // toolWorker executes pending tool executions.
@@ -123,7 +125,7 @@ func (w *toolWorker[TTx]) executeTool(ctx context.Context, exec *driver.ToolExec
 
 	output, err := t.Execute(execCtx, exec.ToolInput)
 	if err != nil {
-		return w.completeToolExecution(ctx, exec.ID, err.Error(), true, err.Error())
+		return w.handleToolError(ctx, exec, err)
 	}
 
 	return w.completeToolExecution(ctx, exec.ID, output, false, "")
@@ -198,6 +200,84 @@ func (w *toolWorker[TTx]) completeToolExecution(ctx context.Context, execID uuid
 	)
 
 	return nil
+}
+
+// handleToolError handles tool execution errors with retry logic.
+// It checks for special error types (Cancel, Discard, Snooze) and handles
+// regular errors with exponential backoff retries.
+func (w *toolWorker[TTx]) handleToolError(ctx context.Context, exec *driver.ToolExecution, err error) error {
+	store := w.client.driver.Store()
+	log := w.client.log()
+
+	// Check for ToolCancelError - cancel immediately, no retry
+	var cancelErr *tool.ToolCancelError
+	if errors.As(err, &cancelErr) {
+		log.Info("tool execution cancelled",
+			"execution_id", exec.ID,
+			"tool_name", exec.ToolName,
+			"error", cancelErr.Error(),
+		)
+		return store.DiscardToolExecution(ctx, exec.ID, cancelErr.Error())
+	}
+
+	// Check for ToolDiscardError - discard permanently, invalid input
+	var discardErr *tool.ToolDiscardError
+	if errors.As(err, &discardErr) {
+		log.Info("tool execution discarded",
+			"execution_id", exec.ID,
+			"tool_name", exec.ToolName,
+			"error", discardErr.Error(),
+		)
+		return store.DiscardToolExecution(ctx, exec.ID, discardErr.Error())
+	}
+
+	// Check for ToolSnoozeError - retry after duration, does NOT consume attempt
+	var snoozeErr *tool.ToolSnoozeError
+	if errors.As(err, &snoozeErr) {
+		scheduledAt := time.Now().Add(snoozeErr.Duration)
+		log.Info("tool execution snoozed",
+			"execution_id", exec.ID,
+			"tool_name", exec.ToolName,
+			"snooze_duration", snoozeErr.Duration,
+			"scheduled_at", scheduledAt,
+		)
+		return store.SnoozeToolExecution(ctx, exec.ID, scheduledAt)
+	}
+
+	// Regular error - check if we should retry
+	retryConfig := w.client.config.ToolRetryConfig
+	if retryConfig == nil {
+		retryConfig = DefaultToolRetryConfig()
+	}
+
+	// exec.AttemptCount is incremented by the claim function, so it reflects the current attempt
+	if exec.AttemptCount >= exec.MaxAttempts {
+		// Max attempts reached - fail permanently
+		log.Warn("tool execution failed after max attempts",
+			"execution_id", exec.ID,
+			"tool_name", exec.ToolName,
+			"attempt", exec.AttemptCount,
+			"max_attempts", exec.MaxAttempts,
+			"error", err.Error(),
+		)
+		return w.completeToolExecution(ctx, exec.ID, err.Error(), true, err.Error())
+	}
+
+	// Schedule retry with exponential backoff (attempt^4)
+	delay := retryConfig.NextRetryDelay(exec.AttemptCount)
+	scheduledAt := time.Now().Add(delay)
+
+	log.Info("tool execution will be retried",
+		"execution_id", exec.ID,
+		"tool_name", exec.ToolName,
+		"attempt", exec.AttemptCount,
+		"max_attempts", exec.MaxAttempts,
+		"retry_delay", delay,
+		"scheduled_at", scheduledAt,
+		"error", err.Error(),
+	)
+
+	return store.RetryToolExecution(ctx, exec.ID, scheduledAt, err.Error())
 }
 
 func (w *toolWorker[TTx]) handleAllToolsComplete(ctx context.Context, runID uuid.UUID) {

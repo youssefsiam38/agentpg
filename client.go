@@ -38,6 +38,7 @@ type Client[TTx any] struct {
 	streamingWorker *streamingWorker[TTx]
 	toolWorker      *toolWorker[TTx]
 	batchPoller     *batchPoller[TTx]
+	rescuer         *rescuer[TTx]
 
 	// Compaction
 	compactor *compaction.Compactor[TTx]
@@ -237,8 +238,9 @@ func (c *Client[TTx]) Start(ctx context.Context) error {
 	c.streamingWorker = newStreamingWorker(c)
 	c.toolWorker = newToolWorker(c)
 	c.batchPoller = newBatchPoller(c)
+	c.rescuer = newRescuer(c)
 
-	c.wg.Add(4)
+	c.wg.Add(5)
 	go func() {
 		defer c.wg.Done()
 		c.runWorker.run(c.ctx)
@@ -254,6 +256,10 @@ func (c *Client[TTx]) Start(ctx context.Context) error {
 	go func() {
 		defer c.wg.Done()
 		c.batchPoller.run(c.ctx)
+	}()
+	go func() {
+		defer c.wg.Done()
+		c.rescuer.run(c.ctx)
 	}()
 
 	c.started = true
@@ -1176,6 +1182,14 @@ func (c *Client[TTx]) log() Logger {
 		return c.config.Logger
 	}
 	return &noopLogger{}
+}
+
+// toolMaxAttempts returns the max attempts for tool executions from config.
+func (c *Client[TTx]) toolMaxAttempts() int {
+	if c.config.ToolRetryConfig != nil && c.config.ToolRetryConfig.MaxAttempts > 0 {
+		return c.config.ToolRetryConfig.MaxAttempts
+	}
+	return DefaultToolRetryMaxAttempts
 }
 
 // Helper functions

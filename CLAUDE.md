@@ -1438,20 +1438,116 @@ func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, er
 }
 ```
 
-### Retry Configuration
+### Retry and Rescue System
+
+AgentPG provides a robust retry and rescue system (inspired by River) to ensure runs and tool executions never get stuck in non-terminal states.
+
+#### Tool Error Types
+
+Tools can return special error types to control retry behavior:
 
 ```go
-retryConfig := agentpg.RetryConfig{
-    MaxAttempts:  3,
-    InitialDelay: 1 * time.Second,
-    MaxDelay:     30 * time.Second,
-    Multiplier:   2.0,
-}
+import "github.com/youssefsiam38/agentpg/tool"
 
-// Tool executions have built-in retry
-// max_attempts column in agentpg_tool_executions
-// attempt_count tracks current attempt
+func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    // Cancel immediately - no retry, permanent failure
+    if isInvalidInput(input) {
+        return "", tool.ToolCancel(errors.New("invalid input format"))
+    }
+
+    // Discard permanently - similar to cancel, for unrecoverable errors
+    if !isAuthorized(ctx) {
+        return "", tool.ToolDiscard(errors.New("unauthorized"))
+    }
+
+    // Snooze - retry after duration, does NOT consume an attempt
+    if isRateLimited(err) {
+        return "", tool.ToolSnooze(30*time.Second, err)
+    }
+
+    // Regular error - will be retried with exponential backoff
+    result, err := doWork(ctx)
+    if err != nil {
+        return "", err  // Will retry up to MaxAttempts times
+    }
+
+    return result, nil
+}
 ```
+
+#### Retry Configuration
+
+```go
+client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
+    // Tool retry configuration (defaults are optimized for snappy UX)
+    ToolRetryConfig: &agentpg.ToolRetryConfig{
+        MaxAttempts: 2,    // Default: 2 attempts (1 retry) for fast feedback
+        Jitter:      0.0,  // Default: 0 = instant retry, no delay
+    },
+
+    // Run rescue configuration
+    RunRescueConfig: &agentpg.RunRescueConfig{
+        RescueInterval:    time.Minute,      // Default: check every 1 minute
+        RescueTimeout:     5 * time.Minute,  // Default: runs stuck > 5 min are rescued
+        MaxRescueAttempts: 3,                // Default: max 3 rescue attempts
+    },
+})
+```
+
+#### Instant Retry (Default)
+
+By default, tool retries happen **instantly** with no delay for a snappy user experience:
+- `MaxAttempts: 2` = 1 immediate retry on failure
+- `Jitter: 0.0` = no delay between retries
+
+#### Exponential Backoff (Opt-in)
+
+For tools that need backoff (e.g., external APIs with rate limits), set `Jitter > 0` to enable River's attempt^4 formula:
+
+```go
+ToolRetryConfig: &agentpg.ToolRetryConfig{
+    MaxAttempts: 5,    // More attempts for unreliable services
+    Jitter:      0.1,  // Enable backoff with 10% jitter
+},
+```
+
+| Attempt | Delay |
+|---------|-------|
+| 1 | 1 second |
+| 2 | 16 seconds |
+| 3 | 81 seconds |
+| 4 | 256 seconds |
+| 5 | 625 seconds |
+
+Jitter (±10%) prevents thundering herd effects when multiple tools retry simultaneously.
+
+#### Snooze vs Retry
+
+- **Retry**: Regular errors consume an attempt. After `MaxAttempts`, the execution fails permanently.
+- **Snooze**: Does NOT consume an attempt. Useful for rate limits, temporary unavailability. Unlimited snoozes allowed.
+
+#### Agent-as-Tool Failures
+
+Agent-as-tool (child run) failures are NOT retried. When a child agent fails, the parent run receives the error as a tool result, allowing the parent agent to handle it appropriately.
+
+#### Run Rescue
+
+The rescuer worker (running on the leader instance only) periodically checks for stuck runs:
+
+- Runs stuck in non-terminal states (`batch_submitting`, `batch_pending`, `batch_processing`, `streaming`, `pending_tools`) longer than `RescueTimeout` are reset to `pending` state
+- After `MaxRescueAttempts`, the run is marked as `failed` with error type `rescue_failed`
+- Rescue tracking fields: `rescue_attempts`, `last_rescue_at`
+
+#### Database Fields
+
+Tool executions track:
+- `scheduled_at`: When the execution becomes eligible for claiming
+- `snooze_count`: Number of times snoozed (informational)
+- `last_error`: Error message from the last failed attempt
+
+Runs track:
+- `rescue_attempts`: Number of times rescued
+- `last_rescue_at`: Timestamp of last rescue
 
 ---
 

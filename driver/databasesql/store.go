@@ -309,7 +309,8 @@ func (s *Store) createRun(ctx context.Context, e executor, params driver.CreateR
 			prompt, current_iteration, current_iteration_id, response_text, stop_reason,
 			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 			iteration_count, tool_iterations, error_message, error_type,
-			created_by_instance_id, claimed_by_instance_id, claimed_at, metadata, created_at, started_at, finalized_at
+			created_by_instance_id, claimed_by_instance_id, claimed_at, metadata, created_at, started_at, finalized_at,
+			rescue_attempts, last_rescue_at
 	`, params.SessionID, params.AgentName, params.Prompt, runMode, params.ParentRunID,
 		params.ParentToolExecutionID, params.Depth, params.CreatedByInstanceID, metadata).Scan(
 		&run.ID, &run.SessionID, &run.AgentName, &run.RunMode, &run.ParentRunID, &run.ParentToolExecutionID, &run.Depth,
@@ -318,6 +319,7 @@ func (s *Store) createRun(ctx context.Context, e executor, params driver.CreateR
 		&run.CacheCreationInputTokens, &run.CacheReadInputTokens, &run.IterationCount, &run.ToolIterations,
 		&run.ErrorMessage, &run.ErrorType, &run.CreatedByInstanceID, &run.ClaimedByInstanceID, &run.ClaimedAt,
 		&metadata, &run.CreatedAt, &run.StartedAt, &run.FinalizedAt,
+		&run.RescueAttempts, &run.LastRescueAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create run: %w", err)
@@ -334,7 +336,8 @@ func (s *Store) GetRun(ctx context.Context, id uuid.UUID) (*driver.Run, error) {
 			prompt, current_iteration, current_iteration_id, response_text, stop_reason,
 			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 			iteration_count, tool_iterations, error_message, error_type,
-			created_by_instance_id, claimed_by_instance_id, claimed_at, metadata, created_at, started_at, finalized_at
+			created_by_instance_id, claimed_by_instance_id, claimed_at, metadata, created_at, started_at, finalized_at,
+			rescue_attempts, last_rescue_at
 		FROM agentpg_runs WHERE id = $1
 	`, id).Scan(
 		&run.ID, &run.SessionID, &run.AgentName, &run.RunMode, &run.ParentRunID, &run.ParentToolExecutionID, &run.Depth,
@@ -343,6 +346,7 @@ func (s *Store) GetRun(ctx context.Context, id uuid.UUID) (*driver.Run, error) {
 		&run.CacheCreationInputTokens, &run.CacheReadInputTokens, &run.IterationCount, &run.ToolIterations,
 		&run.ErrorMessage, &run.ErrorType, &run.CreatedByInstanceID, &run.ClaimedByInstanceID, &run.ClaimedAt,
 		&metadata, &run.CreatedAt, &run.StartedAt, &run.FinalizedAt,
+		&run.RescueAttempts, &run.LastRescueAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -414,7 +418,8 @@ func (s *Store) GetRunsBySession(ctx context.Context, sessionID uuid.UUID, limit
 			prompt, current_iteration, current_iteration_id, response_text, stop_reason,
 			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 			iteration_count, tool_iterations, error_message, error_type,
-			created_by_instance_id, claimed_by_instance_id, claimed_at, metadata, created_at, started_at, finalized_at
+			created_by_instance_id, claimed_by_instance_id, claimed_at, metadata, created_at, started_at, finalized_at,
+			rescue_attempts, last_rescue_at
 		FROM agentpg_runs WHERE session_id = $1 ORDER BY created_at DESC LIMIT $2
 	`, sessionID, limit)
 	if err != nil {
@@ -433,7 +438,8 @@ func (s *Store) GetStuckPendingToolsRuns(ctx context.Context, limit int) ([]*dri
 			r.prompt, r.current_iteration, r.current_iteration_id, r.response_text, r.stop_reason,
 			r.input_tokens, r.output_tokens, r.cache_creation_input_tokens, r.cache_read_input_tokens,
 			r.iteration_count, r.tool_iterations, r.error_message, r.error_type,
-			r.created_by_instance_id, r.claimed_by_instance_id, r.claimed_at, r.metadata, r.created_at, r.started_at, r.finalized_at
+			r.created_by_instance_id, r.claimed_by_instance_id, r.claimed_at, r.metadata, r.created_at, r.started_at, r.finalized_at,
+			r.rescue_attempts, r.last_rescue_at
 		FROM agentpg_runs r
 		WHERE r.state = 'pending_tools'
 		  AND r.current_iteration_id IS NOT NULL
@@ -562,7 +568,7 @@ func (s *Store) CreateToolExecution(ctx context.Context, params driver.CreateToo
 	var exec driver.ToolExecution
 	maxAttempts := params.MaxAttempts
 	if maxAttempts <= 0 {
-		maxAttempts = 3
+		maxAttempts = 2 // Default: 2 attempts (1 retry) for snappy UX
 	}
 
 	err := s.db.QueryRowContext(ctx, `
@@ -570,13 +576,13 @@ func (s *Store) CreateToolExecution(ctx context.Context, params driver.CreateToo
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, run_id, iteration_id, state, tool_use_id, tool_name, tool_input, is_agent_tool, agent_name, child_run_id,
 			tool_output, is_error, error_message, claimed_by_instance_id, claimed_at, attempt_count, max_attempts,
-			created_at, started_at, completed_at
+			scheduled_at, snooze_count, last_error, created_at, started_at, completed_at
 	`, params.RunID, params.IterationID, params.ToolUseID, params.ToolName, params.ToolInput,
 		params.IsAgentTool, params.AgentName, maxAttempts).Scan(
 		&exec.ID, &exec.RunID, &exec.IterationID, &exec.State, &exec.ToolUseID, &exec.ToolName, &exec.ToolInput,
 		&exec.IsAgentTool, &exec.AgentName, &exec.ChildRunID, &exec.ToolOutput, &exec.IsError, &exec.ErrorMessage,
 		&exec.ClaimedByInstanceID, &exec.ClaimedAt, &exec.AttemptCount, &exec.MaxAttempts,
-		&exec.CreatedAt, &exec.StartedAt, &exec.CompletedAt,
+		&exec.ScheduledAt, &exec.SnoozeCount, &exec.LastError, &exec.CreatedAt, &exec.StartedAt, &exec.CompletedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tool execution: %w", err)
@@ -601,13 +607,13 @@ func (s *Store) GetToolExecution(ctx context.Context, id uuid.UUID) (*driver.Too
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, run_id, iteration_id, state, tool_use_id, tool_name, tool_input, is_agent_tool, agent_name, child_run_id,
 			tool_output, is_error, error_message, claimed_by_instance_id, claimed_at, attempt_count, max_attempts,
-			created_at, started_at, completed_at
+			scheduled_at, snooze_count, last_error, created_at, started_at, completed_at
 		FROM agentpg_tool_executions WHERE id = $1
 	`, id).Scan(
 		&exec.ID, &exec.RunID, &exec.IterationID, &exec.State, &exec.ToolUseID, &exec.ToolName, &exec.ToolInput,
 		&exec.IsAgentTool, &exec.AgentName, &exec.ChildRunID, &exec.ToolOutput, &exec.IsError, &exec.ErrorMessage,
 		&exec.ClaimedByInstanceID, &exec.ClaimedAt, &exec.AttemptCount, &exec.MaxAttempts,
-		&exec.CreatedAt, &exec.StartedAt, &exec.CompletedAt,
+		&exec.ScheduledAt, &exec.SnoozeCount, &exec.LastError, &exec.CreatedAt, &exec.StartedAt, &exec.CompletedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -665,7 +671,7 @@ func (s *Store) GetToolExecutionsByRun(ctx context.Context, runID uuid.UUID) ([]
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, run_id, iteration_id, state, tool_use_id, tool_name, tool_input, is_agent_tool, agent_name, child_run_id,
 			tool_output, is_error, error_message, claimed_by_instance_id, claimed_at, attempt_count, max_attempts,
-			created_at, started_at, completed_at
+			scheduled_at, snooze_count, last_error, created_at, started_at, completed_at
 		FROM agentpg_tool_executions WHERE run_id = $1 ORDER BY created_at
 	`, runID)
 	if err != nil {
@@ -680,7 +686,7 @@ func (s *Store) GetToolExecutionsByIteration(ctx context.Context, iterationID uu
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, run_id, iteration_id, state, tool_use_id, tool_name, tool_input, is_agent_tool, agent_name, child_run_id,
 			tool_output, is_error, error_message, claimed_by_instance_id, claimed_at, attempt_count, max_attempts,
-			created_at, started_at, completed_at
+			scheduled_at, snooze_count, last_error, created_at, started_at, completed_at
 		FROM agentpg_tool_executions WHERE iteration_id = $1 ORDER BY created_at
 	`, iterationID)
 	if err != nil {
@@ -695,7 +701,7 @@ func (s *Store) GetPendingToolExecutionsForRun(ctx context.Context, runID uuid.U
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, run_id, iteration_id, state, tool_use_id, tool_name, tool_input, is_agent_tool, agent_name, child_run_id,
 			tool_output, is_error, error_message, claimed_by_instance_id, claimed_at, attempt_count, max_attempts,
-			created_at, started_at, completed_at
+			scheduled_at, snooze_count, last_error, created_at, started_at, completed_at
 		FROM agentpg_tool_executions WHERE run_id = $1 AND state NOT IN ('completed', 'failed', 'skipped')
 	`, runID)
 	if err != nil {
@@ -1335,6 +1341,7 @@ func collectRuns(rows *sql.Rows) ([]*driver.Run, error) {
 			&run.CacheCreationInputTokens, &run.CacheReadInputTokens, &run.IterationCount, &run.ToolIterations,
 			&run.ErrorMessage, &run.ErrorType, &run.CreatedByInstanceID, &run.ClaimedByInstanceID, &run.ClaimedAt,
 			&metadata, &run.CreatedAt, &run.StartedAt, &run.FinalizedAt,
+			&run.RescueAttempts, &run.LastRescueAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1371,13 +1378,82 @@ func collectToolExecutions(rows *sql.Rows) ([]*driver.ToolExecution, error) {
 			&exec.ID, &exec.RunID, &exec.IterationID, &exec.State, &exec.ToolUseID, &exec.ToolName, &exec.ToolInput,
 			&exec.IsAgentTool, &exec.AgentName, &exec.ChildRunID, &exec.ToolOutput, &exec.IsError, &exec.ErrorMessage,
 			&exec.ClaimedByInstanceID, &exec.ClaimedAt, &exec.AttemptCount, &exec.MaxAttempts,
-			&exec.CreatedAt, &exec.StartedAt, &exec.CompletedAt,
+			&exec.ScheduledAt, &exec.SnoozeCount, &exec.LastError, &exec.CreatedAt, &exec.StartedAt, &exec.CompletedAt,
 		); err != nil {
 			return nil, err
 		}
 		executions = append(executions, &exec)
 	}
 	return executions, rows.Err()
+}
+
+// Tool execution retry operations
+
+func (s *Store) RetryToolExecution(ctx context.Context, id uuid.UUID, scheduledAt time.Time, lastError string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agentpg_tool_executions
+		SET state = 'pending'::agentpg_tool_execution_state,
+			claimed_by_instance_id = NULL,
+			claimed_at = NULL,
+			started_at = NULL,
+			scheduled_at = $2,
+			last_error = $3
+		WHERE id = $1
+	`, id, scheduledAt, lastError)
+	return err
+}
+
+func (s *Store) SnoozeToolExecution(ctx context.Context, id uuid.UUID, scheduledAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agentpg_tool_executions
+		SET state = 'pending'::agentpg_tool_execution_state,
+			claimed_by_instance_id = NULL,
+			claimed_at = NULL,
+			started_at = NULL,
+			scheduled_at = $2,
+			attempt_count = GREATEST(0, attempt_count - 1),
+			snooze_count = snooze_count + 1
+		WHERE id = $1
+	`, id, scheduledAt)
+	return err
+}
+
+func (s *Store) DiscardToolExecution(ctx context.Context, id uuid.UUID, errorMsg string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agentpg_tool_executions
+		SET state = 'failed'::agentpg_tool_execution_state,
+			is_error = TRUE,
+			error_message = $2,
+			completed_at = NOW()
+		WHERE id = $1
+	`, id, errorMsg)
+	return err
+}
+
+// Run rescue operations
+
+func (s *Store) GetStuckRuns(ctx context.Context, timeout time.Duration, maxRescueAttempts, limit int) ([]*driver.Run, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT * FROM agentpg_get_stuck_runs($1, $2, $3)", timeout, maxRescueAttempts, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stuck runs: %w", err)
+	}
+	defer rows.Close()
+
+	return collectRuns(rows)
+}
+
+func (s *Store) RescueRun(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agentpg_runs
+		SET state = 'pending'::agentpg_run_state,
+			claimed_by_instance_id = NULL,
+			claimed_at = NULL,
+			started_at = NULL,
+			rescue_attempts = rescue_attempts + 1,
+			last_rescue_at = NOW()
+		WHERE id = $1
+	`, id)
+	return err
 }
 
 // Compile-time check
