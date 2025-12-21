@@ -13,6 +13,7 @@ require (
 	github.com/youssefsiam38/agentpg/driver/databasesql v0.0.0
 	github.com/youssefsiam38/agentpg/driver/pgxv5 v0.0.0
 	github.com/yuin/goldmark v1.7.13
+	golang.org/x/crypto v0.40.0
 )
 
 require (
@@ -25,7 +26,6 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	golang.org/x/crypto v0.40.0 // indirect
 	golang.org/x/net v0.41.0 // indirect
 	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/text v0.27.0 // indirect
