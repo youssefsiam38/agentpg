@@ -104,21 +104,7 @@
                     </td>
                 </tr>
                 {{else}}
-                <tr>
-                    <td colspan="7" class="px-6 py-12 text-center">
-                        <svg class="mx-auto h-12 w-12 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                        </svg>
-                        <h3 class="mt-2 text-sm font-medium text-gray-100">No compaction events</h3>
-                        <p class="mt-1 text-sm text-gray-400">
-                            {{if $.Data.SessionIDFilter}}
-                            No compaction events found for this session.
-                            {{else}}
-                            Compaction events will appear here when context compaction occurs.
-                            {{end}}
-                        </p>
-                    </td>
-                </tr>
+                {{template "empty-state" (dict "ColSpan" 7 "Icon" "compress" "Title" "No compaction events" "Description" "Compaction events will appear here when context compaction occurs.")}}
                 {{end}}
             </tbody>
         </table>

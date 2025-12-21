@@ -26,9 +26,11 @@ func (s *Service[TTx]) ListAgents(ctx context.Context) ([]*AgentWithStats, error
 	// Build results
 	results := make([]*AgentWithStats, 0, len(agents))
 	for _, agent := range agents {
+		registeredOn := agentInstances[agent.Name]
 		stats := &AgentWithStats{
 			Agent:        agent,
-			RegisteredOn: agentInstances[agent.Name],
+			RegisteredOn: registeredOn,
+			IsActive:     len(registeredOn) > 0,
 		}
 
 		// Get run statistics using ListRuns with agent filter
@@ -86,6 +88,7 @@ func (s *Service[TTx]) GetAgentWithStats(ctx context.Context, name string) (*Age
 	return &AgentWithStats{
 		Agent:        agent,
 		RegisteredOn: registeredOn,
+		IsActive:     len(registeredOn) > 0,
 	}, nil
 }
 
@@ -109,9 +112,11 @@ func (s *Service[TTx]) ListTools(ctx context.Context) ([]*ToolWithStats, error) 
 	// Build results
 	results := make([]*ToolWithStats, 0, len(tools))
 	for _, tool := range tools {
+		registeredOn := toolInstances[tool.Name]
 		stats := &ToolWithStats{
 			Tool:         tool,
-			RegisteredOn: toolInstances[tool.Name],
+			RegisteredOn: registeredOn,
+			IsActive:     len(registeredOn) > 0,
 		}
 
 		// Get execution statistics using ListToolExecutions with tool filter
@@ -163,5 +168,6 @@ func (s *Service[TTx]) GetToolWithStats(ctx context.Context, name string) (*Tool
 	return &ToolWithStats{
 		Tool:         tool,
 		RegisteredOn: registeredOn,
+		IsActive:     len(registeredOn) > 0,
 	}, nil
 }

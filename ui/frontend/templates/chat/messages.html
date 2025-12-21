@@ -1,4 +1,10 @@
 {{define "chat/messages.html"}}
+<!-- OOB swap to update stats -->
+<div id="chat-stats" hx-swap-oob="true" class="flex items-center space-x-4">
+    <span class="text-sm text-gray-400">{{.MessageCount}} messages</span>
+    <span class="text-sm text-gray-400">{{formatTokens .TotalTokens}} tokens</span>
+</div>
+
 <!-- OOB swap to replace the content of #messages-container -->
 <div id="messages-container" hx-swap-oob="true" class="flex-1 overflow-y-auto p-4 space-y-4">
 {{range .Messages}}

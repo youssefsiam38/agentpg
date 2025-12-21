@@ -113,15 +113,7 @@
                     </td>
                 </tr>
                 {{else}}
-                <tr>
-                    <td colspan="6" class="px-6 py-12 text-center">
-                        <svg class="mx-auto h-12 w-12 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
-                        </svg>
-                        <h3 class="mt-2 text-sm font-medium text-gray-100">No instances running</h3>
-                        <p class="mt-1 text-sm text-gray-400">Start a worker to see it appear here.</p>
-                    </td>
-                </tr>
+                {{template "empty-state" (dict "ColSpan" 6 "Icon" "server" "Title" "No instances running" "Description" "Start a worker to see it appear here.")}}
                 {{end}}
             </tbody>
         </table>

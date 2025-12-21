@@ -689,8 +689,10 @@ func (rt *router[TTx]) handleChatMessages(w http.ResponseWriter, r *http.Request
 	}
 
 	data := map[string]any{
-		"BasePath": rt.config.BasePath,
-		"Messages": conversation.Messages,
+		"BasePath":     rt.config.BasePath,
+		"Messages":     conversation.Messages,
+		"MessageCount": conversation.MessageCount,
+		"TotalTokens":  conversation.TotalTokens,
 	}
 
 	if err := rt.renderer.renderFragment(w, "chat/messages.html", data); err != nil {

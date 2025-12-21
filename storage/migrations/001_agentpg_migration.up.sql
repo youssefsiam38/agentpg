@@ -1694,6 +1694,36 @@ CREATE TRIGGER trg_cleanup_orphaned_tools
     FOR EACH ROW
     EXECUTE FUNCTION agentpg_cleanup_orphaned_tools();
 
+-- -----------------------------------------------------------------------------
+-- Validate agent is active before creating run
+-- -----------------------------------------------------------------------------
+-- Prevents creating runs for agents that have no registered instances.
+-- This enforces atomicity at the database level, ensuring users cannot
+-- create sessions/runs with agents that no active worker can process.
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION agentpg_validate_run_agent()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Check if agent is registered on at least one active instance
+    IF NOT EXISTS (
+        SELECT 1 FROM agentpg_instance_agents
+        WHERE agent_name = NEW.agent_name
+    ) THEN
+        RAISE EXCEPTION 'Agent "%" is not active (no instances registered)', NEW.agent_name
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_validate_run_agent
+    BEFORE INSERT ON agentpg_runs
+    FOR EACH ROW
+    EXECUTE FUNCTION agentpg_validate_run_agent();
+
+COMMENT ON FUNCTION agentpg_validate_run_agent IS
+'Prevents creating runs for inactive agents (no registered instances).';
+
 -- =============================================================================
 -- ATOMIC OPERATIONS
 -- =============================================================================

@@ -11,7 +11,7 @@
     <!-- Tools Grid -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {{range .Data.Tools}}
-        <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden">
+        <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden{{if not .IsActive}} opacity-60{{end}}">
             <div class="p-6">
                 <div class="flex items-start justify-between">
                     <div class="flex items-center">
@@ -30,7 +30,14 @@
                         </div>
                         {{end}}
                         <div class="ml-4">
-                            <h3 class="text-lg font-medium text-gray-100">{{.Tool.Name}}</h3>
+                            <h3 class="text-lg font-medium text-gray-100">
+                                {{.Tool.Name}}
+                                {{if not .IsActive}}
+                                <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-600/50 text-gray-400 ring-1 ring-gray-500/30">
+                                    Inactive
+                                </span>
+                                {{end}}
+                            </h3>
                             {{if .Tool.IsAgentTool}}
                             <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-purple-400 ring-1 ring-purple-500/30">
                                 Agent Tool{{if .Tool.AgentName}} - {{.Tool.AgentName}}{{end}}
@@ -81,12 +88,8 @@
         </div>
         {{else}}
         <div class="col-span-full">
-            <div class="text-center py-12 bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700">
-                <svg class="mx-auto h-12 w-12 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                </svg>
-                <h3 class="mt-2 text-sm font-medium text-gray-100">No tools registered</h3>
-                <p class="mt-1 text-sm text-gray-400">Tools will appear here when registered with the client.</p>
+            <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700">
+                {{template "empty-state" (dict "Icon" "tool" "Title" "No tools registered" "Description" "Tools will appear here when registered with the client.")}}
             </div>
         </div>
         {{end}}

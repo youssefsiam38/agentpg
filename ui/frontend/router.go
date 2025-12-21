@@ -72,7 +72,15 @@ func NewRouter[TTx any](svc *service.Service[TTx], client *agentpg.Client[TTx], 
 	baseTmpl := template.Must(template.New("").
 		Funcs(templateFuncs()).
 		ParseFS(templatesFS,
+			// Base layout
 			"templates/base.html",
+			// Shared components (available to all templates)
+			"templates/components/spinner.html",
+			"templates/components/processing-indicator.html",
+			"templates/components/icons.html",
+			"templates/components/empty-state.html",
+			"templates/components/pagination.html",
+			// Existing shared templates
 			"templates/dashboard.html",
 			"templates/fragments/dashboard-stats.html",
 			"templates/chat/message-bubble.html",

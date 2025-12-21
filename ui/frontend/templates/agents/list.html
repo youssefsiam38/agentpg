@@ -11,7 +11,7 @@
     <!-- Agents Grid -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {{range .Data.Agents}}
-        <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden">
+        <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden{{if not .IsActive}} opacity-60{{end}}">
             <div class="p-6">
                 <div class="flex items-start">
                     <div class="flex-shrink-0 w-12 h-12 bg-cyan-500/20 rounded-lg flex items-center justify-center">
@@ -20,7 +20,14 @@
                         </svg>
                     </div>
                     <div class="ml-4 flex-1">
-                        <h3 class="text-lg font-medium text-gray-100">{{.Agent.Name}}</h3>
+                        <h3 class="text-lg font-medium text-gray-100">
+                            {{.Agent.Name}}
+                            {{if not .IsActive}}
+                            <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-600/50 text-gray-400 ring-1 ring-gray-500/30">
+                                Inactive
+                            </span>
+                            {{end}}
+                        </h3>
                         <p class="text-sm text-gray-400">{{.Agent.Model}}</p>
                     </div>
                 </div>
@@ -113,12 +120,8 @@
         </div>
         {{else}}
         <div class="col-span-full">
-            <div class="text-center py-12 bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700">
-                <svg class="mx-auto h-12 w-12 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
-                <h3 class="mt-2 text-sm font-medium text-gray-100">No agents registered</h3>
-                <p class="mt-1 text-sm text-gray-400">Agents will appear here when registered with the client.</p>
+            <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700">
+                {{template "empty-state" (dict "Icon" "computer" "Title" "No agents registered" "Description" "Agents will appear here when registered with the client.")}}
             </div>
         </div>
         {{end}}
