@@ -334,9 +334,18 @@ func (w *toolWorker[TTx]) handleAllToolsComplete(ctx context.Context, runID uuid
 	}
 
 	// Atomically create tool results message AND update run state to pending
-	_, err = store.CompleteToolsAndContinueRun(ctx, run.SessionID, runID, contentBlocks)
+	// Returns nil if the run is not in pending_tools state (already processed by another instance)
+	msg, err := store.CompleteToolsAndContinueRun(ctx, run.SessionID, runID, contentBlocks)
 	if err != nil {
 		log.Error("failed to complete tools and continue run", "error", err, "run_id", runID)
+		return
+	}
+
+	// If msg is nil, another instance already processed this run
+	if msg == nil {
+		log.Debug("run already processed by another instance, skipping",
+			"run_id", runID,
+		)
 		return
 	}
 
