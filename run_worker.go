@@ -231,6 +231,8 @@ func (w *runWorker[TTx]) buildMessages(ctx context.Context, run *driver.Run) ([]
 	messages := make([]anthropic.MessageParam, 0, len(sessionMessages))
 
 	// Add existing messages from database
+	// IMPORTANT: Claude API requires alternating user/assistant roles.
+	// Consecutive messages with the same role must be merged into one message.
 	for _, msg := range sessionMessages {
 		role := anthropic.MessageParamRoleUser
 		if msg.Role == string(MessageRoleAssistant) {
@@ -253,7 +255,15 @@ func (w *runWorker[TTx]) buildMessages(ctx context.Context, run *driver.Run) ([]
 			}
 		}
 
-		if len(content) > 0 {
+		if len(content) == 0 {
+			continue
+		}
+
+		// Check if we can merge with the previous message (same role)
+		if len(messages) > 0 && messages[len(messages)-1].Role == role {
+			// Merge content blocks into the previous message
+			messages[len(messages)-1].Content = append(messages[len(messages)-1].Content, content...)
+		} else {
 			messages = append(messages, anthropic.MessageParam{
 				Role:    role,
 				Content: content,

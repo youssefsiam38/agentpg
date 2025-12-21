@@ -1148,18 +1148,40 @@ func (s *Store) CompleteToolsAndContinueRun(ctx context.Context, sessionID, runI
 	var msg driver.Message
 	var usage, metadata []byte
 
+	// The stored procedure returns NULL if the run is not in pending_tools state
+	// (e.g., already processed by another instance in a distributed setup)
+	var msgID *uuid.UUID
+	var msgSessionID *uuid.UUID
+	var msgRunID *uuid.UUID
+	var msgRole *string
+	var isPreserved, isSummary *bool
+	var createdAt, updatedAt *time.Time
+
 	err = s.pool.QueryRow(ctx,
 		"SELECT * FROM agentpg_complete_tools_and_continue_run($1, $2, $3)",
 		sessionID, runID, blocksJSON,
 	).Scan(
-		&msg.ID, &msg.SessionID, &msg.RunID, &msg.Role,
-		&usage, &msg.IsPreserved, &msg.IsSummary, &metadata,
-		&msg.CreatedAt, &msg.UpdatedAt,
+		&msgID, &msgSessionID, &msgRunID, &msgRole,
+		&usage, &isPreserved, &isSummary, &metadata,
+		&createdAt, &updatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to complete tools and continue run: %w", err)
 	}
 
+	// If msgID is nil, the function returned NULL because the run was not in pending_tools state
+	if msgID == nil {
+		return nil, nil
+	}
+
+	msg.ID = *msgID
+	msg.SessionID = *msgSessionID
+	msg.RunID = msgRunID
+	msg.Role = *msgRole
+	msg.IsPreserved = *isPreserved
+	msg.IsSummary = *isSummary
+	msg.CreatedAt = *createdAt
+	msg.UpdatedAt = *updatedAt
 	json.Unmarshal(usage, &msg.Usage)
 	json.Unmarshal(metadata, &msg.Metadata)
 	msg.Content = contentBlocks

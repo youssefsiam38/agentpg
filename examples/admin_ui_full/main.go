@@ -188,12 +188,13 @@ func registerTools(client *agentpg.Client[pgx.Tx]) {
 
 // registerAgents registers all agents with the client.
 func registerAgents(client *agentpg.Client[pgx.Tx]) {
-	// Basic assistant
+	// Basic assistant with calculator tool
 	client.RegisterAgent(&agentpg.AgentDefinition{
 		Name:         "assistant",
 		Description:  "A helpful general-purpose AI assistant",
 		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful AI assistant. Be concise, accurate, and friendly. If you don't know something, say so.",
+		SystemPrompt: "You are a helpful AI assistant. Be concise, accurate, and friendly. If you don't know something, say so. Use available tools when appropriate.",
+		Tools:        []string{"calculator"},
 	})
 
 	// Research specialist with web search

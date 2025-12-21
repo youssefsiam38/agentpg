@@ -1808,6 +1808,10 @@ COMMENT ON FUNCTION agentpg_create_tool_executions_and_update_run IS
 -- This procedure ensures that creating the tool_result message and updating
 -- the run state happen in a single transaction.
 --
+-- RACE-SAFETY: Uses SELECT FOR UPDATE to lock the run and verifies the run is
+-- in 'pending_tools' state before proceeding. If run is not in the expected
+-- state (e.g., already processed by another instance), returns NULL.
+--
 -- USAGE:
 --   SELECT * FROM agentpg_complete_tools_and_continue_run(
 --       'session-uuid',
@@ -1821,10 +1825,23 @@ CREATE OR REPLACE FUNCTION agentpg_complete_tools_and_continue_run(
     p_content_blocks JSONB
 ) RETURNS agentpg_messages AS $$
 DECLARE
+    v_run agentpg_runs;
     v_message agentpg_messages;
     v_block JSONB;
     v_block_index INTEGER := 0;
 BEGIN
+    -- Lock the run and verify it's in pending_tools state
+    -- This prevents race conditions when multiple instances receive the notification
+    SELECT * INTO v_run
+    FROM agentpg_runs
+    WHERE id = p_run_id
+    FOR UPDATE;
+
+    -- If run is not in pending_tools state, another instance already processed it
+    IF v_run.state != 'pending_tools' THEN
+        RETURN NULL;
+    END IF;
+
     -- Create the tool results message
     INSERT INTO agentpg_messages (session_id, run_id, role)
     VALUES (p_session_id, p_run_id, 'user')
@@ -1860,4 +1877,4 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION agentpg_complete_tools_and_continue_run IS
-'Atomically creates tool_result message and transitions run to pending for next iteration.';
+'Atomically creates tool_result message and transitions run to pending for next iteration. Race-safe: returns NULL if run is not in pending_tools state.';
