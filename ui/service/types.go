@@ -368,6 +368,7 @@ type AgentWithStats struct {
 	FailedRuns      int                     `json:"failed_runs"`
 	AvgTokensPerRun int                     `json:"avg_tokens_per_run"`
 	RegisteredOn    []string                `json:"registered_on"`
+	IsActive        bool                    `json:"is_active"` // true if registered on at least one instance
 }
 
 // ToolWithStats contains a tool definition with statistics.
@@ -379,6 +380,7 @@ type ToolWithStats struct {
 	FailedCount     int                    `json:"failed_count"`
 	AvgDuration     *time.Duration         `json:"avg_duration,omitempty"`
 	RegisteredOn    []string               `json:"registered_on"`
+	IsActive        bool                   `json:"is_active"` // true if registered on at least one instance
 }
 
 // InstanceWithCapabilities contains instance info with its capabilities.

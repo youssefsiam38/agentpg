@@ -2128,10 +2128,6 @@ type Config struct {
     // Useful for monitoring-only deployments.
     ReadOnly bool
 
-    // AuthMiddleware is optional authentication middleware.
-    // Applied to both API and frontend handlers.
-    AuthMiddleware func(http.Handler) http.Handler
-
     // Logger for structured logging.
     Logger Logger
 
@@ -2179,22 +2175,29 @@ monitorConfig := &ui.Config{
 http.Handle("/monitor/", http.StripPrefix("/monitor", ui.UIHandler(store, nil, monitorConfig)))
 ```
 
-### Authentication Middleware
+### Adding Middleware
+
+Wrap handlers externally using standard Go patterns:
 
 ```go
-// Add authentication to UI and API
-authConfig := &ui.Config{
-    BasePath: "/ui",
-    AuthMiddleware: func(next http.Handler) http.Handler {
-        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-            if !isAuthenticated(r) {
-                http.Error(w, "Unauthorized", http.StatusUnauthorized)
-                return
-            }
-            next.ServeHTTP(w, r)
-        })
-    },
-}
+// Single middleware
+cfg := &ui.Config{BasePath: "/ui"}
+http.Handle("/ui/", http.StripPrefix("/ui", authMiddleware(ui.UIHandler(store, client, cfg))))
+
+// Multiple middlewares chained
+handler := authMiddleware(loggingMiddleware(rateLimitMiddleware(ui.UIHandler(store, client, cfg))))
+http.Handle("/ui/", http.StripPrefix("/ui", handler))
+
+// Using justinas/alice
+chain := alice.New(authMiddleware, loggingMiddleware)
+http.Handle("/ui/", http.StripPrefix("/ui", chain.Then(ui.UIHandler(store, client, cfg))))
+
+// Using chi router
+r.Route("/ui", func(r chi.Router) {
+    r.Use(authMiddleware)
+    r.Use(loggingMiddleware)
+    r.Mount("/", ui.UIHandler(store, client, cfg))
+})
 ```
 
 ### Frontend Pages

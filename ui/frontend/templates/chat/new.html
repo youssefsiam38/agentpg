@@ -12,10 +12,15 @@
                 <select name="agent_name" id="agent_name" required
                         class="w-full px-4 py-3 border border-gray-600 bg-gray-900 text-gray-100 rounded-lg shadow-sm focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500">
                     {{range .Data.Agents}}
+                    {{if .IsActive}}
                     <option value="{{.Agent.Name}}">
-                        {{.Agent.Name}}
-                        {{if .Agent.Description}} - {{.Agent.Description}}{{end}}
+                        {{.Agent.Name}}{{if .Agent.Description}} - {{.Agent.Description}}{{end}}
                     </option>
+                    {{else}}
+                    <option value="{{.Agent.Name}}" disabled class="text-gray-500">
+                        {{.Agent.Name}} (Inactive)
+                    </option>
+                    {{end}}
                     {{end}}
                 </select>
                 <p class="mt-2 text-sm text-gray-500">
@@ -86,7 +91,7 @@
         <h2 class="text-lg font-medium text-gray-100 mb-4">Available Agents</h2>
         <div class="space-y-4">
             {{range .Data.Agents}}
-            <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 p-4">
+            <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 p-4{{if not .IsActive}} opacity-60{{end}}">
                 <div class="flex items-start">
                     <div class="flex-shrink-0 w-10 h-10 bg-cyan-500/20 rounded-lg flex items-center justify-center">
                         <svg class="w-6 h-6 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -94,7 +99,14 @@
                         </svg>
                     </div>
                     <div class="ml-4">
-                        <h3 class="font-medium text-gray-100">{{.Agent.Name}}</h3>
+                        <h3 class="font-medium text-gray-100">
+                            {{.Agent.Name}}
+                            {{if not .IsActive}}
+                            <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-600/50 text-gray-400 ring-1 ring-gray-500/30">
+                                Inactive
+                            </span>
+                            {{end}}
+                        </h3>
                         {{if .Agent.Description}}
                         <p class="text-sm text-gray-400">{{.Agent.Description}}</p>
                         {{end}}
