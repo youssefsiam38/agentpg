@@ -36,10 +36,6 @@ func APIHandler[TTx any](store driver.Store[TTx], cfg *Config) http.Handler {
 		Logger:   cfg.Logger,
 	})
 
-	if cfg.AuthMiddleware != nil {
-		handler = cfg.AuthMiddleware(handler)
-	}
-
 	return handler
 }
 
@@ -74,10 +70,6 @@ func UIHandler[TTx any](store driver.Store[TTx], client *agentpg.Client[TTx], cf
 		RefreshInterval: cfg.RefreshInterval,
 		Logger:          cfg.Logger,
 	})
-
-	if cfg.AuthMiddleware != nil {
-		handler = cfg.AuthMiddleware(handler)
-	}
 
 	return handler
 }

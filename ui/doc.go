@@ -34,7 +34,6 @@
 //	cfg := &ui.Config{
 //	    TenantID:        "my-tenant",  // Filter to single tenant (empty = admin mode)
 //	    ReadOnly:        false,         // Disable chat if true
-//	    AuthMiddleware:  myAuthMiddleware,
 //	    RefreshInterval: 5 * time.Second,
 //	    PageSize:        25,
 //	}
@@ -54,4 +53,19 @@
 //
 //	// Echo
 //	e.Any("/api/*", echo.WrapHandler(ui.APIHandler(store, cfg)))
+//
+// # Adding Middleware
+//
+// Wrap handlers externally using standard Go patterns:
+//
+//	// Single middleware
+//	http.Handle("/ui/", http.StripPrefix("/ui", authMiddleware(ui.UIHandler(store, client, cfg))))
+//
+//	// Multiple middlewares chained
+//	handler := authMiddleware(loggingMiddleware(rateLimitMiddleware(ui.UIHandler(store, client, cfg))))
+//	http.Handle("/ui/", http.StripPrefix("/ui", handler))
+//
+//	// Using justinas/alice
+//	chain := alice.New(authMiddleware, loggingMiddleware)
+//	http.Handle("/ui/", http.StripPrefix("/ui", chain.Then(ui.UIHandler(store, client, cfg))))
 package ui

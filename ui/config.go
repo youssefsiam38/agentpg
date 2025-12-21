@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"net/http"
 	"time"
 )
 
@@ -26,10 +25,6 @@ type Config struct {
 	// ReadOnly disables write operations (chat, session creation).
 	// Useful for monitoring-only deployments.
 	ReadOnly bool
-
-	// AuthMiddleware is optional authentication middleware.
-	// Applied to both API and frontend handlers.
-	AuthMiddleware func(http.Handler) http.Handler
 
 	// Logger for structured logging.
 	// If nil, logging is disabled.
