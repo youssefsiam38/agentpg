@@ -120,7 +120,7 @@ func (s *Service[TTx]) GetCompactionEventDetail(ctx context.Context, sessionID, 
 		detail.Session = &SessionSummary{
 			ID:              session.ID,
 			TenantID:        session.TenantID,
-			Identifier:      session.Identifier,
+			UserID:          session.UserID,
 			Depth:           session.Depth,
 			CompactionCount: session.CompactionCount,
 			CreatedAt:       session.CreatedAt,

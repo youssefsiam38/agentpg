@@ -7,10 +7,10 @@
                 <ol class="flex items-center space-x-2">
                     <li><a href="{{$.BasePath}}/sessions" class="text-gray-400 hover:text-gray-200">Sessions</a></li>
                     <li><span class="text-gray-500">/</span></li>
-                    <li class="text-gray-100 font-medium">{{.Data.Session.Session.Identifier}}</li>
+                    <li class="text-gray-100 font-medium">{{.Data.Session.Session.UserID}}</li>
                 </ol>
             </nav>
-            <h1 class="mt-2 text-2xl font-semibold text-gray-100">{{.Data.Session.Session.Identifier}}</h1>
+            <h1 class="mt-2 text-2xl font-semibold text-gray-100">{{.Data.Session.Session.UserID}}</h1>
             <p class="mt-1 text-sm text-gray-400">Tenant: {{.Data.Session.Session.TenantID}}</p>
         </div>
         <div class="mt-4 sm:mt-0 flex space-x-3">
@@ -187,7 +187,7 @@
                     <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16l-4-4m0 0l4-4m-4 4h18"></path>
                     </svg>
-                    {{.Data.Session.ParentSession.Identifier}}
+                    {{.Data.Session.ParentSession.UserID}}
                 </a>
             </div>
             {{end}}
@@ -201,7 +201,7 @@
                             <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"></path>
                             </svg>
-                            {{.Identifier}}
+                            {{.UserID}}
                         </a>
                         <span class="text-sm text-gray-400">{{.RunCount}} runs</span>
                     </li>

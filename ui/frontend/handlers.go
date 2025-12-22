@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/youssefsiam38/agentpg/ui/service"
@@ -13,14 +12,14 @@ import (
 
 // Validation constants
 const (
-	// maxIdentifierLength is the maximum length for session identifiers
-	maxIdentifierLength = 256
+	// maxUserIDLength is the maximum length for session user IDs
+	maxUserIDLength = 256
 	// maxAgentNameLength is the maximum length for agent names
 	maxAgentNameLength = 128
 )
 
-// identifierRegex validates session identifiers (alphanumeric, hyphens, underscores)
-var identifierRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+// userIDRegex validates session user IDs (alphanumeric, hyphens, underscores)
+var userIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // parseInt parses an integer from a query parameter with a default.
 // It applies bounds validation to prevent resource exhaustion.
@@ -55,13 +54,13 @@ func parseUUID(s string) (uuid.UUID, error) {
 	return uuid.Parse(s)
 }
 
-// validateIdentifier validates a session identifier.
-// Returns the validated identifier or an empty string if invalid.
-func validateIdentifier(s string) string {
-	if len(s) == 0 || len(s) > maxIdentifierLength {
+// validateUserID validates a session user ID.
+// Returns the validated user ID or an empty string if invalid.
+func validateUserID(s string) string {
+	if len(s) == 0 || len(s) > maxUserIDLength {
 		return ""
 	}
-	if !identifierRegex.MatchString(s) {
+	if !userIDRegex.MatchString(s) {
 		return ""
 	}
 	return s
@@ -74,7 +73,7 @@ func validateAgentName(s string) string {
 		return ""
 	}
 	// Agent names should be alphanumeric with hyphens and underscores
-	if !identifierRegex.MatchString(s) {
+	if !userIDRegex.MatchString(s) {
 		return ""
 	}
 	return s
@@ -174,7 +173,7 @@ func (rt *router[TTx]) handleSessionDetail(w http.ResponseWriter, r *http.Reques
 	}
 
 	data := map[string]any{
-		"Title":   "Session: " + detail.Session.Identifier,
+		"Title":   "Session: " + detail.Session.UserID,
 		"Session": detail,
 	}
 
@@ -570,18 +569,18 @@ func (rt *router[TTx]) handleChatSend(w http.ResponseWriter, r *http.Request) {
 			tenantID = "default"
 		}
 
-		// Validate identifier if provided
-		identifier := r.FormValue("session_id") // session_id field is used as identifier for new sessions
-		if identifier != "" {
-			if validated := validateIdentifier(identifier); validated == "" {
-				http.Error(w, "Invalid session identifier: must be alphanumeric with hyphens/underscores only", http.StatusBadRequest)
-				return
-			}
-		} else {
-			identifier = fmt.Sprintf("chat-%d", time.Now().UnixNano())
+		// Validate user ID (required)
+		userID := r.FormValue("user_id")
+		if userID == "" {
+			http.Error(w, "User ID is required", http.StatusBadRequest)
+			return
+		}
+		if validated := validateUserID(userID); validated == "" {
+			http.Error(w, "Invalid user ID: must be alphanumeric with hyphens/underscores only", http.StatusBadRequest)
+			return
 		}
 
-		sessionID, err = rt.client.NewSession(r.Context(), tenantID, identifier, nil, nil)
+		sessionID, err = rt.client.NewSession(r.Context(), tenantID, userID, nil, nil)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to create session: %v", err), http.StatusInternalServerError)
 			return
@@ -715,10 +714,27 @@ func (rt *router[TTx]) handleChatSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Get conversation
+	// Get view mode from query param (default: top-level)
+	// top-level = only root-level messages (nested agent conversations hidden)
+	// hierarchy = all messages grouped by agent run
+	viewMode := r.URL.Query().Get("view")
+	if viewMode != "hierarchy" {
+		viewMode = "top-level"
+	}
+
+	// Get conversation (flat view)
 	conversation, convErr := rt.svc.GetConversation(r.Context(), sessionID, 100)
 	if convErr != nil {
 		rt.logError("failed to get conversation for chat session", convErr)
+	}
+
+	// Get hierarchical conversation if hierarchy view requested
+	var hierarchicalConversation *service.HierarchicalConversationView
+	if viewMode == "hierarchy" {
+		hierarchicalConversation, err = rt.svc.GetHierarchicalConversation(r.Context(), sessionID, 100)
+		if err != nil {
+			rt.logError("failed to get hierarchical conversation", err)
+		}
 	}
 
 	// Get agents for the send form
@@ -759,12 +775,14 @@ func (rt *router[TTx]) handleChatSession(w http.ResponseWriter, r *http.Request)
 	}
 
 	data := map[string]any{
-		"Title":        "Chat: " + session.Session.Identifier,
-		"Session":      session,
-		"Conversation": conversation,
-		"Agents":       agents,
-		"Sessions":     sessionList,
-		"PendingRunID": pendingRunID,
+		"Title":                    "Chat: " + session.Session.UserID,
+		"Session":                  session,
+		"Conversation":             conversation,
+		"HierarchicalConversation": hierarchicalConversation,
+		"ViewMode":                 viewMode,
+		"Agents":                   agents,
+		"Sessions":                 sessionList,
+		"PendingRunID":             pendingRunID,
 	}
 
 	if err := rt.renderer.render(w, r, "chat/interface.html", data); err != nil {

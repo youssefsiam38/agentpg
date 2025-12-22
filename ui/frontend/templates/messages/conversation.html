@@ -5,7 +5,7 @@
         <div>
             <h1 class="text-2xl font-bold text-gray-100">Conversation</h1>
             <p class="mt-1 text-sm text-gray-400">
-                Session: <span class="font-mono">{{slice (printf "%s" .Data.Conversation.SessionID) 0 8}}...</span>
+            Session: <span class="font-mono">{{.Data.Conversation.SessionID}}</span>
             </p>
         </div>
         <a href="{{$.BasePath}}/sessions/{{.Data.Conversation.SessionID}}" class="px-4 py-2 bg-gray-700 text-gray-200 rounded-md hover:bg-gray-600 ring-1 ring-gray-600">

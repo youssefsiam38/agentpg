@@ -18,8 +18,8 @@
                 {{range .Data.Sessions}}
                 <li>
                     <a href="{{$.BasePath}}/chat/session/{{.ID}}" class="block px-3 py-2 text-sm rounded-lg transition-colors {{if eq (printf "%s" .ID) $selectedSessionID}}bg-cyan-500/20 border border-cyan-500/30 text-cyan-300{{else}}text-gray-300 hover:bg-gray-700{{end}}">
-                        <div class="font-medium truncate">{{.Identifier}}</div>
-                        <div class="text-xs text-gray-500 mt-0.5">{{formatTimeAgo .LastActivityAt}}</div>
+                        <div class="font-medium truncate font-mono text-xs">{{.ID | truncate 16}}</div>
+                        <div class="text-xs text-gray-500 mt-0.5">{{.UserID}} · {{formatTimeAgo .LastActivityAt}}</div>
                     </a>
                 </li>
                 {{else}}
@@ -41,8 +41,9 @@
         <div class="flex-shrink-0 bg-gray-800/50 border-b border-gray-700 px-4 py-3">
             <div class="flex items-center justify-between">
                 <div>
-                    <h2 class="text-lg font-medium text-gray-100">{{.Data.Session.Session.Identifier}}</h2>
+                    <h2 class="text-lg font-medium text-gray-100 font-mono">{{.Data.Session.Session.ID}}</h2>
                     <div class="flex items-center space-x-3 text-sm text-gray-400">
+                        <span>User: {{.Data.Session.Session.UserID}}</span>
                         <span>Tenant: {{.Data.Session.Session.TenantID}}</span>
                         {{if .Data.Conversation.AgentName}}
                         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-cyan-500/20 text-cyan-400 ring-1 ring-cyan-500/30">
@@ -51,17 +52,75 @@
                         {{end}}
                     </div>
                 </div>
-                <div id="chat-stats" class="flex items-center space-x-4">
-                    <span class="text-sm text-gray-400">{{.Data.Conversation.MessageCount}} messages</span>
-                    <span class="text-sm text-gray-400">{{formatTokens .Data.Conversation.TotalTokens}} tokens</span>
+                <div class="flex items-center space-x-4">
+                    <!-- View Toggle -->
+                    <div class="flex items-center space-x-2">
+                        <span class="text-xs text-gray-400">View:</span>
+                        <div class="flex rounded-lg overflow-hidden border border-gray-600">
+                            <a href="{{$.BasePath}}/chat/session/{{.Data.Session.Session.ID}}?view=top-level"
+                               class="px-3 py-1.5 text-xs font-medium transition-colors {{if eq .Data.ViewMode "top-level"}}bg-cyan-600 text-white{{else}}bg-gray-700 text-gray-300 hover:bg-gray-600{{end}}">
+                                Top Level
+                            </a>
+                            <a href="{{$.BasePath}}/chat/session/{{.Data.Session.Session.ID}}?view=hierarchy"
+                               class="px-3 py-1.5 text-xs font-medium transition-colors {{if eq .Data.ViewMode "hierarchy"}}bg-cyan-600 text-white{{else}}bg-gray-700 text-gray-300 hover:bg-gray-600{{end}}">
+                                Hierarchy
+                            </a>
+                        </div>
+                        <div class="relative group">
+                            <button type="button" class="w-5 h-5 flex items-center justify-center rounded-full bg-gray-700 text-gray-400 hover:bg-gray-600 hover:text-gray-300 text-xs font-bold">
+                                ?
+                            </button>
+                            <div class="hidden group-hover:block absolute right-0 top-6 z-50 w-64 p-3 bg-gray-800 border border-gray-600 rounded-lg shadow-xl text-xs text-gray-300">
+                                <p class="font-semibold text-gray-100 mb-2">View Modes:</p>
+                                <p class="mb-2"><span class="text-cyan-400 font-medium">Top Level:</span> Shows only the main conversation with the root agent. Nested agent calls appear as collapsed tool results.</p>
+                                <p><span class="text-cyan-400 font-medium">Hierarchy:</span> Shows all messages from all agents, grouped by run hierarchy with visual depth indicators.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="chat-stats" class="flex items-center space-x-4">
+                        <span class="text-sm text-gray-400">{{.Data.Conversation.MessageCount}} messages</span>
+                        <span class="text-sm text-gray-400">{{formatTokens .Data.Conversation.TotalTokens}} tokens</span>
+                    </div>
                 </div>
             </div>
         </div>
 
         <!-- Messages -->
         <div id="messages-container" class="flex-1 overflow-y-auto p-4 space-y-4">
+            {{if eq .Data.ViewMode "hierarchy"}}
+            {{/* Hierarchy View: Messages grouped by run showing all nested agents */}}
+            {{if .Data.HierarchicalConversation}}
+                {{/* Render orphan messages (no run_id) first */}}
+                {{if .Data.HierarchicalConversation.OrphanMessages}}
+                <div class="orphan-messages mb-4">
+                    {{range .Data.HierarchicalConversation.OrphanMessages}}
+                    {{template "message-bubble" (dict "Msg" . "BasePath" $.BasePath "ToolResults" $.Data.HierarchicalConversation.ToolResults)}}
+                    {{end}}
+                </div>
+                {{end}}
+
+                {{/* Render run groups hierarchically */}}
+                {{if .Data.HierarchicalConversation.RootGroups}}
+                <div class="run-groups space-y-4">
+                    {{range .Data.HierarchicalConversation.RootGroups}}
+                    {{template "run-message-group" (dict "Group" . "BasePath" $.BasePath "ToolResults" $.Data.HierarchicalConversation.ToolResults)}}
+                    {{end}}
+                </div>
+                {{else if not .Data.HierarchicalConversation.OrphanMessages}}
+                <div class="flex items-center justify-center h-full text-gray-400">
+                    <div class="text-center">
+                        <svg class="mx-auto h-12 w-12 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                        </svg>
+                        <p class="mt-2">No messages yet. Start a conversation!</p>
+                    </div>
+                </div>
+                {{end}}
+            {{end}}
+            {{else}}
+            {{/* Top Level View: Only root-level messages, nested agent conversations hidden */}}
             {{range .Data.Conversation.Messages}}
-            {{template "message-bubble" (dict "Msg" . "BasePath" $.BasePath)}}
+            {{template "message-bubble" (dict "Msg" . "BasePath" $.BasePath "ToolResults" $.Data.Conversation.ToolResults)}}
             {{else}}
             <div class="flex items-center justify-center h-full text-gray-400">
                 <div class="text-center">
@@ -71,6 +130,7 @@
                     <p class="mt-2">No messages yet. Start a conversation!</p>
                 </div>
             </div>
+            {{end}}
             {{end}}
 
             <!-- Pending response container -->
@@ -104,7 +164,8 @@
                     <input type="text" name="message"
                            placeholder="Type your message..."
                            class="block w-full rounded-lg border border-gray-600 bg-gray-900 text-gray-100 px-4 py-2.5 shadow-sm placeholder-gray-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 sm:text-sm"
-                           autocomplete="off">
+                           autocomplete="off"
+                           autofocus>
                 </div>
                 <button type="submit" class="inline-flex items-center rounded-lg bg-cyan-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-cyan-500 transition-colors">
                     <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -139,6 +200,32 @@ function scrollMessagesToBottom() {
     var container = document.getElementById('messages-container');
     if (container) {
         container.scrollTop = container.scrollHeight;
+    }
+}
+
+// Toggle run group collapse/expand
+function toggleRunGroup(header) {
+    var group = header.closest('.run-group');
+    if (!group) return;
+
+    var content = group.querySelector('.run-group-content');
+    var childGroups = group.querySelector('.run-child-groups');
+    var icon = header.querySelector('.run-collapse-icon');
+
+    var isCollapsed = group.classList.contains('collapsed');
+
+    if (isCollapsed) {
+        // Expand
+        group.classList.remove('collapsed');
+        if (content) content.style.display = '';
+        if (childGroups) childGroups.style.display = '';
+        if (icon) icon.style.transform = '';
+    } else {
+        // Collapse
+        group.classList.add('collapsed');
+        if (content) content.style.display = 'none';
+        if (childGroups) childGroups.style.display = 'none';
+        if (icon) icon.style.transform = 'rotate(-90deg)';
     }
 }
 
