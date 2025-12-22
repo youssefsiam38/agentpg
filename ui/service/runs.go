@@ -89,7 +89,7 @@ func (s *Service[TTx]) GetRunDetail(ctx context.Context, id uuid.UUID) (*RunDeta
 		detail.Session = &SessionSummary{
 			ID:              session.ID,
 			TenantID:        session.TenantID,
-			Identifier:      session.Identifier,
+			UserID:          session.UserID,
 			Depth:           session.Depth,
 			CompactionCount: session.CompactionCount,
 			CreatedAt:       session.CreatedAt,

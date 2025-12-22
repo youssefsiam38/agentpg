@@ -39,7 +39,6 @@ type Store[TTx any] interface {
 	CreateSession(ctx context.Context, params CreateSessionParams) (*Session, error)
 	CreateSessionTx(ctx context.Context, tx TTx, params CreateSessionParams) (*Session, error)
 	GetSession(ctx context.Context, id uuid.UUID) (*Session, error)
-	GetSessionByIdentifier(ctx context.Context, tenantID, identifier string) (*Session, error)
 	UpdateSession(ctx context.Context, id uuid.UUID, updates map[string]any) error
 	// ListSessions returns sessions with optional filtering and pagination.
 	// Returns (sessions, totalCount, error). Used by admin UI for browsing all sessions.
@@ -129,6 +128,10 @@ type Store[TTx any] interface {
 	GetMessages(ctx context.Context, sessionID uuid.UUID, limit int) ([]*Message, error)
 	GetMessagesByRun(ctx context.Context, runID uuid.UUID) ([]*Message, error)
 	GetMessagesForRunContext(ctx context.Context, runID uuid.UUID) ([]*Message, error)
+	// GetMessagesWithRunInfo returns messages for a session with joined run information.
+	// This is an optimized query that returns messages with agent name, depth, parent run ID,
+	// and state in a single query, avoiding N+1 queries when building hierarchical views.
+	GetMessagesWithRunInfo(ctx context.Context, sessionID uuid.UUID, limit int) ([]*MessageWithRunInfo, error)
 	UpdateMessage(ctx context.Context, id uuid.UUID, updates map[string]any) error
 	DeleteMessage(ctx context.Context, id uuid.UUID) error
 
@@ -206,7 +209,7 @@ type Notification struct {
 // CreateSessionParams contains parameters for creating a session.
 type CreateSessionParams struct {
 	TenantID        string
-	Identifier      string
+	UserID          string
 	ParentSessionID *uuid.UUID
 	Metadata        map[string]any
 }
@@ -308,7 +311,7 @@ type ListSessionsParams struct {
 	TenantID string // Filter by tenant
 	Limit    int    // Maximum number of results
 	Offset   int    // Offset for pagination
-	OrderBy  string // Field to order by (created_at, updated_at, identifier)
+	OrderBy  string // Field to order by (created_at, updated_at, user_id)
 	OrderDir string // Order direction (asc, desc)
 }
 
@@ -323,7 +326,7 @@ type (
 	Session = struct {
 		ID              uuid.UUID
 		TenantID        string
-		Identifier      string
+		UserID          string
 		ParentSessionID *uuid.UUID
 		Depth           int
 		Metadata        map[string]any
@@ -523,5 +526,28 @@ type (
 		ModelUsed           *string
 		DurationMS          *int64
 		CreatedAt           time.Time
+	}
+
+	// MessageWithRunInfo contains a message with its associated run information.
+	// Used for efficiently fetching messages with run context in a single query,
+	// avoiding N+1 queries when building hierarchical conversation views.
+	MessageWithRunInfo = struct {
+		// Embedded Message fields
+		ID          uuid.UUID
+		SessionID   uuid.UUID
+		RunID       *uuid.UUID
+		Role        MessageRole
+		Content     []ContentBlock
+		Usage       Usage
+		IsPreserved bool
+		IsSummary   bool
+		Metadata    map[string]any
+		CreatedAt   time.Time
+		UpdatedAt   time.Time
+		// Run information (from LEFT JOIN with runs table)
+		RunAgentName  *string    // Agent name from the run
+		RunDepth      *int       // Depth level of the run (0=root, 1+=child)
+		ParentRunID   *uuid.UUID // Parent run ID for child runs
+		RunState      *string    // Current state of the run
 	}
 )

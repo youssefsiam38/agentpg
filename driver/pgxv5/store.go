@@ -53,11 +53,11 @@ func (s *Store) createSession(ctx context.Context, e executor, params driver.Cre
 	}
 
 	err = e.QueryRow(ctx, `
-		INSERT INTO agentpg_sessions (tenant_id, identifier, parent_session_id, depth, metadata)
+		INSERT INTO agentpg_sessions (tenant_id, user_id, parent_session_id, depth, metadata)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, tenant_id, identifier, parent_session_id, depth, metadata, compaction_count, created_at, updated_at
-	`, params.TenantID, params.Identifier, params.ParentSessionID, depth, metadata).Scan(
-		&session.ID, &session.TenantID, &session.Identifier, &session.ParentSessionID,
+		RETURNING id, tenant_id, user_id, parent_session_id, depth, metadata, compaction_count, created_at, updated_at
+	`, params.TenantID, params.UserID, params.ParentSessionID, depth, metadata).Scan(
+		&session.ID, &session.TenantID, &session.UserID, &session.ParentSessionID,
 		&session.Depth, &metadata, &session.CompactionCount, &session.CreatedAt, &session.UpdatedAt,
 	)
 	if err != nil {
@@ -75,10 +75,10 @@ func (s *Store) GetSession(ctx context.Context, id uuid.UUID) (*driver.Session, 
 	var session driver.Session
 	var metadata []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, tenant_id, identifier, parent_session_id, depth, metadata, compaction_count, created_at, updated_at
+		SELECT id, tenant_id, user_id, parent_session_id, depth, metadata, compaction_count, created_at, updated_at
 		FROM agentpg_sessions WHERE id = $1
 	`, id).Scan(
-		&session.ID, &session.TenantID, &session.Identifier, &session.ParentSessionID,
+		&session.ID, &session.TenantID, &session.UserID, &session.ParentSessionID,
 		&session.Depth, &metadata, &session.CompactionCount, &session.CreatedAt, &session.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
@@ -86,30 +86,6 @@ func (s *Store) GetSession(ctx context.Context, id uuid.UUID) (*driver.Session, 
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get session: %w", err)
-	}
-
-	if err := json.Unmarshal(metadata, &session.Metadata); err != nil {
-		session.Metadata = make(map[string]any)
-	}
-
-	return &session, nil
-}
-
-func (s *Store) GetSessionByIdentifier(ctx context.Context, tenantID, identifier string) (*driver.Session, error) {
-	var session driver.Session
-	var metadata []byte
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, tenant_id, identifier, parent_session_id, depth, metadata, compaction_count, created_at, updated_at
-		FROM agentpg_sessions WHERE tenant_id = $1 AND identifier = $2
-	`, tenantID, identifier).Scan(
-		&session.ID, &session.TenantID, &session.Identifier, &session.ParentSessionID,
-		&session.Depth, &metadata, &session.CompactionCount, &session.CreatedAt, &session.UpdatedAt,
-	)
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to get session by identifier: %w", err)
 	}
 
 	if err := json.Unmarshal(metadata, &session.Metadata); err != nil {
@@ -148,7 +124,7 @@ func (s *Store) UpdateSession(ctx context.Context, id uuid.UUID, updates map[str
 func (s *Store) ListSessions(ctx context.Context, params driver.ListSessionsParams) ([]*driver.Session, int, error) {
 	// Build dynamic query with filters
 	baseQuery := `
-		SELECT id, tenant_id, identifier, parent_session_id, depth, metadata, compaction_count, created_at, updated_at
+		SELECT id, tenant_id, user_id, parent_session_id, depth, metadata, compaction_count, created_at, updated_at
 		FROM agentpg_sessions`
 
 	countQuery := "SELECT COUNT(*) FROM agentpg_sessions"
@@ -181,7 +157,7 @@ func (s *Store) ListSessions(ctx context.Context, params driver.ListSessionsPara
 	// Determine order column
 	orderBy := "created_at"
 	switch params.OrderBy {
-	case "updated_at", "identifier", "created_at":
+	case "updated_at", "user_id", "created_at":
 		orderBy = params.OrderBy
 	}
 	orderDir := "DESC"
@@ -213,7 +189,7 @@ func (s *Store) ListSessions(ctx context.Context, params driver.ListSessionsPara
 		var session driver.Session
 		var metadata []byte
 		if err := rows.Scan(
-			&session.ID, &session.TenantID, &session.Identifier, &session.ParentSessionID,
+			&session.ID, &session.TenantID, &session.UserID, &session.ParentSessionID,
 			&session.Depth, &metadata, &session.CompactionCount, &session.CreatedAt, &session.UpdatedAt,
 		); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan session: %w", err)
@@ -1298,6 +1274,53 @@ func (s *Store) GetMessages(ctx context.Context, sessionID uuid.UUID, limit int)
 		}
 		json.Unmarshal(usage, &msg.Usage)
 		json.Unmarshal(metadata, &msg.Metadata)
+
+		// Get content blocks
+		blocks, err := s.GetContentBlocks(ctx, msg.ID)
+		if err != nil {
+			return nil, err
+		}
+		msg.Content = blocks
+
+		messages = append(messages, &msg)
+	}
+	return messages, rows.Err()
+}
+
+func (s *Store) GetMessagesWithRunInfo(ctx context.Context, sessionID uuid.UUID, limit int) ([]*driver.MessageWithRunInfo, error) {
+	query := `
+		SELECT m.id, m.session_id, m.run_id, m.role, m.usage, m.is_preserved, m.is_summary, m.metadata, m.created_at, m.updated_at,
+		       r.agent_name, r.depth, r.parent_run_id, r.state
+		FROM agentpg_messages m
+		LEFT JOIN agentpg_runs r ON r.id = m.run_id
+		WHERE m.session_id = $1
+		ORDER BY m.created_at`
+	var rows pgx.Rows
+	var err error
+	if limit > 0 {
+		rows, err = s.pool.Query(ctx, query+" LIMIT $2", sessionID, limit)
+	} else {
+		rows, err = s.pool.Query(ctx, query, sessionID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []*driver.MessageWithRunInfo
+	for rows.Next() {
+		var msg driver.MessageWithRunInfo
+		var usage, metadata []byte
+		var runState *string
+		if err := rows.Scan(
+			&msg.ID, &msg.SessionID, &msg.RunID, &msg.Role, &usage, &msg.IsPreserved, &msg.IsSummary, &metadata, &msg.CreatedAt, &msg.UpdatedAt,
+			&msg.RunAgentName, &msg.RunDepth, &msg.ParentRunID, &runState,
+		); err != nil {
+			return nil, err
+		}
+		json.Unmarshal(usage, &msg.Usage)
+		json.Unmarshal(metadata, &msg.Metadata)
+		msg.RunState = runState
 
 		// Get content blocks
 		blocks, err := s.GetContentBlocks(ctx, msg.ID)

@@ -4,7 +4,7 @@
     <a href="{{$.BasePath}}/sessions/{{.ID}}" class="block p-4 bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 hover:bg-gray-700/50 transition-colors">
         <div class="flex items-center justify-between">
             <div class="flex items-center space-x-3">
-                <span class="font-medium text-gray-100">{{.Identifier}}</span>
+                <span class="font-medium text-gray-100">{{.UserID}}</span>
                 <span class="text-xs text-gray-400 bg-gray-700 px-2 py-1 rounded">{{.TenantID}}</span>
             </div>
             <span class="text-sm text-gray-500">{{formatTimeAgo .LastActivityAt}}</span>

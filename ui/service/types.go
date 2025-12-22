@@ -169,7 +169,7 @@ type SessionList struct {
 type SessionSummary struct {
 	ID              uuid.UUID `json:"id"`
 	TenantID        string    `json:"tenant_id"`
-	Identifier      string    `json:"identifier"`
+	UserID          string    `json:"user_id"`
 	AgentName       string    `json:"agent_name,omitempty"` // Agent from first run
 	Depth           int       `json:"depth"`
 	RunCount        int       `json:"run_count"`
@@ -357,6 +357,35 @@ type ConversationView struct {
 	Messages     []*MessageWithBlocks `json:"messages"`
 	TotalTokens  int                  `json:"total_tokens"`
 	MessageCount int                  `json:"message_count"`
+	// ToolResults maps tool_use_id to its corresponding tool_result content block.
+	// Used to render tool results inline with tool_use blocks in the UI.
+	ToolResults map[string]driver.ContentBlock `json:"tool_results,omitempty"`
+}
+
+// RunMessageGroup represents messages grouped by their run.
+// Used for hierarchical conversation views where nested agent messages
+// are displayed in a tree structure. Supports any depth of nesting.
+type RunMessageGroup struct {
+	Run         *RunSummary          `json:"run"`
+	Messages    []*MessageWithBlocks `json:"messages"`
+	ChildGroups []*RunMessageGroup   `json:"child_groups,omitempty"`
+	Depth       int                  `json:"depth"`
+}
+
+// HierarchicalConversationView contains a conversation grouped by run hierarchy.
+// This view organizes messages by agent/run with recursive nesting for
+// agent-as-tool patterns. Supports any depth of nested agents.
+type HierarchicalConversationView struct {
+	SessionID      uuid.UUID            `json:"session_id"`
+	Session        *SessionSummary      `json:"session"`
+	AgentName      string               `json:"agent_name,omitempty"` // Agent from first root run
+	RootGroups     []*RunMessageGroup   `json:"root_groups"`          // Top-level runs (depth=0)
+	OrphanMessages []*MessageWithBlocks `json:"orphan_messages"`      // Messages with NULL run_id
+	TotalTokens    int                  `json:"total_tokens"`
+	MessageCount   int                  `json:"message_count"`
+	// ToolResults maps tool_use_id to its corresponding tool_result content block.
+	// Used to render tool results inline with tool_use blocks in the UI.
+	ToolResults map[string]driver.ContentBlock `json:"tool_results,omitempty"`
 }
 
 // AgentWithStats contains an agent definition with statistics.
@@ -408,10 +437,10 @@ type TokenUsageSummary struct {
 
 // CreateSessionRequest contains parameters for creating a new session.
 type CreateSessionRequest struct {
-	TenantID   string         `json:"tenant_id"`
-	Identifier string         `json:"identifier"`
-	AgentName  string         `json:"agent_name"`
-	Metadata   map[string]any `json:"metadata,omitempty"`
+	TenantID  string         `json:"tenant_id"`
+	UserID    string         `json:"user_id"`
+	AgentName string         `json:"agent_name"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 // SendMessageRequest contains parameters for sending a chat message.

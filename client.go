@@ -321,7 +321,7 @@ func (c *Client[TTx]) Stop(ctx context.Context) error {
 }
 
 // NewSession creates a new conversation session.
-func (c *Client[TTx]) NewSession(ctx context.Context, tenantID, identifier string, parentSessionID *uuid.UUID, metadata map[string]any) (uuid.UUID, error) {
+func (c *Client[TTx]) NewSession(ctx context.Context, tenantID, userID string, parentSessionID *uuid.UUID, metadata map[string]any) (uuid.UUID, error) {
 	c.mu.RLock()
 	started := c.started
 	c.mu.RUnlock()
@@ -332,7 +332,7 @@ func (c *Client[TTx]) NewSession(ctx context.Context, tenantID, identifier strin
 
 	session, err := c.driver.Store().CreateSession(ctx, driver.CreateSessionParams{
 		TenantID:        tenantID,
-		Identifier:      identifier,
+		UserID:          userID,
 		ParentSessionID: parentSessionID,
 		Metadata:        metadata,
 	})
@@ -344,7 +344,7 @@ func (c *Client[TTx]) NewSession(ctx context.Context, tenantID, identifier strin
 }
 
 // NewSessionTx creates a new conversation session within a transaction.
-func (c *Client[TTx]) NewSessionTx(ctx context.Context, tx TTx, tenantID, identifier string, parentSessionID *uuid.UUID, metadata map[string]any) (uuid.UUID, error) {
+func (c *Client[TTx]) NewSessionTx(ctx context.Context, tx TTx, tenantID, userID string, parentSessionID *uuid.UUID, metadata map[string]any) (uuid.UUID, error) {
 	c.mu.RLock()
 	started := c.started
 	c.mu.RUnlock()
@@ -355,7 +355,7 @@ func (c *Client[TTx]) NewSessionTx(ctx context.Context, tx TTx, tenantID, identi
 
 	session, err := c.driver.Store().CreateSessionTx(ctx, tx, driver.CreateSessionParams{
 		TenantID:        tenantID,
-		Identifier:      identifier,
+		UserID:          userID,
 		ParentSessionID: parentSessionID,
 		Metadata:        metadata,
 	})
@@ -379,7 +379,7 @@ func (c *Client[TTx]) GetSession(ctx context.Context, id uuid.UUID) (*Session, e
 	return &Session{
 		ID:              session.ID,
 		TenantID:        session.TenantID,
-		Identifier:      session.Identifier,
+		UserID:          session.UserID,
 		ParentSessionID: session.ParentSessionID,
 		Depth:           session.Depth,
 		Metadata:        session.Metadata,

@@ -71,7 +71,7 @@
                             {{if .HasParent}}
                             <span class="text-gray-500 mr-2">{{range seq 1 .Depth}}└{{end}}</span>
                             {{end}}
-                            <a href="{{$.BasePath}}/runs/{{.ID}}" class="text-cyan-400 hover:text-cyan-300 font-mono text-sm">{{.ID | truncate 8}}</a>
+                            <a href="{{$.BasePath}}/runs/{{.ID}}" class="text-cyan-400 hover:text-cyan-300 font-mono text-sm">{{.ID}}</a>
                         </div>
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-200">{{.AgentName}}</td>

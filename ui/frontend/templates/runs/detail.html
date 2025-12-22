@@ -7,7 +7,7 @@
                 <ol class="flex items-center space-x-2">
                     <li><a href="{{$.BasePath}}/runs" class="text-gray-400 hover:text-gray-200">Runs</a></li>
                     <li><span class="text-gray-500">/</span></li>
-                    <li class="text-gray-100 font-medium font-mono">{{.Data.Run.Run.ID | truncate 8}}</li>
+                    <li class="text-gray-100 font-medium font-mono">{{.Data.Run.Run.ID}}</li>
                 </ol>
             </nav>
             <h1 class="mt-2 text-2xl font-semibold text-gray-100">Run Details</h1>
@@ -59,7 +59,7 @@
                     <dt class="text-sm font-medium text-gray-400">Session</dt>
                     <dd class="mt-1 text-sm">
                         <a href="{{$.BasePath}}/sessions/{{.Data.Run.Run.SessionID}}" class="text-cyan-400 hover:text-cyan-300">
-                            {{.Data.Run.Session.Identifier}}
+                            {{.Data.Run.Session.UserID}}
                         </a>
                     </dd>
                 </div>

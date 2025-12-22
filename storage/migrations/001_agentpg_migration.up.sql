@@ -184,51 +184,51 @@ CREATE TABLE agentpg_sessions (
     -- Primary key
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    -- Multi-tenant isolation
-    -- All queries MUST filter by tenant_id
-    tenant_id TEXT NOT NULL,
+-- Multi-tenant isolation
+-- All queries MUST filter by tenant_id
+tenant_id TEXT NOT NULL,
 
-    -- User-provided identifier (unique within tenant)
-    -- Used to look up sessions by a human-readable name
-    identifier TEXT NOT NULL,
+-- User ID - identifies who owns the session
+-- NOT unique: a user can have multiple sessions within the same tenant
+user_id TEXT NOT NULL,
 
-    -- Hierarchical session support for nested agents
-    -- NULL for root sessions, set when agent-as-tool creates child session
-    parent_session_id UUID REFERENCES agentpg_sessions(id) ON DELETE CASCADE,
+-- Hierarchical session support for nested agents
+-- NULL for root sessions, set when agent-as-tool creates child session
+parent_session_id UUID REFERENCES agentpg_sessions (id) ON DELETE CASCADE,
 
-    -- Depth in session hierarchy (0 = root, 1 = first child, etc.)
-    -- Used for query optimization and preventing infinite nesting
-    depth INTEGER NOT NULL DEFAULT 0,
+-- Depth in session hierarchy (0 = root, 1 = first child, etc.)
+-- Used for query optimization and preventing infinite nesting
+depth INTEGER NOT NULL DEFAULT 0,
 
-    -- Arbitrary metadata (JSON)
-    -- Stores user-defined data like description, tags, etc.
-    metadata JSONB NOT NULL DEFAULT '{}',
+-- Arbitrary metadata (JSON)
+-- Stores user-defined data like description, tags, etc.
+metadata JSONB NOT NULL DEFAULT '{}',
 
-    -- Context compaction tracking
-    -- Incremented each time the session's context is compacted
-    compaction_count INTEGER NOT NULL DEFAULT 0,
+-- Context compaction tracking
+-- Incremented each time the session's context is compacted
+compaction_count INTEGER NOT NULL DEFAULT 0,
 
-    -- Timestamps
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+-- Timestamps
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON TABLE agentpg_sessions IS
-'Conversation sessions with multi-tenant isolation and hierarchical support for nested agents.';
+COMMENT ON TABLE agentpg_sessions IS 'Conversation sessions with multi-tenant isolation and hierarchical support for nested agents.';
 
-COMMENT ON COLUMN agentpg_sessions.tenant_id IS
-'Tenant identifier for multi-tenant isolation. All queries must filter by this.';
+COMMENT ON COLUMN agentpg_sessions.tenant_id IS 'Tenant identifier for multi-tenant isolation. All queries must filter by this.';
 
-COMMENT ON COLUMN agentpg_sessions.parent_session_id IS
-'Links child sessions to parent when agent-as-tool creates nested conversation context.';
+COMMENT ON COLUMN agentpg_sessions.parent_session_id IS 'Links child sessions to parent when agent-as-tool creates nested conversation context.';
 
-COMMENT ON COLUMN agentpg_sessions.depth IS
-'Hierarchy depth (0=root). Used for optimization and preventing infinite nesting.';
+COMMENT ON COLUMN agentpg_sessions.depth IS 'Hierarchy depth (0=root). Used for optimization and preventing infinite nesting.';
 
 -- Indexes
-CREATE INDEX idx_sessions_tenant_identifier ON agentpg_sessions(tenant_id, identifier);
-CREATE INDEX idx_sessions_tenant_updated ON agentpg_sessions(tenant_id, updated_at DESC);
-CREATE INDEX idx_sessions_parent ON agentpg_sessions(parent_session_id) WHERE parent_session_id IS NOT NULL;
+CREATE INDEX agentpg_idx_sessions_tenant_user_id ON agentpg_sessions (tenant_id, user_id);
+
+CREATE INDEX agentpg_idx_sessions_tenant_updated ON agentpg_sessions (tenant_id, updated_at DESC);
+
+CREATE INDEX agentpg_idx_sessions_parent ON agentpg_sessions (parent_session_id)
+WHERE
+    parent_session_id IS NOT NULL;
 
 -- =============================================================================
 -- AGENTS TABLE
@@ -248,44 +248,40 @@ CREATE TABLE agentpg_agents (
     -- Agent name (primary key, must be unique)
     name TEXT PRIMARY KEY,
 
-    -- Human-readable description
-    description TEXT,
+-- Human-readable description
+description TEXT,
 
-    -- Claude model to use (e.g., "claude-sonnet-4-5-20250929")
-    model TEXT NOT NULL,
+-- Claude model to use (e.g., "claude-sonnet-4-5-20250929")
+model TEXT NOT NULL,
 
-    -- System prompt for this agent
-    system_prompt TEXT,
+-- System prompt for this agent
+system_prompt TEXT,
 
-    -- Model parameters
-    max_tokens INTEGER,
-    temperature REAL,
-    top_k INTEGER,
-    top_p REAL,
+-- Model parameters
+max_tokens INTEGER, temperature REAL, top_k INTEGER, top_p REAL,
 
-    -- Tool names this agent can use (references agentpg_tools.name)
-    -- Includes both regular tools and agent-as-tool names
-    tool_names TEXT[] NOT NULL DEFAULT '{}',
+-- Tool names this agent can use (references agentpg_tools.name)
+-- Includes both regular tools and agent-as-tool names
+tool_names TEXT [] NOT NULL DEFAULT '{}',
 
-    -- Additional configuration (JSON)
-    -- Examples: auto_compaction, compaction_trigger, extended_context
-    config JSONB NOT NULL DEFAULT '{}',
+-- Additional configuration (JSON)
+-- Examples: auto_compaction, compaction_trigger, extended_context
+config JSONB NOT NULL DEFAULT '{}',
 
-    -- Timestamps
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+-- Timestamps
+
+
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT agent_name_valid CHECK (char_length(name) > 0 AND char_length(name) < 256)
 );
 
-COMMENT ON TABLE agentpg_agents IS
-'Agent definitions including model config, system prompt, and available tools.';
+COMMENT ON TABLE agentpg_agents IS 'Agent definitions including model config, system prompt, and available tools.';
 
-COMMENT ON COLUMN agentpg_agents.tool_names IS
-'Array of tool names this agent can invoke. Includes both regular tools and agent-as-tool names.';
+COMMENT ON COLUMN agentpg_agents.tool_names IS 'Array of tool names this agent can invoke. Includes both regular tools and agent-as-tool names.';
 
-COMMENT ON COLUMN agentpg_agents.config IS
-'Additional configuration like auto_compaction, compaction_trigger, extended_context, etc.';
+COMMENT ON COLUMN agentpg_agents.config IS 'Additional configuration like auto_compaction, compaction_trigger, extended_context, etc.';
 
 -- =============================================================================
 -- TOOLS TABLE
@@ -307,24 +303,26 @@ CREATE TABLE agentpg_tools (
     -- Tool name (primary key, must be unique)
     name TEXT PRIMARY KEY,
 
-    -- Human-readable description (shown to Claude)
-    description TEXT NOT NULL,
+-- Human-readable description (shown to Claude)
+description TEXT NOT NULL,
 
-    -- JSON Schema for tool input
-    input_schema JSONB NOT NULL,
+-- JSON Schema for tool input
+input_schema JSONB NOT NULL,
 
-    -- Agent-as-tool support
-    -- When true, calling this tool creates a child run for the specified agent
-    is_agent_tool BOOLEAN NOT NULL DEFAULT FALSE,
+-- Agent-as-tool support
+-- When true, calling this tool creates a child run for the specified agent
+is_agent_tool BOOLEAN NOT NULL DEFAULT FALSE,
 
-    -- For agent-as-tool: the name of the agent to invoke
-    agent_name TEXT REFERENCES agentpg_agents(name) ON DELETE CASCADE,
+-- For agent-as-tool: the name of the agent to invoke
+agent_name TEXT REFERENCES agentpg_agents (name) ON DELETE CASCADE,
 
-    -- Additional metadata
-    metadata JSONB NOT NULL DEFAULT '{}',
+-- Additional metadata
+metadata JSONB NOT NULL DEFAULT '{}',
 
-    -- Timestamps
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+-- Timestamps
+
+
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT tool_name_valid CHECK (char_length(name) > 0 AND char_length(name) < 128),
@@ -334,17 +332,16 @@ CREATE TABLE agentpg_tools (
     )
 );
 
-COMMENT ON TABLE agentpg_tools IS
-'Tool definitions including input schema. Agent-as-tool entries have is_agent_tool=true.';
+COMMENT ON TABLE agentpg_tools IS 'Tool definitions including input schema. Agent-as-tool entries have is_agent_tool=true.';
 
-COMMENT ON COLUMN agentpg_tools.is_agent_tool IS
-'TRUE if this tool invokes another agent. When called, creates a child run.';
+COMMENT ON COLUMN agentpg_tools.is_agent_tool IS 'TRUE if this tool invokes another agent. When called, creates a child run.';
 
-COMMENT ON COLUMN agentpg_tools.agent_name IS
-'For agent-as-tool entries, the name of the agent to invoke.';
+COMMENT ON COLUMN agentpg_tools.agent_name IS 'For agent-as-tool entries, the name of the agent to invoke.';
 
 -- Index for agent-as-tool lookups
-CREATE INDEX idx_tools_agent ON agentpg_tools(agent_name) WHERE is_agent_tool = TRUE;
+CREATE INDEX agentpg_idx_tools_agent ON agentpg_tools (agent_name)
+WHERE
+    is_agent_tool = TRUE;
 
 -- =============================================================================
 -- RUNS TABLE
@@ -378,209 +375,240 @@ CREATE TABLE agentpg_runs (
     -- Primary key
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    -- Session this run belongs to
-    session_id UUID NOT NULL REFERENCES agentpg_sessions(id) ON DELETE CASCADE,
+-- Session this run belongs to
+session_id UUID NOT NULL REFERENCES agentpg_sessions (id) ON DELETE CASCADE,
 
-    -- Agent executing this run
-    agent_name TEXT NOT NULL REFERENCES agentpg_agents(name),
+-- Agent executing this run
+agent_name TEXT NOT NULL REFERENCES agentpg_agents (name),
 
-    -- ==========================================================================
-    -- RUN MODE (Batch vs Streaming API)
-    -- ==========================================================================
+-- ==========================================================================
+-- RUN MODE (Batch vs Streaming API)
+-- ==========================================================================
 
-    -- Which Claude API to use for this run
-    -- 'batch': Claude Batch API (24h processing, cost-effective)
-    -- 'streaming': Claude Streaming API (real-time, low latency)
-    run_mode agentpg_run_mode NOT NULL DEFAULT 'batch',
+-- Which Claude API to use for this run
+-- 'batch': Claude Batch API (24h processing, cost-effective)
+-- 'streaming': Claude Streaming API (real-time, low latency)
+run_mode agentpg_run_mode NOT NULL DEFAULT 'batch',
 
-    -- ==========================================================================
-    -- HIERARCHICAL RUN SUPPORT
-    -- ==========================================================================
+-- ==========================================================================
+-- HIERARCHICAL RUN SUPPORT
+-- ==========================================================================
 
-    -- Parent run (NULL for root runs, set for agent-as-tool invocations)
-    parent_run_id UUID REFERENCES agentpg_runs(id) ON DELETE CASCADE,
+-- Parent run (NULL for root runs, set for agent-as-tool invocations)
+parent_run_id UUID REFERENCES agentpg_runs (id) ON DELETE CASCADE,
 
-    -- Tool execution that spawned this run (for agent-as-tool)
-    -- Set when this run was created to execute an agent-as-tool
-    parent_tool_execution_id UUID, -- FK added after tool_executions table
+-- Tool execution that spawned this run (for agent-as-tool)
+-- Set when this run was created to execute an agent-as-tool
+parent_tool_execution_id UUID, -- FK added after tool_executions table
 
-    -- Depth in run hierarchy (0 = root, 1 = first child, etc.)
-    -- PM → Lead → Worker would be depths 0 → 1 → 2
-    depth INTEGER NOT NULL DEFAULT 0,
+-- Depth in run hierarchy (0 = root, 1 = first child, etc.)
+-- PM → Lead → Worker would be depths 0 → 1 → 2
+depth INTEGER NOT NULL DEFAULT 0,
 
-    -- ==========================================================================
-    -- STATE MACHINE
-    -- ==========================================================================
+-- ==========================================================================
+-- STATE MACHINE
+-- ==========================================================================
 
-    -- Current state in the run lifecycle
-    state agentpg_run_state NOT NULL DEFAULT 'pending',
+-- Current state in the run lifecycle
+state agentpg_run_state NOT NULL DEFAULT 'pending',
 
-    -- Previous state (for debugging/auditing)
-    previous_state agentpg_run_state,
+-- Previous state (for debugging/auditing)
+previous_state agentpg_run_state,
 
-    -- ==========================================================================
-    -- REQUEST
-    -- ==========================================================================
+-- ==========================================================================
+-- REQUEST
+-- ==========================================================================
 
-    -- User prompt that initiated this run
-    prompt TEXT NOT NULL,
+-- User prompt that initiated this run
+prompt TEXT NOT NULL,
 
-    -- ==========================================================================
-    -- CURRENT ITERATION TRACKING
-    -- ==========================================================================
-    -- The current/latest iteration for this run.
-    -- Detailed tracking is in agentpg_iterations table (supports both batch and streaming).
-    -- A run can have many iterations: prompt→api1→tools→api2→tools→api3→end_turn
+-- ==========================================================================
+-- CURRENT ITERATION TRACKING
+-- ==========================================================================
+-- The current/latest iteration for this run.
+-- Detailed tracking is in agentpg_iterations table (supports both batch and streaming).
+-- A run can have many iterations: prompt→api1→tools→api2→tools→api3→end_turn
 
-    -- Current iteration number (updated as run progresses)
-    current_iteration INTEGER NOT NULL DEFAULT 0,
+-- Current iteration number (updated as run progresses)
+current_iteration INTEGER NOT NULL DEFAULT 0,
 
-    -- Reference to current iteration record
-    current_iteration_id UUID, -- FK added after iterations table created
+-- Reference to current iteration record
+current_iteration_id UUID, -- FK added after iterations table created
 
-    -- ==========================================================================
-    -- FINAL RESPONSE (populated when run completes)
-    -- ==========================================================================
+-- ==========================================================================
+-- FINAL RESPONSE (populated when run completes)
+-- ==========================================================================
 
-    -- Final text response (from the last iteration)
-    response_text TEXT,
+-- Final text response (from the last iteration)
+response_text TEXT,
 
-    -- Final stop reason (from the last iteration)
-    stop_reason TEXT,
+-- Final stop reason (from the last iteration)
+stop_reason TEXT,
 
-    -- ==========================================================================
-    -- TOKEN USAGE (cumulative across all iterations)
-    -- ==========================================================================
+-- ==========================================================================
+-- TOKEN USAGE (cumulative across all iterations)
+-- ==========================================================================
 
-    input_tokens INTEGER NOT NULL DEFAULT 0,
-    output_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+input_tokens INTEGER NOT NULL DEFAULT 0,
+output_tokens INTEGER NOT NULL DEFAULT 0,
+cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
 
-    -- ==========================================================================
-    -- ITERATION TRACKING
-    -- ==========================================================================
+-- ==========================================================================
+-- ITERATION TRACKING
+-- ==========================================================================
 
-    -- Total iterations (each batch request is one iteration)
-    iteration_count INTEGER NOT NULL DEFAULT 0,
+-- Total iterations (each batch request is one iteration)
+iteration_count INTEGER NOT NULL DEFAULT 0,
 
-    -- Iterations that involved tool use
-    tool_iterations INTEGER NOT NULL DEFAULT 0,
+-- Iterations that involved tool use
+tool_iterations INTEGER NOT NULL DEFAULT 0,
 
-    -- ==========================================================================
-    -- ERROR TRACKING
-    -- ==========================================================================
+-- ==========================================================================
+-- ERROR TRACKING
+-- ==========================================================================
 
-    -- Error details when state = 'failed'
-    error_message TEXT,
-    error_type TEXT,                        -- e.g., 'batch_error', 'tool_error', 'timeout'
+-- Error details when state = 'failed'
+error_message TEXT,
+error_type TEXT, -- e.g., 'batch_error', 'tool_error', 'timeout'
 
-    -- ==========================================================================
-    -- WORKER/CLAIMING
-    -- ==========================================================================
+-- ==========================================================================
+-- WORKER/CLAIMING
+-- ==========================================================================
 
-    -- Instance that created this run (for debugging)
-    created_by_instance_id TEXT,
+-- Instance that created this run (for debugging)
+created_by_instance_id TEXT,
 
-    -- Instance currently processing this run
-    -- Used for:
-    -- 1. Routing work back to the same instance during multi-iteration
-    -- 2. Detecting stuck runs when instance dies
-    claimed_by_instance_id TEXT,
+-- Instance currently processing this run
+-- Used for:
+-- 1. Routing work back to the same instance during multi-iteration
+-- 2. Detecting stuck runs when instance dies
+claimed_by_instance_id TEXT,
 
-    -- When run was claimed (for stuck run detection)
-    claimed_at TIMESTAMPTZ,
+-- When run was claimed (for stuck run detection)
+claimed_at TIMESTAMPTZ,
 
-    -- ==========================================================================
-    -- METADATA & TIMESTAMPS
-    -- ==========================================================================
+-- ==========================================================================
+-- METADATA & TIMESTAMPS
+-- ==========================================================================
 
-    -- User-provided metadata
-    metadata JSONB NOT NULL DEFAULT '{}',
+-- User-provided metadata
+metadata JSONB NOT NULL DEFAULT '{}',
 
-    -- Timestamps
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    started_at TIMESTAMPTZ,                 -- When first claimed by a worker
-    finalized_at TIMESTAMPTZ,               -- When reached terminal state
+-- Timestamps
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+started_at TIMESTAMPTZ, -- When first claimed by a worker
+finalized_at TIMESTAMPTZ, -- When reached terminal state
 
-    -- ==========================================================================
-    -- RESCUE TRACKING
-    -- ==========================================================================
+-- ==========================================================================
+-- RESCUE TRACKING
+-- ==========================================================================
 
-    -- Number of times this run has been rescued from a stuck state
-    rescue_attempts INTEGER NOT NULL DEFAULT 0,
+-- Number of times this run has been rescued from a stuck state
+rescue_attempts INTEGER NOT NULL DEFAULT 0,
 
-    -- Timestamp of the last rescue attempt
-    last_rescue_at TIMESTAMPTZ,
+-- Timestamp of the last rescue attempt
+last_rescue_at TIMESTAMPTZ,
 
-    -- ==========================================================================
-    -- CONSTRAINTS
-    -- ==========================================================================
+-- ==========================================================================
+-- CONSTRAINTS
+-- ==========================================================================
 
-    -- Terminal states must have finalized_at set
-    CONSTRAINT run_finalized_consistency CHECK (
-        (state IN ('completed', 'cancelled', 'failed') AND finalized_at IS NOT NULL)
-        OR (state NOT IN ('completed', 'cancelled', 'failed') AND finalized_at IS NULL)
-    ),
+-- Terminal states must have finalized_at set
+CONSTRAINT run_finalized_consistency CHECK (
+    (
+        state IN (
+            'completed',
+            'cancelled',
+            'failed'
+        )
+        AND finalized_at IS NOT NULL
+    )
+    OR (
+        state NOT IN (
+            'completed',
+            'cancelled',
+            'failed'
+        )
+        AND finalized_at IS NULL
+    )
+),
 
-    -- Depth must be consistent with parent_run_id
-    CONSTRAINT run_depth_consistency CHECK (
+-- Depth must be consistent with parent_run_id
+CONSTRAINT run_depth_consistency CHECK (
         (parent_run_id IS NULL AND depth = 0)
         OR (parent_run_id IS NOT NULL AND depth > 0)
     )
 );
 
-COMMENT ON TABLE agentpg_runs IS
-'Agent run executions with hierarchical support for nested agent-as-tool calls. Supports both Batch and Streaming API modes.';
+COMMENT ON TABLE agentpg_runs IS 'Agent run executions with hierarchical support for nested agent-as-tool calls. Supports both Batch and Streaming API modes.';
 
-COMMENT ON COLUMN agentpg_runs.run_mode IS
-'Which Claude API to use: batch (24h async, cost-effective) or streaming (real-time, low latency).';
+COMMENT ON COLUMN agentpg_runs.run_mode IS 'Which Claude API to use: batch (24h async, cost-effective) or streaming (real-time, low latency).';
 
-COMMENT ON COLUMN agentpg_runs.parent_run_id IS
-'For agent-as-tool invocations, links to the parent run that called this agent.';
+COMMENT ON COLUMN agentpg_runs.parent_run_id IS 'For agent-as-tool invocations, links to the parent run that called this agent.';
 
-COMMENT ON COLUMN agentpg_runs.parent_tool_execution_id IS
-'For agent-as-tool invocations, links to the tool execution that spawned this run.';
+COMMENT ON COLUMN agentpg_runs.parent_tool_execution_id IS 'For agent-as-tool invocations, links to the tool execution that spawned this run.';
 
-COMMENT ON COLUMN agentpg_runs.depth IS
-'Hierarchy depth (0=root). PM→Lead→Worker would be depths 0→1→2.';
+COMMENT ON COLUMN agentpg_runs.depth IS 'Hierarchy depth (0=root). PM→Lead→Worker would be depths 0→1→2.';
 
-COMMENT ON COLUMN agentpg_runs.current_iteration IS
-'Current iteration number. Incremented each time a new API call (batch or streaming) is made.';
+COMMENT ON COLUMN agentpg_runs.current_iteration IS 'Current iteration number. Incremented each time a new API call (batch or streaming) is made.';
 
-COMMENT ON COLUMN agentpg_runs.claimed_by_instance_id IS
-'Instance processing this run. Used for work routing and stuck run detection.';
+COMMENT ON COLUMN agentpg_runs.claimed_by_instance_id IS 'Instance processing this run. Used for work routing and stuck run detection.';
 
 -- Indexes for worker queries
 -- General pending runs index (both batch and streaming)
-CREATE INDEX idx_runs_pending_claim ON agentpg_runs(state, created_at)
-    WHERE state = 'pending' AND claimed_by_instance_id IS NULL;
+CREATE INDEX agentpg_idx_runs_pending_claim ON agentpg_runs (state, created_at)
+WHERE
+    state = 'pending'
+    AND claimed_by_instance_id IS NULL;
 
 -- Separate indexes for batch vs streaming pending runs (for mode-specific claiming)
-CREATE INDEX idx_runs_pending_batch ON agentpg_runs(state, run_mode, created_at)
-    WHERE state = 'pending' AND run_mode = 'batch' AND claimed_by_instance_id IS NULL;
+CREATE INDEX agentpg_idx_runs_pending_batch ON agentpg_runs (state, run_mode, created_at)
+WHERE
+    state = 'pending'
+    AND run_mode = 'batch'
+    AND claimed_by_instance_id IS NULL;
 
-CREATE INDEX idx_runs_pending_streaming ON agentpg_runs(state, run_mode, created_at)
-    WHERE state = 'pending' AND run_mode = 'streaming' AND claimed_by_instance_id IS NULL;
+CREATE INDEX agentpg_idx_runs_pending_streaming ON agentpg_runs (state, run_mode, created_at)
+WHERE
+    state = 'pending'
+    AND run_mode = 'streaming'
+    AND claimed_by_instance_id IS NULL;
 
-CREATE INDEX idx_runs_pending_tools ON agentpg_runs(state)
-    WHERE state = 'pending_tools';
+CREATE INDEX agentpg_idx_runs_pending_tools ON agentpg_runs (state)
+WHERE
+    state = 'pending_tools';
 
 -- Active runs index (includes both batch states and streaming state)
-CREATE INDEX idx_runs_active ON agentpg_runs(state)
-    WHERE state IN ('batch_submitting', 'batch_pending', 'batch_processing', 'streaming');
+CREATE INDEX agentpg_idx_runs_active ON agentpg_runs (state)
+WHERE
+    state IN (
+        'batch_submitting',
+        'batch_pending',
+        'batch_processing',
+        'streaming'
+    );
 
-CREATE INDEX idx_runs_session ON agentpg_runs(session_id, created_at DESC);
+CREATE INDEX agentpg_idx_runs_session ON agentpg_runs (session_id, created_at DESC);
 
-CREATE INDEX idx_runs_parent ON agentpg_runs(parent_run_id)
-    WHERE parent_run_id IS NOT NULL;
+CREATE INDEX agentpg_idx_runs_parent ON agentpg_runs (parent_run_id)
+WHERE
+    parent_run_id IS NOT NULL;
 
-CREATE INDEX idx_runs_claimed_instance ON agentpg_runs(claimed_by_instance_id)
-    WHERE claimed_by_instance_id IS NOT NULL;
+CREATE INDEX agentpg_idx_runs_claimed_instance ON agentpg_runs (claimed_by_instance_id)
+WHERE
+    claimed_by_instance_id IS NOT NULL;
 
 -- Index for stuck runs rescue (efficient rescue queries)
-CREATE INDEX idx_runs_stuck_rescue ON agentpg_runs(claimed_at, rescue_attempts)
-    WHERE state IN ('batch_submitting', 'batch_pending', 'batch_processing', 'streaming', 'pending_tools');
+CREATE INDEX agentpg_idx_runs_stuck_rescue ON agentpg_runs (claimed_at, rescue_attempts)
+WHERE
+    state IN (
+        'batch_submitting',
+        'batch_pending',
+        'batch_processing',
+        'streaming',
+        'pending_tools'
+    );
 
 -- =============================================================================
 -- MESSAGES TABLE
@@ -599,44 +627,47 @@ CREATE INDEX idx_runs_stuck_rescue ON agentpg_runs(claimed_at, rescue_attempts)
 CREATE TABLE agentpg_messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    -- Session this message belongs to
-    session_id UUID NOT NULL REFERENCES agentpg_sessions(id) ON DELETE CASCADE,
+-- Session this message belongs to
+session_id UUID NOT NULL REFERENCES agentpg_sessions (id) ON DELETE CASCADE,
 
-    -- Run that created this message (NULL for user messages before any run)
-    run_id UUID REFERENCES agentpg_runs(id) ON DELETE SET NULL,
+-- Run that created this message (NULL for user messages before any run)
+run_id UUID REFERENCES agentpg_runs (id) ON DELETE SET NULL,
 
-    -- Message role
-    role agentpg_message_role NOT NULL,
+-- Message role
+role agentpg_message_role NOT NULL,
 
-    -- Token usage for this message (from Claude response)
-    -- Structure: {input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}
-    usage JSONB NOT NULL DEFAULT '{}',
+-- Token usage for this message (from Claude response)
+-- Structure: {input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}
+usage JSONB NOT NULL DEFAULT '{}',
 
-    -- Compaction flags
-    is_preserved BOOLEAN NOT NULL DEFAULT FALSE,
-    is_summary BOOLEAN NOT NULL DEFAULT FALSE,
+-- Compaction flags
+is_preserved BOOLEAN NOT NULL DEFAULT FALSE,
+is_summary BOOLEAN NOT NULL DEFAULT FALSE,
 
-    -- User-provided metadata
-    metadata JSONB NOT NULL DEFAULT '{}',
+-- User-provided metadata
+metadata JSONB NOT NULL DEFAULT '{}',
 
-    -- Timestamps
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+-- Timestamps
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON TABLE agentpg_messages IS
-'Conversation messages. Content stored in agentpg_content_blocks.';
+COMMENT ON TABLE agentpg_messages IS 'Conversation messages. Content stored in agentpg_content_blocks.';
 
-COMMENT ON COLUMN agentpg_messages.is_preserved IS
-'If TRUE, this message is never removed during compaction.';
+COMMENT ON COLUMN agentpg_messages.is_preserved IS 'If TRUE, this message is never removed during compaction.';
 
-COMMENT ON COLUMN agentpg_messages.is_summary IS
-'If TRUE, this message is a compaction summary replacing removed messages.';
+COMMENT ON COLUMN agentpg_messages.is_summary IS 'If TRUE, this message is a compaction summary replacing removed messages.';
 
 -- Indexes
-CREATE INDEX idx_messages_session ON agentpg_messages(session_id, created_at);
-CREATE INDEX idx_messages_run ON agentpg_messages(run_id) WHERE run_id IS NOT NULL;
-CREATE INDEX idx_messages_preserved ON agentpg_messages(session_id) WHERE is_preserved = TRUE;
+CREATE INDEX agentpg_idx_messages_session ON agentpg_messages (session_id, created_at);
+
+CREATE INDEX agentpg_idx_messages_run ON agentpg_messages (run_id)
+WHERE
+    run_id IS NOT NULL;
+
+CREATE INDEX agentpg_idx_messages_preserved ON agentpg_messages (session_id)
+WHERE
+    is_preserved = TRUE;
 
 -- =============================================================================
 -- CONTENT BLOCKS TABLE
@@ -652,60 +683,59 @@ CREATE INDEX idx_messages_preserved ON agentpg_messages(session_id) WHERE is_pre
 CREATE TABLE agentpg_content_blocks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    -- Parent message
-    message_id UUID NOT NULL REFERENCES agentpg_messages(id) ON DELETE CASCADE,
+-- Parent message
+message_id UUID NOT NULL REFERENCES agentpg_messages (id) ON DELETE CASCADE,
 
-    -- Order within message (0-indexed)
-    block_index INTEGER NOT NULL,
+-- Order within message (0-indexed)
+block_index INTEGER NOT NULL,
 
-    -- Content type
-    type agentpg_content_type NOT NULL,
+-- Content type
+type agentpg_content_type NOT NULL,
 
-    -- ==========================================================================
-    -- TYPE-SPECIFIC FIELDS
-    -- ==========================================================================
+-- ==========================================================================
+-- TYPE-SPECIFIC FIELDS
+-- ==========================================================================
 
-    -- Text content (for text, thinking types)
-    text TEXT,
+-- Text content (for text, thinking types)
+text TEXT,
 
-    -- Tool use fields (for tool_use, server_tool_use types)
-    tool_use_id TEXT,                       -- Claude's tool_use_id (toolu_...)
-    tool_name TEXT,
-    tool_input JSONB,
+-- Tool use fields (for tool_use, server_tool_use types)
+tool_use_id TEXT, -- Claude's tool_use_id (toolu_...)
+tool_name TEXT,
+tool_input JSONB,
 
-    -- Tool result fields (for tool_result type)
-    tool_result_for_use_id TEXT,            -- References the tool_use_id this result is for
-    tool_content TEXT,
-    is_error BOOLEAN NOT NULL DEFAULT FALSE,
+-- Tool result fields (for tool_result type)
+tool_result_for_use_id TEXT, -- References the tool_use_id this result is for
+tool_content TEXT,
+is_error BOOLEAN NOT NULL DEFAULT FALSE,
 
-    -- Media source (for image, document types)
-    -- Structure: {type, media_type, data, url}
-    source JSONB,
+-- Media source (for image, document types)
+-- Structure: {type, media_type, data, url}
+source JSONB,
 
-    -- Web search results (for web_search_result type)
-    search_results JSONB,
+-- Web search results (for web_search_result type)
+search_results JSONB,
 
-    -- User-provided metadata
-    metadata JSONB NOT NULL DEFAULT '{}',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+-- User-provided metadata
+metadata JSONB NOT NULL DEFAULT '{}',
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    -- Unique block index within message
-    CONSTRAINT content_block_unique_index UNIQUE (message_id, block_index)
+-- Unique block index within message
+CONSTRAINT content_block_unique_index UNIQUE (message_id, block_index)
 );
 
-COMMENT ON TABLE agentpg_content_blocks IS
-'Normalized content blocks within messages. Supports all Claude content types.';
+COMMENT ON TABLE agentpg_content_blocks IS 'Normalized content blocks within messages. Supports all Claude content types.';
 
-COMMENT ON COLUMN agentpg_content_blocks.tool_use_id IS
-'Claude-generated ID (toolu_...) for tool_use blocks. Used to match tool_results.';
+COMMENT ON COLUMN agentpg_content_blocks.tool_use_id IS 'Claude-generated ID (toolu_...) for tool_use blocks. Used to match tool_results.';
 
-COMMENT ON COLUMN agentpg_content_blocks.tool_result_for_use_id IS
-'References the tool_use_id that this result corresponds to.';
+COMMENT ON COLUMN agentpg_content_blocks.tool_result_for_use_id IS 'References the tool_use_id that this result corresponds to.';
 
 -- Indexes
-CREATE INDEX idx_content_blocks_message ON agentpg_content_blocks(message_id, block_index);
-CREATE INDEX idx_content_blocks_tool_use ON agentpg_content_blocks(tool_use_id)
-    WHERE tool_use_id IS NOT NULL;
+CREATE INDEX agentpg_idx_content_blocks_message ON agentpg_content_blocks (message_id, block_index);
+
+CREATE INDEX agentpg_idx_content_blocks_tool_use ON agentpg_content_blocks (tool_use_id)
+WHERE
+    tool_use_id IS NOT NULL;
 
 -- =============================================================================
 -- ITERATIONS TABLE
@@ -741,131 +771,130 @@ CREATE INDEX idx_content_blocks_tool_use ON agentpg_content_blocks(tool_use_id)
 CREATE TABLE agentpg_iterations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    -- Parent run
-    run_id UUID NOT NULL REFERENCES agentpg_runs(id) ON DELETE CASCADE,
+-- Parent run
+run_id UUID NOT NULL REFERENCES agentpg_runs (id) ON DELETE CASCADE,
 
-    -- Iteration number within run (1-indexed)
-    iteration_number INTEGER NOT NULL,
+-- Iteration number within run (1-indexed)
+iteration_number INTEGER NOT NULL,
 
-    -- ==========================================================================
-    -- API MODE
-    -- ==========================================================================
+-- ==========================================================================
+-- API MODE
+-- ==========================================================================
 
-    -- TRUE if this iteration used streaming API instead of batch API
-    is_streaming BOOLEAN NOT NULL DEFAULT FALSE,
+-- TRUE if this iteration used streaming API instead of batch API
+is_streaming BOOLEAN NOT NULL DEFAULT FALSE,
 
-    -- ==========================================================================
-    -- BATCH API TRACKING (only populated when is_streaming = FALSE)
-    -- ==========================================================================
+-- ==========================================================================
+-- BATCH API TRACKING (only populated when is_streaming = FALSE)
+-- ==========================================================================
 
-    -- Claude Batch API identifiers for THIS iteration
-    batch_id TEXT,                          -- Claude's batch ID (msgbatch_...)
-    batch_request_id TEXT,                  -- Our correlation ID (custom_id in Batch API)
-    batch_status agentpg_batch_status,      -- Current batch status
+-- Claude Batch API identifiers for THIS iteration
+batch_id TEXT, -- Claude's batch ID (msgbatch_...)
+batch_request_id TEXT, -- Our correlation ID (custom_id in Batch API)
+batch_status agentpg_batch_status, -- Current batch status
 
-    -- Batch timing
-    batch_submitted_at TIMESTAMPTZ,         -- When batch was submitted to Claude
-    batch_completed_at TIMESTAMPTZ,         -- When batch completed
-    batch_expires_at TIMESTAMPTZ,           -- 24h from submit (Claude's limit)
+-- Batch timing
+batch_submitted_at TIMESTAMPTZ, -- When batch was submitted to Claude
+batch_completed_at TIMESTAMPTZ, -- When batch completed
+batch_expires_at TIMESTAMPTZ, -- 24h from submit (Claude's limit)
 
-    -- Polling tracking
-    batch_poll_count INTEGER NOT NULL DEFAULT 0,
-    batch_last_poll_at TIMESTAMPTZ,
+-- Polling tracking
+batch_poll_count INTEGER NOT NULL DEFAULT 0,
+batch_last_poll_at TIMESTAMPTZ,
 
-    -- ==========================================================================
-    -- STREAMING API TRACKING (only populated when is_streaming = TRUE)
-    -- ==========================================================================
+-- ==========================================================================
+-- STREAMING API TRACKING (only populated when is_streaming = TRUE)
+-- ==========================================================================
 
-    -- Streaming timing (batch_* fields are used for batch mode)
-    streaming_started_at TIMESTAMPTZ,       -- When streaming API call started
-    streaming_completed_at TIMESTAMPTZ,     -- When streaming finished
+-- Streaming timing (batch_* fields are used for batch mode)
+streaming_started_at TIMESTAMPTZ, -- When streaming API call started
+streaming_completed_at TIMESTAMPTZ, -- When streaming finished
 
-    -- ==========================================================================
-    -- REQUEST CONTEXT
-    -- ==========================================================================
+-- ==========================================================================
+-- REQUEST CONTEXT
+-- ==========================================================================
 
-    -- What triggered this iteration
-    -- 'user_prompt' = first iteration
-    -- 'tool_results' = after tools complete
-    -- 'continuation' = after max_tokens
-    trigger_type TEXT NOT NULL,
+-- What triggered this iteration
+-- 'user_prompt' = first iteration
+-- 'tool_results' = after tools complete
+-- 'continuation' = after max_tokens
+trigger_type TEXT NOT NULL,
 
-    -- Message IDs included in this batch request (for debugging/audit)
-    request_message_ids JSONB,
+-- Message IDs included in this batch request (for debugging/audit)
+request_message_ids JSONB,
 
-    -- ==========================================================================
-    -- RESPONSE
-    -- ==========================================================================
+-- ==========================================================================
+-- RESPONSE
+-- ==========================================================================
 
-    -- Stop reason from this iteration
-    stop_reason TEXT,                       -- 'end_turn', 'tool_use', 'max_tokens', etc.
+-- Stop reason from this iteration
+stop_reason TEXT, -- 'end_turn', 'tool_use', 'max_tokens', etc.
 
-    -- Response message ID (the assistant message created from this batch)
-    response_message_id UUID REFERENCES agentpg_messages(id) ON DELETE SET NULL,
+-- Response message ID (the assistant message created from this batch)
+response_message_id UUID REFERENCES agentpg_messages (id) ON DELETE SET NULL,
 
-    -- Did this iteration produce tool_use blocks?
-    has_tool_use BOOLEAN NOT NULL DEFAULT FALSE,
+-- Did this iteration produce tool_use blocks?
+has_tool_use BOOLEAN NOT NULL DEFAULT FALSE,
 
-    -- Number of tool executions created from this iteration
-    tool_execution_count INTEGER NOT NULL DEFAULT 0,
+-- Number of tool executions created from this iteration
+tool_execution_count INTEGER NOT NULL DEFAULT 0,
 
-    -- ==========================================================================
-    -- TOKEN USAGE (for this iteration only)
-    -- ==========================================================================
+-- ==========================================================================
+-- TOKEN USAGE (for this iteration only)
+-- ==========================================================================
 
-    input_tokens INTEGER NOT NULL DEFAULT 0,
-    output_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+input_tokens INTEGER NOT NULL DEFAULT 0,
+output_tokens INTEGER NOT NULL DEFAULT 0,
+cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
 
-    -- ==========================================================================
-    -- ERROR TRACKING
-    -- ==========================================================================
+-- ==========================================================================
+-- ERROR TRACKING
+-- ==========================================================================
 
-    error_message TEXT,
-    error_type TEXT,
+error_message TEXT, error_type TEXT,
 
-    -- ==========================================================================
-    -- TIMESTAMPS
-    -- ==========================================================================
+-- ==========================================================================
+-- TIMESTAMPS
+-- ==========================================================================
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    started_at TIMESTAMPTZ,                 -- When API call initiated (batch submit or stream start)
-    completed_at TIMESTAMPTZ,               -- When response fully processed
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+started_at TIMESTAMPTZ, -- When API call initiated (batch submit or stream start)
+completed_at TIMESTAMPTZ, -- When response fully processed
 
-    -- Unique iteration number per run
-    CONSTRAINT unique_iteration_per_run UNIQUE (run_id, iteration_number)
+-- Unique iteration number per run
+CONSTRAINT unique_iteration_per_run UNIQUE (run_id, iteration_number)
 );
 
-COMMENT ON TABLE agentpg_iterations IS
-'Tracks each Claude API call within a run (batch or streaming). A run can have many iterations (prompt→tools→prompt→tools→done).';
+COMMENT ON TABLE agentpg_iterations IS 'Tracks each Claude API call within a run (batch or streaming). A run can have many iterations (prompt→tools→prompt→tools→done).';
 
-COMMENT ON COLUMN agentpg_iterations.iteration_number IS
-'1-indexed iteration number. Iteration 1 is the initial prompt, subsequent iterations are tool result continuations.';
+COMMENT ON COLUMN agentpg_iterations.iteration_number IS '1-indexed iteration number. Iteration 1 is the initial prompt, subsequent iterations are tool result continuations.';
 
-COMMENT ON COLUMN agentpg_iterations.is_streaming IS
-'TRUE if this iteration used streaming API instead of batch API. Determines which tracking fields are populated.';
+COMMENT ON COLUMN agentpg_iterations.is_streaming IS 'TRUE if this iteration used streaming API instead of batch API. Determines which tracking fields are populated.';
 
-COMMENT ON COLUMN agentpg_iterations.trigger_type IS
-'What caused this iteration: user_prompt (first), tool_results (after tools), continuation (after max_tokens).';
+COMMENT ON COLUMN agentpg_iterations.trigger_type IS 'What caused this iteration: user_prompt (first), tool_results (after tools), continuation (after max_tokens).';
 
-COMMENT ON COLUMN agentpg_iterations.has_tool_use IS
-'TRUE if Claude returned tool_use blocks in this iteration. Determines if we need another iteration after tools complete.';
+COMMENT ON COLUMN agentpg_iterations.has_tool_use IS 'TRUE if Claude returned tool_use blocks in this iteration. Determines if we need another iteration after tools complete.';
 
-COMMENT ON COLUMN agentpg_iterations.batch_request_id IS
-'[Batch only] Our correlation ID within the batch (custom_id in Batch API). Used to match results.';
+COMMENT ON COLUMN agentpg_iterations.batch_request_id IS '[Batch only] Our correlation ID within the batch (custom_id in Batch API). Used to match results.';
 
 -- Indexes
-CREATE INDEX idx_iterations_run ON agentpg_iterations(run_id, iteration_number);
-CREATE INDEX idx_iterations_batch ON agentpg_iterations(batch_id) WHERE batch_id IS NOT NULL;
-CREATE INDEX idx_iterations_polling ON agentpg_iterations(batch_status, batch_last_poll_at NULLS FIRST)
-    WHERE batch_status = 'in_progress';
+CREATE INDEX agentpg_idx_iterations_run ON agentpg_iterations (run_id, iteration_number);
+
+CREATE INDEX agentpg_idx_iterations_batch ON agentpg_iterations (batch_id)
+WHERE
+    batch_id IS NOT NULL;
+
+CREATE INDEX agentpg_idx_iterations_polling ON agentpg_iterations (
+    batch_status,
+    batch_last_poll_at NULLS FIRST
+)
+WHERE
+    batch_status = 'in_progress';
 
 -- Add FK from runs to iterations for current_iteration_id
 ALTER TABLE agentpg_runs
-    ADD CONSTRAINT fk_runs_current_iteration
-    FOREIGN KEY (current_iteration_id)
-    REFERENCES agentpg_iterations(id) ON DELETE SET NULL;
+ADD CONSTRAINT agentpg_fk_runs_current_iteration FOREIGN KEY (current_iteration_id) REFERENCES agentpg_iterations (id) ON DELETE SET NULL;
 
 -- =============================================================================
 -- TOOL EXECUTIONS TABLE
@@ -887,140 +916,150 @@ ALTER TABLE agentpg_runs
 CREATE TABLE agentpg_tool_executions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    -- Parent run this execution belongs to
-    run_id UUID NOT NULL REFERENCES agentpg_runs(id) ON DELETE CASCADE,
+-- Parent run this execution belongs to
+run_id UUID NOT NULL REFERENCES agentpg_runs (id) ON DELETE CASCADE,
 
-    -- Which iteration created this tool execution
-    iteration_id UUID NOT NULL REFERENCES agentpg_iterations(id) ON DELETE CASCADE,
+-- Which iteration created this tool execution
+iteration_id UUID NOT NULL REFERENCES agentpg_iterations (id) ON DELETE CASCADE,
 
-    -- State machine
-    state agentpg_tool_execution_state NOT NULL DEFAULT 'pending',
+-- State machine
+state agentpg_tool_execution_state NOT NULL DEFAULT 'pending',
 
-    -- ==========================================================================
-    -- TOOL IDENTIFICATION
-    -- ==========================================================================
+-- ==========================================================================
+-- TOOL IDENTIFICATION
+-- ==========================================================================
 
-    -- Claude's tool_use_id (for matching with content blocks and tool_result)
-    tool_use_id TEXT NOT NULL,
+-- Claude's tool_use_id (for matching with content blocks and tool_result)
+tool_use_id TEXT NOT NULL,
 
-    -- Tool being executed
-    tool_name TEXT NOT NULL,
+-- Tool being executed
+tool_name TEXT NOT NULL,
 
-    -- Input from Claude (parsed JSON)
-    tool_input JSONB NOT NULL,
+-- Input from Claude (parsed JSON)
+tool_input JSONB NOT NULL,
 
-    -- ==========================================================================
-    -- AGENT-AS-TOOL SUPPORT
-    -- ==========================================================================
+-- ==========================================================================
+-- AGENT-AS-TOOL SUPPORT
+-- ==========================================================================
 
-    -- Is this executing an agent-as-tool?
-    is_agent_tool BOOLEAN NOT NULL DEFAULT FALSE,
+-- Is this executing an agent-as-tool?
+is_agent_tool BOOLEAN NOT NULL DEFAULT FALSE,
 
-    -- For agent-as-tool: the agent being invoked
-    agent_name TEXT REFERENCES agentpg_agents(name),
+-- For agent-as-tool: the agent being invoked
+agent_name TEXT REFERENCES agentpg_agents (name),
 
-    -- For agent-as-tool: the child run created to execute the agent
-    child_run_id UUID REFERENCES agentpg_runs(id) ON DELETE SET NULL,
+-- For agent-as-tool: the child run created to execute the agent
+child_run_id UUID REFERENCES agentpg_runs (id) ON DELETE SET NULL,
 
-    -- ==========================================================================
-    -- RESULT
-    -- ==========================================================================
+-- ==========================================================================
+-- RESULT
+-- ==========================================================================
 
-    -- Tool output (string result or agent response)
-    tool_output TEXT,
+-- Tool output (string result or agent response)
+tool_output TEXT,
 
-    -- Error information
-    is_error BOOLEAN NOT NULL DEFAULT FALSE,
-    error_message TEXT,
+-- Error information
+is_error BOOLEAN NOT NULL DEFAULT FALSE, error_message TEXT,
 
-    -- ==========================================================================
-    -- WORKER/CLAIMING
-    -- ==========================================================================
+-- ==========================================================================
+-- WORKER/CLAIMING
+-- ==========================================================================
 
-    -- Instance that claimed this execution
-    claimed_by_instance_id TEXT,
+-- Instance that claimed this execution
+claimed_by_instance_id TEXT,
 
-    -- When execution was claimed
-    claimed_at TIMESTAMPTZ,
+-- When execution was claimed
+claimed_at TIMESTAMPTZ,
 
-    -- ==========================================================================
-    -- RETRY LOGIC
-    -- ==========================================================================
+-- ==========================================================================
+-- RETRY LOGIC
+-- ==========================================================================
 
-    -- Number of execution attempts
-    attempt_count INTEGER NOT NULL DEFAULT 0,
+-- Number of execution attempts
+attempt_count INTEGER NOT NULL DEFAULT 0,
 
-    -- Maximum attempts before giving up (2 = 1 retry for snappy experience)
-    max_attempts INTEGER NOT NULL DEFAULT 2,
+-- Maximum attempts before giving up (2 = 1 retry for snappy experience)
+max_attempts INTEGER NOT NULL DEFAULT 2,
 
-    -- When this execution is scheduled to run (for retry delays and snoozing)
-    scheduled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+-- When this execution is scheduled to run (for retry delays and snoozing)
+scheduled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    -- Number of times this execution has been snoozed (does not count as attempts)
-    snooze_count INTEGER NOT NULL DEFAULT 0,
+-- Number of times this execution has been snoozed (does not count as attempts)
+snooze_count INTEGER NOT NULL DEFAULT 0,
 
-    -- The error message from the last failed attempt
-    last_error TEXT,
+-- The error message from the last failed attempt
+last_error TEXT,
 
-    -- ==========================================================================
-    -- TIMESTAMPS
-    -- ==========================================================================
+-- ==========================================================================
+-- TIMESTAMPS
+-- ==========================================================================
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    started_at TIMESTAMPTZ,                 -- When execution started
-    completed_at TIMESTAMPTZ,               -- When execution completed
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+started_at TIMESTAMPTZ, -- When execution started
+completed_at TIMESTAMPTZ, -- When execution completed
 
-    -- ==========================================================================
-    -- CONSTRAINTS
-    -- ==========================================================================
+-- ==========================================================================
+-- CONSTRAINTS
+-- ==========================================================================
 
-    -- Terminal states must have completed_at
-    CONSTRAINT tool_exec_state_consistency CHECK (
-        (state IN ('completed', 'failed', 'skipped') AND completed_at IS NOT NULL)
-        OR (state IN ('pending', 'running') AND completed_at IS NULL)
-    ),
+-- Terminal states must have completed_at
+CONSTRAINT tool_exec_state_consistency CHECK (
+    (
+        state IN (
+            'completed',
+            'failed',
+            'skipped'
+        )
+        AND completed_at IS NOT NULL
+    )
+    OR (
+        state IN ('pending', 'running')
+        AND completed_at IS NULL
+    )
+),
 
-    -- Agent tool must have agent_name, non-agent tool must not
-    CONSTRAINT tool_exec_agent_consistency CHECK (
+-- Agent tool must have agent_name, non-agent tool must not
+CONSTRAINT tool_exec_agent_consistency CHECK (
         (is_agent_tool = TRUE AND agent_name IS NOT NULL)
         OR (is_agent_tool = FALSE AND agent_name IS NULL)
     )
 );
 
-COMMENT ON TABLE agentpg_tool_executions IS
-'Tool execution tracking. For agent-as-tool, creates child runs.';
+COMMENT ON TABLE agentpg_tool_executions IS 'Tool execution tracking. For agent-as-tool, creates child runs.';
 
-COMMENT ON COLUMN agentpg_tool_executions.is_agent_tool IS
-'TRUE if this executes another agent. Creates child_run_id when claimed.';
+COMMENT ON COLUMN agentpg_tool_executions.is_agent_tool IS 'TRUE if this executes another agent. Creates child_run_id when claimed.';
 
-COMMENT ON COLUMN agentpg_tool_executions.child_run_id IS
-'For agent-as-tool: the child run created to execute the agent.';
+COMMENT ON COLUMN agentpg_tool_executions.child_run_id IS 'For agent-as-tool: the child run created to execute the agent.';
 
-COMMENT ON COLUMN agentpg_tool_executions.iteration_id IS
-'The iteration that created this tool execution. Used to group tools by batch response.';
+COMMENT ON COLUMN agentpg_tool_executions.iteration_id IS 'The iteration that created this tool execution. Used to group tools by batch response.';
 
 -- Add FK from runs to tool_executions (deferred because of circular reference)
 ALTER TABLE agentpg_runs
-    ADD CONSTRAINT fk_runs_parent_tool_execution
-    FOREIGN KEY (parent_tool_execution_id)
-    REFERENCES agentpg_tool_executions(id) ON DELETE SET NULL;
+ADD CONSTRAINT agentpg_fk_runs_parent_tool_execution FOREIGN KEY (parent_tool_execution_id) REFERENCES agentpg_tool_executions (id) ON DELETE SET NULL;
 
 -- Indexes for worker claiming with SKIP LOCKED
-CREATE INDEX idx_tool_exec_pending ON agentpg_tool_executions(state, created_at)
-    WHERE state = 'pending' AND claimed_by_instance_id IS NULL;
+CREATE INDEX agentpg_idx_tool_exec_pending ON agentpg_tool_executions (state, created_at)
+WHERE
+    state = 'pending'
+    AND claimed_by_instance_id IS NULL;
 
 -- Index for scheduled tool executions (efficient polling for due retries)
-CREATE INDEX idx_tool_exec_pending_scheduled ON agentpg_tool_executions(scheduled_at, created_at)
-    WHERE state = 'pending' AND claimed_by_instance_id IS NULL;
+CREATE INDEX agentpg_idx_tool_exec_pending_scheduled ON agentpg_tool_executions (scheduled_at, created_at)
+WHERE
+    state = 'pending'
+    AND claimed_by_instance_id IS NULL;
 
-CREATE INDEX idx_tool_exec_running ON agentpg_tool_executions(state, started_at)
-    WHERE state = 'running';
+CREATE INDEX agentpg_idx_tool_exec_running ON agentpg_tool_executions (state, started_at)
+WHERE
+    state = 'running';
 
-CREATE INDEX idx_tool_exec_run ON agentpg_tool_executions(run_id);
-CREATE INDEX idx_tool_exec_iteration ON agentpg_tool_executions(iteration_id);
+CREATE INDEX agentpg_idx_tool_exec_run ON agentpg_tool_executions (run_id);
 
-CREATE INDEX idx_tool_exec_child_run ON agentpg_tool_executions(child_run_id)
-    WHERE child_run_id IS NOT NULL;
+CREATE INDEX agentpg_idx_tool_exec_iteration ON agentpg_tool_executions (iteration_id);
+
+CREATE INDEX agentpg_idx_tool_exec_child_run ON agentpg_tool_executions (child_run_id)
+WHERE
+    child_run_id IS NOT NULL;
 
 -- =============================================================================
 -- INSTANCES TABLE (UNLOGGED)
@@ -1039,56 +1078,51 @@ CREATE UNLOGGED TABLE agentpg_instances (
     -- Instance ID (auto-generated UUID or user-provided)
     id TEXT PRIMARY KEY,
 
-    -- Service name (for grouping/identification)
-    -- Multiple instances can share the same name (e.g., same deployment)
-    name TEXT NOT NULL,
+-- Service name (for grouping/identification)
+-- Multiple instances can share the same name (e.g., same deployment)
+name TEXT NOT NULL,
 
-    -- Host information
-    hostname TEXT,
-    pid INTEGER,
-    version TEXT,
+-- Host information
+hostname TEXT, pid INTEGER, version TEXT,
 
-    -- ==========================================================================
-    -- CAPACITY MANAGEMENT
-    -- ==========================================================================
+-- ==========================================================================
+-- CAPACITY MANAGEMENT
+-- ==========================================================================
 
-    -- Maximum concurrent runs this instance can process
-    max_concurrent_runs INTEGER NOT NULL DEFAULT 10,
+-- Maximum concurrent runs this instance can process
+max_concurrent_runs INTEGER NOT NULL DEFAULT 10,
 
-    -- Maximum concurrent tool executions
-    max_concurrent_tools INTEGER NOT NULL DEFAULT 50,
+-- Maximum concurrent tool executions
+max_concurrent_tools INTEGER NOT NULL DEFAULT 50,
 
-    -- NOTE: Active run/tool counts are calculated on-the-fly by querying
-    -- agentpg_runs and agentpg_tool_executions tables rather than stored here.
-    -- This avoids consistency issues with triggers and ensures accurate counts.
+-- NOTE: Active run/tool counts are calculated on-the-fly by querying
+-- agentpg_runs and agentpg_tool_executions tables rather than stored here.
+-- This avoids consistency issues with triggers and ensures accurate counts.
 
-    -- ==========================================================================
-    -- METADATA & TIMESTAMPS
-    -- ==========================================================================
+-- ==========================================================================
+-- METADATA & TIMESTAMPS
+-- ==========================================================================
 
-    -- User-provided metadata (e.g., environment, region)
-    metadata JSONB NOT NULL DEFAULT '{}',
+-- User-provided metadata (e.g., environment, region)
+metadata JSONB NOT NULL DEFAULT '{}',
 
-    -- Timestamps
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+-- Timestamps
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+last_heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    -- Constraints
-    CONSTRAINT instance_id_valid CHECK (char_length(id) > 0 AND char_length(id) < 128),
+-- Constraints
+CONSTRAINT instance_id_valid CHECK (char_length(id) > 0 AND char_length(id) < 128),
     CONSTRAINT instance_capacity_valid CHECK (max_concurrent_runs > 0 AND max_concurrent_tools > 0)
 );
 
-COMMENT ON TABLE agentpg_instances IS
-'Active worker instances with capacity tracking. UNLOGGED for performance.';
+COMMENT ON TABLE agentpg_instances IS 'Active worker instances with capacity tracking. UNLOGGED for performance.';
 
-COMMENT ON COLUMN agentpg_instances.name IS
-'Service name for grouping. Multiple instances can share the same name.';
+COMMENT ON COLUMN agentpg_instances.name IS 'Service name for grouping. Multiple instances can share the same name.';
 
-COMMENT ON COLUMN agentpg_instances.max_concurrent_runs IS
-'Maximum runs this instance will process concurrently.';
+COMMENT ON COLUMN agentpg_instances.max_concurrent_runs IS 'Maximum runs this instance will process concurrently.';
 
 -- Index for heartbeat cleanup (finding stale instances)
-CREATE INDEX idx_instances_heartbeat ON agentpg_instances(last_heartbeat_at);
+CREATE INDEX agentpg_idx_instances_heartbeat ON agentpg_instances (last_heartbeat_at);
 
 -- =============================================================================
 -- INSTANCE CAPABILITY TABLES (UNLOGGED)
@@ -1103,29 +1137,27 @@ CREATE INDEX idx_instances_heartbeat ON agentpg_instances(last_heartbeat_at);
 
 -- Instance-Agent capabilities
 CREATE UNLOGGED TABLE agentpg_instance_agents (
-    instance_id TEXT NOT NULL REFERENCES agentpg_instances(id) ON DELETE CASCADE,
-    agent_name TEXT NOT NULL REFERENCES agentpg_agents(name) ON DELETE CASCADE,
+    instance_id TEXT NOT NULL REFERENCES agentpg_instances (id) ON DELETE CASCADE,
+    agent_name TEXT NOT NULL REFERENCES agentpg_agents (name) ON DELETE CASCADE,
     registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (instance_id, agent_name)
 );
 
-COMMENT ON TABLE agentpg_instance_agents IS
-'Which agents each instance can process. Enables specialized workers.';
+COMMENT ON TABLE agentpg_instance_agents IS 'Which agents each instance can process. Enables specialized workers.';
 
-CREATE INDEX idx_instance_agents_by_agent ON agentpg_instance_agents(agent_name);
+CREATE INDEX agentpg_idx_instance_agents_by_agent ON agentpg_instance_agents (agent_name);
 
 -- Instance-Tool capabilities
 CREATE UNLOGGED TABLE agentpg_instance_tools (
-    instance_id TEXT NOT NULL REFERENCES agentpg_instances(id) ON DELETE CASCADE,
-    tool_name TEXT NOT NULL REFERENCES agentpg_tools(name) ON DELETE CASCADE,
+    instance_id TEXT NOT NULL REFERENCES agentpg_instances (id) ON DELETE CASCADE,
+    tool_name TEXT NOT NULL REFERENCES agentpg_tools (name) ON DELETE CASCADE,
     registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (instance_id, tool_name)
 );
 
-COMMENT ON TABLE agentpg_instance_tools IS
-'Which tools each instance can execute. Enables specialized workers.';
+COMMENT ON TABLE agentpg_instance_tools IS 'Which tools each instance can execute. Enables specialized workers.';
 
-CREATE INDEX idx_instance_tools_by_tool ON agentpg_instance_tools(tool_name);
+CREATE INDEX agentpg_idx_instance_tools_by_tool ON agentpg_instance_tools (tool_name);
 
 -- =============================================================================
 -- LEADER ELECTION TABLE (UNLOGGED)
@@ -1146,21 +1178,21 @@ CREATE UNLOGGED TABLE agentpg_leader (
     -- Always 'default' (single row)
     name TEXT PRIMARY KEY DEFAULT 'default' CHECK (name = 'default'),
 
-    -- Current leader instance
-    leader_id TEXT NOT NULL,
+-- Current leader instance
+leader_id TEXT NOT NULL,
 
-    -- Election timing
-    elected_at TIMESTAMPTZ NOT NULL,
+-- Election timing
+
+
+elected_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
 
     CONSTRAINT leader_id_valid CHECK (char_length(leader_id) > 0 AND char_length(leader_id) < 128)
 );
 
-COMMENT ON TABLE agentpg_leader IS
-'Single-row leader election table. Leader handles maintenance tasks.';
+COMMENT ON TABLE agentpg_leader IS 'Single-row leader election table. Leader handles maintenance tasks.';
 
-COMMENT ON COLUMN agentpg_leader.expires_at IS
-'Leader must refresh before this time or lose leadership.';
+COMMENT ON COLUMN agentpg_leader.expires_at IS 'Leader must refresh before this time or lose leadership.';
 
 -- =============================================================================
 -- COMPACTION TABLES
@@ -1171,58 +1203,61 @@ CREATE TABLE agentpg_compaction_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id UUID NOT NULL REFERENCES agentpg_sessions(id) ON DELETE CASCADE,
 
-    -- Compaction strategy used
-    strategy TEXT NOT NULL,                 -- 'summarization', 'hybrid', etc.
+-- Compaction strategy used
+strategy TEXT NOT NULL, -- 'summarization', 'hybrid', etc.
 
-    -- Token counts
-    original_tokens INTEGER NOT NULL,       -- Before compaction
-    compacted_tokens INTEGER NOT NULL,      -- After compaction
+-- Token counts
+original_tokens INTEGER NOT NULL, -- Before compaction
+compacted_tokens INTEGER NOT NULL, -- After compaction
 
-    -- What was removed
-    messages_removed INTEGER NOT NULL,
+-- What was removed
+messages_removed INTEGER NOT NULL,
 
-    -- Summary content (if summarization strategy)
-    summary_content TEXT,
+-- Summary content (if summarization strategy)
+summary_content TEXT,
 
-    -- Preserved message IDs (JSON array)
-    preserved_message_ids JSONB,
+-- Preserved message IDs (JSON array)
+preserved_message_ids JSONB,
 
-    -- Model used for summarization
-    model_used TEXT,
+-- Model used for summarization
+model_used TEXT,
 
-    -- Performance tracking
-    duration_ms BIGINT,
+-- Performance tracking
+
+
+duration_ms BIGINT,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON TABLE agentpg_compaction_events IS
-'Audit trail for context compaction operations.';
+COMMENT ON TABLE agentpg_compaction_events IS 'Audit trail for context compaction operations.';
 
-CREATE INDEX idx_compaction_session ON agentpg_compaction_events(session_id, created_at DESC);
+CREATE INDEX agentpg_idx_compaction_session ON agentpg_compaction_events (session_id, created_at DESC);
 
 -- Message archive for reversibility
 CREATE TABLE agentpg_message_archive (
     -- Original message ID
     id UUID PRIMARY KEY,
 
-    -- Compaction event that archived this message
-    compaction_event_id UUID REFERENCES agentpg_compaction_events(id) ON DELETE CASCADE,
+-- Compaction event that archived this message
+compaction_event_id UUID REFERENCES agentpg_compaction_events (id) ON DELETE CASCADE,
 
-    -- Session for reference
-    session_id UUID NOT NULL REFERENCES agentpg_sessions(id) ON DELETE CASCADE,
+-- Session for reference
+session_id UUID NOT NULL REFERENCES agentpg_sessions (id) ON DELETE CASCADE,
 
-    -- Full original message JSON
-    original_message JSONB NOT NULL,
+-- Full original message JSON
+
+
+original_message JSONB NOT NULL,
 
     archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON TABLE agentpg_message_archive IS
-'Archived messages from compaction. Enables undo/audit.';
+COMMENT ON TABLE agentpg_message_archive IS 'Archived messages from compaction. Enables undo/audit.';
 
-CREATE INDEX idx_archive_compaction ON agentpg_message_archive(compaction_event_id);
-CREATE INDEX idx_archive_session ON agentpg_message_archive(session_id, archived_at DESC);
+CREATE INDEX agentpg_idx_archive_compaction ON agentpg_message_archive (compaction_event_id);
+
+CREATE INDEX agentpg_idx_archive_session ON agentpg_message_archive (session_id, archived_at DESC);
 
 -- =============================================================================
 -- STORED PROCEDURES
@@ -1288,8 +1323,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION agentpg_claim_runs IS
-'Race-safe run claiming with optional run mode filter. Transitions to batch_submitting or streaming based on run mode.';
+COMMENT ON FUNCTION agentpg_claim_runs IS 'Race-safe run claiming with optional run mode filter. Transitions to batch_submitting or streaming based on run mode.';
 
 -- -----------------------------------------------------------------------------
 -- Claim pending tool executions (race-safe with SKIP LOCKED)
@@ -1345,8 +1379,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION agentpg_claim_tool_executions IS
-'Race-safe tool claiming. Routes agent-tools to capable instances. Respects scheduled_at for retry delays.';
+COMMENT ON FUNCTION agentpg_claim_tool_executions IS 'Race-safe tool claiming. Routes agent-tools to capable instances. Respects scheduled_at for retry delays.';
 
 -- -----------------------------------------------------------------------------
 -- Get iterations needing batch polling
@@ -1375,8 +1408,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION agentpg_get_iterations_for_poll IS
-'Returns iterations owned by instance that need batch status polling.';
+COMMENT ON FUNCTION agentpg_get_iterations_for_poll IS 'Returns iterations owned by instance that need batch status polling.';
 
 -- -----------------------------------------------------------------------------
 -- Get stuck runs for rescue
@@ -1416,8 +1448,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION agentpg_get_stuck_runs IS
-'Returns runs that are stuck in non-terminal states and eligible for rescue. Excludes runs with pending/running tool executions.';
+COMMENT ON FUNCTION agentpg_get_stuck_runs IS 'Returns runs that are stuck in non-terminal states and eligible for rescue. Excludes runs with pending/running tool executions.';
 
 -- =============================================================================
 -- NOTIFICATION TRIGGERS
@@ -1447,7 +1478,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_run_created
+CREATE TRIGGER agentpg_trg_run_created
     AFTER INSERT ON agentpg_runs
     FOR EACH ROW
     EXECUTE FUNCTION agentpg_notify_run_created();
@@ -1486,7 +1517,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_run_state_change
+CREATE TRIGGER agentpg_trg_run_state_change
     AFTER UPDATE ON agentpg_runs
     FOR EACH ROW
     EXECUTE FUNCTION agentpg_notify_run_state_change();
@@ -1513,7 +1544,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_tool_created
+CREATE TRIGGER agentpg_trg_tool_created
     AFTER INSERT ON agentpg_tool_executions
     FOR EACH ROW
     EXECUTE FUNCTION agentpg_notify_tool_created();
@@ -1554,7 +1585,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_tools_complete
+CREATE TRIGGER agentpg_trg_tools_complete
     AFTER UPDATE ON agentpg_tool_executions
     FOR EACH ROW
     EXECUTE FUNCTION agentpg_notify_tools_complete();
@@ -1593,7 +1624,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_child_run_complete
+CREATE TRIGGER agentpg_trg_child_run_complete
     AFTER UPDATE ON agentpg_runs
     FOR EACH ROW
     EXECUTE FUNCTION agentpg_handle_child_run_complete();
@@ -1633,7 +1664,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_cleanup_orphaned_work
+CREATE TRIGGER agentpg_trg_cleanup_orphaned_work
     BEFORE DELETE ON agentpg_instances
     FOR EACH ROW
     EXECUTE FUNCTION agentpg_cleanup_orphaned_work();
@@ -1661,7 +1692,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_cleanup_orphaned_agents
+CREATE TRIGGER agentpg_trg_cleanup_orphaned_agents
     AFTER DELETE ON agentpg_instance_agents
     FOR EACH ROW
     EXECUTE FUNCTION agentpg_cleanup_orphaned_agents();
@@ -1689,7 +1720,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_cleanup_orphaned_tools
+CREATE TRIGGER agentpg_trg_cleanup_orphaned_tools
     AFTER DELETE ON agentpg_instance_tools
     FOR EACH ROW
     EXECUTE FUNCTION agentpg_cleanup_orphaned_tools();
@@ -1716,13 +1747,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_validate_run_agent
+CREATE TRIGGER agentpg_trg_validate_run_agent
     BEFORE INSERT ON agentpg_runs
     FOR EACH ROW
     EXECUTE FUNCTION agentpg_validate_run_agent();
 
-COMMENT ON FUNCTION agentpg_validate_run_agent IS
-'Prevents creating runs for inactive agents (no registered instances).';
+COMMENT ON FUNCTION agentpg_validate_run_agent IS 'Prevents creating runs for inactive agents (no registered instances).';
 
 -- =============================================================================
 -- ATOMIC OPERATIONS
@@ -1799,8 +1829,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION agentpg_create_tool_executions_and_update_run IS
-'Atomically creates tool executions and updates run state. Prevents partial state on crash.';
+COMMENT ON FUNCTION agentpg_create_tool_executions_and_update_run IS 'Atomically creates tool executions and updates run state. Prevents partial state on crash.';
 
 -- -----------------------------------------------------------------------------
 -- Complete tools and continue run atomically
@@ -1876,5 +1905,4 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION agentpg_complete_tools_and_continue_run IS
-'Atomically creates tool_result message and transitions run to pending for next iteration. Race-safe: returns NULL if run is not in pending_tools state.';
+COMMENT ON FUNCTION agentpg_complete_tools_and_continue_run IS 'Atomically creates tool_result message and transitions run to pending for next iteration. Race-safe: returns NULL if run is not in pending_tools state.';

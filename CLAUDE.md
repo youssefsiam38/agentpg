@@ -29,42 +29,59 @@ AgentPG is a fully event-driven Go framework for building async AI agents using 
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              AgentPG Architecture                            │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                   │
-│  │   Client 1   │    │   Client 2   │    │   Client N   │   (k8s pods)      │
-│  │  (Worker)    │    │  (Worker)    │    │  (Worker)    │                   │
-│  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘                   │
-│         │                   │                   │                            │
-│         └───────────────────┼───────────────────┘                            │
-│                             │                                                │
-│                             ▼                                                │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                        PostgreSQL Database                           │    │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌────────────┐  │    │
-│  │  │   Sessions  │  │    Runs     │  │ Iterations  │  │   Tools    │  │    │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘  └────────────┘  │    │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌────────────┐  │    │
-│  │  │  Messages   │  │Tool Executions│ │  Instances │  │   Agents   │  │    │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘  └────────────┘  │    │
-│  │                                                                      │    │
-│  │  LISTEN/NOTIFY Channels:                                            │    │
-│  │  • agentpg_run_created    • agentpg_tool_pending                    │    │
-│  │  • agentpg_run_state      • agentpg_tools_complete                  │    │
-│  │  • agentpg_run_finalized                                            │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                             │                                                │
-│                             ▼                                                │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                      Claude Batch API                                │    │
-│  │  • 24-hour processing window                                        │    │
-│  │  • Async submission and polling                                     │    │
-│  │  • Cost-effective for high-volume                                   │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                               AgentPG Architecture                                │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                   │
+│  ┌────────────────────────────────────────────────────────────────────────────┐  │
+│  │                      HTTP Server Layer (Optional)                           │  │
+│  │  ┌─────────────────────────┐    ┌─────────────────────────┐                │  │
+│  │  │     ui.UIHandler()      │    │    ui.APIHandler()      │                │  │
+│  │  │  /ui/* (HTMX + SSR)     │    │   /api/* (REST JSON)    │                │  │
+│  │  │  • Dashboard            │    │   • Sessions CRUD       │                │  │
+│  │  │  • Sessions/Runs        │    │   • Runs/Iterations     │                │  │
+│  │  │  • Chat Interface       │    │   • Tool Executions     │                │  │
+│  │  │  • Monitoring           │    │   • Agents/Instances    │                │  │
+│  │  └───────────┬─────────────┘    └───────────┬─────────────┘                │  │
+│  │              │ (optional: chat via client)  │                              │  │
+│  └──────────────┼──────────────────────────────┼──────────────────────────────┘  │
+│                 │                              │                                  │
+│  ┌──────────────┴──────────────────────────────┴──────────────────────────────┐  │
+│  │                                                                             │  │
+│  │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                  │  │
+│  │  │   Client 1   │    │   Client 2   │    │   Client N   │   (k8s pods)     │  │
+│  │  │  (Worker)    │    │  (Worker)    │    │  (Worker)    │                  │  │
+│  │  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘                  │  │
+│  │         │                   │                   │                           │  │
+│  │         └───────────────────┼───────────────────┘                           │  │
+│  │                             │                                               │  │
+│  └─────────────────────────────┼───────────────────────────────────────────────┘  │
+│                                │                                                  │
+│                                ▼                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │                         PostgreSQL Database                                  │ │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌────────────┐          │ │
+│  │  │   Sessions  │  │    Runs     │  │ Iterations  │  │   Tools    │          │ │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘  └────────────┘          │ │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌────────────┐          │ │
+│  │  │  Messages   │  │Tool Executions│ │  Instances │  │   Agents   │          │ │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘  └────────────┘          │ │
+│  │                                                                              │ │
+│  │  LISTEN/NOTIFY Channels:                                                    │ │
+│  │  • agentpg_run_created    • agentpg_tool_pending                            │ │
+│  │  • agentpg_run_state      • agentpg_tools_complete                          │ │
+│  │  • agentpg_run_finalized                                                    │ │
+│  └─────────────────────────────────────────────────────────────────────────────┘ │
+│                                │                                                  │
+│                                ▼                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │                       Claude Batch API                                       │ │
+│  │  • 24-hour processing window                                                │ │
+│  │  • Async submission and polling                                             │ │
+│  │  • Cost-effective for high-volume                                           │ │
+│  └─────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                   │
+└──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Key Design Principles
@@ -902,7 +919,7 @@ func CreateOrderWithNotification(ctx context.Context, client *agentpg.Client, po
 
 ```go
 // Session creation in transaction
-sessionID, err := client.NewSessionTx(ctx, tx, tenantID, identifier, parentSessionID, metadata)
+sessionID, err := client.NewSessionTx(ctx, tx, tenantID, userID, parentSessionID, metadata)
 
 // Run creation in transaction
 runID, err := client.RunTx(ctx, tx, sessionID, agentName, prompt)
@@ -2242,7 +2259,7 @@ http.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(store, nil, config)))
 ```
 
 Chat features:
-- Create new sessions with custom identifiers
+- Create new sessions with custom user IDs
 - Select from registered agents
 - Send messages and see real-time responses
 - View tool executions inline

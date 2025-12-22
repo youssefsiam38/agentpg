@@ -34,7 +34,7 @@
         <table class="min-w-full divide-y divide-gray-700">
             <thead class="bg-gray-800/50">
                 <tr>
-                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Identifier</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">User ID</th>
                     <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Tenant</th>
                     <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Runs</th>
                     <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Messages</th>
@@ -51,7 +51,7 @@
                             {{if gt .Depth 0}}
                             <span class="text-gray-500 mr-2">{{range seq 1 .Depth}}└{{end}}</span>
                             {{end}}
-                            <a href="{{$.BasePath}}/sessions/{{.ID}}" class="text-cyan-400 hover:text-cyan-300 font-medium">{{.Identifier}}</a>
+                            <a href="{{$.BasePath}}/sessions/{{.ID}}" class="text-cyan-400 hover:text-cyan-300 font-medium">{{.UserID}}</a>
                         </div>
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">{{.TenantID}}</td>

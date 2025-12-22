@@ -37,7 +37,7 @@ func (s *Service[TTx]) ListSessions(ctx context.Context, params SessionListParam
 		summary := &SessionSummary{
 			ID:              session.ID,
 			TenantID:        session.TenantID,
-			Identifier:      session.Identifier,
+			UserID:          session.UserID,
 			Depth:           session.Depth,
 			CompactionCount: session.CompactionCount,
 			CreatedAt:       session.CreatedAt,
@@ -200,7 +200,7 @@ func (s *Service[TTx]) GetSessionDetail(ctx context.Context, id uuid.UUID) (*Ses
 			detail.ParentSession = &SessionSummary{
 				ID:              parent.ID,
 				TenantID:        parent.TenantID,
-				Identifier:      parent.Identifier,
+				UserID:          parent.UserID,
 				Depth:           parent.Depth,
 				CompactionCount: parent.CompactionCount,
 				CreatedAt:       parent.CreatedAt,
@@ -220,9 +220,9 @@ func (s *Service[TTx]) GetSessionDetail(ctx context.Context, id uuid.UUID) (*Ses
 // CreateSession creates a new session.
 func (s *Service[TTx]) CreateSession(ctx context.Context, req CreateSessionRequest) (*driver.Session, error) {
 	return s.store.CreateSession(ctx, driver.CreateSessionParams{
-		TenantID:   req.TenantID,
-		Identifier: req.Identifier,
-		Metadata:   req.Metadata,
+		TenantID: req.TenantID,
+		UserID:   req.UserID,
+		Metadata: req.Metadata,
 	})
 }
 

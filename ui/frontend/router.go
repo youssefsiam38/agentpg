@@ -84,6 +84,7 @@ func NewRouter[TTx any](svc *service.Service[TTx], client *agentpg.Client[TTx], 
 			"templates/dashboard.html",
 			"templates/fragments/dashboard-stats.html",
 			"templates/chat/message-bubble.html",
+			"templates/chat/run-message-group.html",
 		))
 
 	r := &router[TTx]{

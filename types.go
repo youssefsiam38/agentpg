@@ -171,7 +171,7 @@ func (r *Run) Usage() Usage {
 type Session struct {
 	ID              uuid.UUID      `json:"id"`
 	TenantID        string         `json:"tenant_id"`
-	Identifier      string         `json:"identifier"`
+	UserID          string         `json:"user_id"`
 	ParentSessionID *uuid.UUID     `json:"parent_session_id,omitempty"`
 	Depth           int            `json:"depth"`
 	Metadata        map[string]any `json:"metadata,omitempty"`

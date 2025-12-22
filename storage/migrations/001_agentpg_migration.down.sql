@@ -1,5 +1,5 @@
 -- =============================================================================
--- AGENTPG SCHEMA v2.0 - DOWN MIGRATION
+-- AGENTPG SCHEMA v2.1 - DOWN MIGRATION
 -- =============================================================================
 -- Reverses all changes from 001_agentpg_migration.up.sql
 -- Objects are dropped in reverse order to handle foreign key dependencies.
@@ -10,108 +10,166 @@
 -- =============================================================================
 
 -- Cleanup triggers
-DROP TRIGGER IF EXISTS trg_cleanup_orphaned_tools ON agentpg_instance_tools;
-DROP TRIGGER IF EXISTS trg_cleanup_orphaned_agents ON agentpg_instance_agents;
-DROP TRIGGER IF EXISTS trg_cleanup_orphaned_work ON agentpg_instances;
+DROP TRIGGER IF EXISTS agentpg_trg_cleanup_orphaned_tools ON agentpg_instance_tools;
+
+DROP TRIGGER IF EXISTS agentpg_trg_cleanup_orphaned_agents ON agentpg_instance_agents;
+
+DROP TRIGGER IF EXISTS agentpg_trg_cleanup_orphaned_work ON agentpg_instances;
+
+-- Validation triggers
+DROP TRIGGER IF EXISTS agentpg_trg_validate_run_agent ON agentpg_runs;
 
 -- Notification triggers
-DROP TRIGGER IF EXISTS trg_child_run_complete ON agentpg_runs;
-DROP TRIGGER IF EXISTS trg_tools_complete ON agentpg_tool_executions;
-DROP TRIGGER IF EXISTS trg_tool_created ON agentpg_tool_executions;
-DROP TRIGGER IF EXISTS trg_run_state_change ON agentpg_runs;
-DROP TRIGGER IF EXISTS trg_run_created ON agentpg_runs;
+DROP TRIGGER IF EXISTS agentpg_trg_child_run_complete ON agentpg_runs;
+
+DROP TRIGGER IF EXISTS agentpg_trg_tools_complete ON agentpg_tool_executions;
+
+DROP TRIGGER IF EXISTS agentpg_trg_tool_created ON agentpg_tool_executions;
+
+DROP TRIGGER IF EXISTS agentpg_trg_run_state_change ON agentpg_runs;
+
+DROP TRIGGER IF EXISTS agentpg_trg_run_created ON agentpg_runs;
 
 -- =============================================================================
 -- DROP FUNCTIONS
 -- =============================================================================
 
 -- Cleanup functions
-DROP FUNCTION IF EXISTS agentpg_cleanup_orphaned_tools();
-DROP FUNCTION IF EXISTS agentpg_cleanup_orphaned_agents();
-DROP FUNCTION IF EXISTS agentpg_cleanup_orphaned_work();
+DROP FUNCTION IF EXISTS agentpg_cleanup_orphaned_tools ();
+
+DROP FUNCTION IF EXISTS agentpg_cleanup_orphaned_agents ();
+
+DROP FUNCTION IF EXISTS agentpg_cleanup_orphaned_work ();
+
+-- Validation functions
+DROP FUNCTION IF EXISTS agentpg_validate_run_agent ();
 
 -- Notification functions
-DROP FUNCTION IF EXISTS agentpg_handle_child_run_complete();
-DROP FUNCTION IF EXISTS agentpg_notify_tools_complete();
-DROP FUNCTION IF EXISTS agentpg_notify_tool_created();
-DROP FUNCTION IF EXISTS agentpg_notify_run_state_change();
-DROP FUNCTION IF EXISTS agentpg_notify_run_created();
+DROP FUNCTION IF EXISTS agentpg_handle_child_run_complete ();
+
+DROP FUNCTION IF EXISTS agentpg_notify_tools_complete ();
+
+DROP FUNCTION IF EXISTS agentpg_notify_tool_created ();
+
+DROP FUNCTION IF EXISTS agentpg_notify_run_state_change ();
+
+DROP FUNCTION IF EXISTS agentpg_notify_run_created ();
 
 -- Stored procedures
-DROP FUNCTION IF EXISTS agentpg_complete_tools_and_continue_run(UUID, UUID, JSONB);
-DROP FUNCTION IF EXISTS agentpg_create_tool_executions_and_update_run(JSONB, UUID, agentpg_run_state, JSONB);
-DROP FUNCTION IF EXISTS agentpg_get_stuck_runs(INTERVAL, INTEGER, INTEGER);
-DROP FUNCTION IF EXISTS agentpg_get_iterations_for_poll(TEXT, INTERVAL, INTEGER);
-DROP FUNCTION IF EXISTS agentpg_claim_tool_executions(TEXT, INTEGER);
-DROP FUNCTION IF EXISTS agentpg_claim_runs(TEXT, INTEGER, agentpg_run_mode);
-DROP FUNCTION IF EXISTS agentpg_claim_runs(TEXT, INTEGER);
+DROP FUNCTION IF EXISTS agentpg_complete_tools_and_continue_run (UUID, UUID, JSONB);
+
+DROP FUNCTION IF EXISTS agentpg_create_tool_executions_and_update_run (
+    JSONB,
+    UUID,
+    agentpg_run_state,
+    JSONB
+);
+
+DROP FUNCTION IF EXISTS agentpg_get_stuck_runs (INTERVAL, INTEGER, INTEGER);
+
+DROP FUNCTION IF EXISTS agentpg_get_iterations_for_poll (TEXT, INTERVAL, INTEGER);
+
+DROP FUNCTION IF EXISTS agentpg_claim_tool_executions (TEXT, INTEGER);
+
+DROP FUNCTION IF EXISTS agentpg_claim_runs (
+    TEXT,
+    INTEGER,
+    agentpg_run_mode
+);
+
+DROP FUNCTION IF EXISTS agentpg_claim_runs (TEXT, INTEGER);
 
 -- =============================================================================
 -- DROP FOREIGN KEY CONSTRAINTS (deferred FKs)
 -- =============================================================================
 
 -- These FKs were added after table creation to handle circular references
-ALTER TABLE agentpg_runs DROP CONSTRAINT IF EXISTS fk_runs_parent_tool_execution;
-ALTER TABLE agentpg_runs DROP CONSTRAINT IF EXISTS fk_runs_current_iteration;
+ALTER TABLE agentpg_runs
+DROP CONSTRAINT IF EXISTS agentpg_fk_runs_parent_tool_execution;
+
+ALTER TABLE agentpg_runs
+DROP CONSTRAINT IF EXISTS agentpg_fk_runs_current_iteration;
 
 -- =============================================================================
 -- DROP INDEXES
 -- =============================================================================
 
 -- Archive indexes
-DROP INDEX IF EXISTS idx_archive_session;
-DROP INDEX IF EXISTS idx_archive_compaction;
+DROP INDEX IF EXISTS agentpg_idx_archive_session;
+
+DROP INDEX IF EXISTS agentpg_idx_archive_compaction;
 
 -- Compaction indexes
-DROP INDEX IF EXISTS idx_compaction_session;
+DROP INDEX IF EXISTS agentpg_idx_compaction_session;
 
 -- Instance capability indexes
-DROP INDEX IF EXISTS idx_instance_tools_by_tool;
-DROP INDEX IF EXISTS idx_instance_agents_by_agent;
+DROP INDEX IF EXISTS agentpg_idx_instance_tools_by_tool;
+
+DROP INDEX IF EXISTS agentpg_idx_instance_agents_by_agent;
 
 -- Instance indexes
-DROP INDEX IF EXISTS idx_instances_heartbeat;
+DROP INDEX IF EXISTS agentpg_idx_instances_heartbeat;
 
 -- Tool execution indexes
-DROP INDEX IF EXISTS idx_tool_exec_pending_scheduled;
-DROP INDEX IF EXISTS idx_tool_exec_child_run;
-DROP INDEX IF EXISTS idx_tool_exec_iteration;
-DROP INDEX IF EXISTS idx_tool_exec_run;
-DROP INDEX IF EXISTS idx_tool_exec_running;
-DROP INDEX IF EXISTS idx_tool_exec_pending;
+DROP INDEX IF EXISTS agentpg_idx_tool_exec_pending_scheduled;
+
+DROP INDEX IF EXISTS agentpg_idx_tool_exec_child_run;
+
+DROP INDEX IF EXISTS agentpg_idx_tool_exec_iteration;
+
+DROP INDEX IF EXISTS agentpg_idx_tool_exec_run;
+
+DROP INDEX IF EXISTS agentpg_idx_tool_exec_running;
+
+DROP INDEX IF EXISTS agentpg_idx_tool_exec_pending;
 
 -- Iteration indexes
-DROP INDEX IF EXISTS idx_iterations_polling;
-DROP INDEX IF EXISTS idx_iterations_batch;
-DROP INDEX IF EXISTS idx_iterations_run;
+DROP INDEX IF EXISTS agentpg_idx_iterations_polling;
+
+DROP INDEX IF EXISTS agentpg_idx_iterations_batch;
+
+DROP INDEX IF EXISTS agentpg_idx_iterations_run;
 
 -- Content block indexes
-DROP INDEX IF EXISTS idx_content_blocks_tool_use;
-DROP INDEX IF EXISTS idx_content_blocks_message;
+DROP INDEX IF EXISTS agentpg_idx_content_blocks_tool_use;
+
+DROP INDEX IF EXISTS agentpg_idx_content_blocks_message;
 
 -- Message indexes
-DROP INDEX IF EXISTS idx_messages_preserved;
-DROP INDEX IF EXISTS idx_messages_run;
-DROP INDEX IF EXISTS idx_messages_session;
+DROP INDEX IF EXISTS agentpg_idx_messages_preserved;
+
+DROP INDEX IF EXISTS agentpg_idx_messages_run;
+
+DROP INDEX IF EXISTS agentpg_idx_messages_session;
 
 -- Run indexes
-DROP INDEX IF EXISTS idx_runs_stuck_rescue;
-DROP INDEX IF EXISTS idx_runs_claimed_instance;
-DROP INDEX IF EXISTS idx_runs_parent;
-DROP INDEX IF EXISTS idx_runs_session;
-DROP INDEX IF EXISTS idx_runs_active;
-DROP INDEX IF EXISTS idx_runs_pending_tools;
-DROP INDEX IF EXISTS idx_runs_pending_claim;
-DROP INDEX IF EXISTS idx_runs_pending_batch;
-DROP INDEX IF EXISTS idx_runs_pending_streaming;
+DROP INDEX IF EXISTS agentpg_idx_runs_stuck_rescue;
+
+DROP INDEX IF EXISTS agentpg_idx_runs_claimed_instance;
+
+DROP INDEX IF EXISTS agentpg_idx_runs_parent;
+
+DROP INDEX IF EXISTS agentpg_idx_runs_session;
+
+DROP INDEX IF EXISTS agentpg_idx_runs_active;
+
+DROP INDEX IF EXISTS agentpg_idx_runs_pending_tools;
+
+DROP INDEX IF EXISTS agentpg_idx_runs_pending_claim;
+
+DROP INDEX IF EXISTS agentpg_idx_runs_pending_batch;
+
+DROP INDEX IF EXISTS agentpg_idx_runs_pending_streaming;
 
 -- Tool indexes
-DROP INDEX IF EXISTS idx_tools_agent;
+DROP INDEX IF EXISTS agentpg_idx_tools_agent;
 
 -- Session indexes
-DROP INDEX IF EXISTS idx_sessions_parent;
-DROP INDEX IF EXISTS idx_sessions_tenant_updated;
-DROP INDEX IF EXISTS idx_sessions_tenant_identifier;
+DROP INDEX IF EXISTS agentpg_idx_sessions_parent;
+
+DROP INDEX IF EXISTS agentpg_idx_sessions_tenant_updated;
+
+DROP INDEX IF EXISTS agentpg_idx_sessions_tenant_user_id;
 
 -- =============================================================================
 -- DROP TABLES
@@ -120,6 +178,7 @@ DROP INDEX IF EXISTS idx_sessions_tenant_identifier;
 
 -- Compaction tables
 DROP TABLE IF EXISTS agentpg_message_archive;
+
 DROP TABLE IF EXISTS agentpg_compaction_events;
 
 -- Leader election (UNLOGGED)
@@ -127,6 +186,7 @@ DROP TABLE IF EXISTS agentpg_leader;
 
 -- Instance capability tables (UNLOGGED)
 DROP TABLE IF EXISTS agentpg_instance_tools;
+
 DROP TABLE IF EXISTS agentpg_instance_agents;
 
 -- Instances (UNLOGGED)
@@ -161,8 +221,13 @@ DROP TABLE IF EXISTS agentpg_sessions;
 -- =============================================================================
 
 DROP TYPE IF EXISTS agentpg_message_role;
+
 DROP TYPE IF EXISTS agentpg_content_type;
+
 DROP TYPE IF EXISTS agentpg_tool_execution_state;
+
 DROP TYPE IF EXISTS agentpg_batch_status;
+
 DROP TYPE IF EXISTS agentpg_run_state;
+
 DROP TYPE IF EXISTS agentpg_run_mode;
