@@ -619,9 +619,15 @@ func (rt *router[TTx]) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get view mode from form value (if set) or default to top-level
+	viewMode := r.FormValue("view_mode")
+	if viewMode != "hierarchy" {
+		viewMode = "top-level"
+	}
+
 	// For new sessions, redirect to the chat session page with pending run
 	if isNewSession {
-		http.Redirect(w, r, fmt.Sprintf("%s/chat/session/%s?pending_run=%s", rt.config.BasePath, sessionID, runID), http.StatusSeeOther)
+		http.Redirect(w, r, fmt.Sprintf("%s/chat/session/%s?pending_run=%s&view=%s", rt.config.BasePath, sessionID, runID, viewMode), http.StatusSeeOther)
 		return
 	}
 
@@ -632,6 +638,8 @@ func (rt *router[TTx]) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		"SessionID": sessionID,
 		"Message":   message,
 		"State":     "pending",
+		"ViewMode":  viewMode,
+		"AgentName": agentName,
 	}
 
 	if err := rt.renderer.renderFragment(w, "chat/pending.html", data); err != nil {
@@ -647,6 +655,12 @@ func (rt *router[TTx]) handleChatPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get view mode from query param (passed through polling chain)
+	viewMode := r.URL.Query().Get("view")
+	if viewMode != "hierarchy" {
+		viewMode = "top-level"
+	}
+
 	run, err := rt.svc.Store().GetRun(r.Context(), runID)
 	if err != nil {
 		http.Error(w, "Run not found", http.StatusNotFound)
@@ -659,12 +673,44 @@ func (rt *router[TTx]) handleChatPoll(w http.ResponseWriter, r *http.Request) {
 		rt.logError("failed to get tool executions for chat poll", toolErr)
 	}
 
+	isComplete := run.State == "completed" || run.State == "failed" || run.State == "cancelled"
+
 	data := map[string]any{
 		"BasePath":       rt.config.BasePath,
 		"Run":            run,
 		"SessionID":      run.SessionID,
 		"ToolExecutions": toolExecs,
-		"IsComplete":     run.State == "completed" || run.State == "failed" || run.State == "cancelled",
+		"ViewMode":       viewMode,
+		"IsComplete":     isComplete,
+	}
+
+	// Include messages for OOB update during polling
+	// This ensures tool results and nested agent messages appear in real-time
+	if !isComplete {
+		if viewMode == "hierarchy" {
+			hierarchicalConv, convErr := rt.svc.GetHierarchicalConversation(r.Context(), run.SessionID, 100)
+			if convErr == nil {
+				data["OrphanMessages"] = hierarchicalConv.OrphanMessages
+				data["RootGroups"] = hierarchicalConv.RootGroups
+				data["ToolResults"] = hierarchicalConv.ToolResults
+				data["MessageCount"] = hierarchicalConv.MessageCount
+				data["TotalTokens"] = hierarchicalConv.TotalTokens
+				data["IncludeMessagesOOB"] = true
+			}
+		} else {
+			// For top-level view, also include messages OOB when state is pending_tools
+			// so tool results appear in real-time as tools complete
+			if run.State == "pending_tools" {
+				conv, convErr := rt.svc.GetConversation(r.Context(), run.SessionID, 100)
+				if convErr == nil {
+					data["Messages"] = conv.Messages
+					data["ToolResults"] = conv.ToolResults
+					data["MessageCount"] = conv.MessageCount
+					data["TotalTokens"] = conv.TotalTokens
+					data["IncludeMessagesOOB"] = true
+				}
+			}
+		}
 	}
 
 	if err := rt.renderer.renderFragment(w, "chat/response.html", data); err != nil {
@@ -680,18 +726,40 @@ func (rt *router[TTx]) handleChatMessages(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Get conversation
-	conversation, err := rt.svc.GetConversation(r.Context(), sessionID, 100)
-	if err != nil {
-		http.Error(w, "Failed to load conversation", http.StatusInternalServerError)
-		return
+	// Get view mode from query param (default: top-level)
+	viewMode := r.URL.Query().Get("view")
+	if viewMode != "hierarchy" {
+		viewMode = "top-level"
 	}
 
 	data := map[string]any{
-		"BasePath":     rt.config.BasePath,
-		"Messages":     conversation.Messages,
-		"MessageCount": conversation.MessageCount,
-		"TotalTokens":  conversation.TotalTokens,
+		"BasePath": rt.config.BasePath,
+		"ViewMode": viewMode,
+	}
+
+	if viewMode == "hierarchy" {
+		// Get hierarchical conversation for hierarchy view
+		hierarchicalConv, err := rt.svc.GetHierarchicalConversation(r.Context(), sessionID, 100)
+		if err != nil {
+			http.Error(w, "Failed to load conversation", http.StatusInternalServerError)
+			return
+		}
+		data["OrphanMessages"] = hierarchicalConv.OrphanMessages
+		data["RootGroups"] = hierarchicalConv.RootGroups
+		data["ToolResults"] = hierarchicalConv.ToolResults
+		data["MessageCount"] = hierarchicalConv.MessageCount
+		data["TotalTokens"] = hierarchicalConv.TotalTokens
+	} else {
+		// Get flat conversation for top-level view
+		conversation, err := rt.svc.GetConversation(r.Context(), sessionID, 100)
+		if err != nil {
+			http.Error(w, "Failed to load conversation", http.StatusInternalServerError)
+			return
+		}
+		data["Messages"] = conversation.Messages
+		data["ToolResults"] = conversation.ToolResults
+		data["MessageCount"] = conversation.MessageCount
+		data["TotalTokens"] = conversation.TotalTokens
 	}
 
 	if err := rt.renderer.renderFragment(w, "chat/messages.html", data); err != nil {
@@ -754,8 +822,12 @@ func (rt *router[TTx]) handleChatSession(w http.ResponseWriter, r *http.Request)
 		rt.logError("failed to list sessions for chat sidebar", sessionsErr)
 	}
 
-	// Check for pending run (from redirect after new session creation)
+	// Check for pending run - first from query param, then auto-detect from session
 	var pendingRunID *uuid.UUID
+	var pendingRunState string
+	var pendingToolExecutions []*service.ToolExecutionSummary
+
+	// First check if pending_run query param is provided
 	if pendingRunStr := r.URL.Query().Get("pending_run"); pendingRunStr != "" {
 		if runID, runParseErr := parseUUID(pendingRunStr); runParseErr == nil {
 			// Only show pending if run is actually still in a non-terminal state
@@ -763,6 +835,34 @@ func (rt *router[TTx]) handleChatSession(w http.ResponseWriter, r *http.Request)
 				state := string(run.State)
 				if state != "completed" && state != "failed" && state != "cancelled" {
 					pendingRunID = &runID
+					pendingRunState = state
+					// Fetch tool executions for immediate display
+					if execs, execErr := rt.svc.GetRunToolExecutions(r.Context(), runID); execErr == nil {
+						pendingToolExecutions = execs
+					}
+				}
+			}
+		}
+	}
+
+	// If no pending_run param, auto-detect any in-progress runs in this session
+	if pendingRunID == nil {
+		runs, runsErr := rt.svc.ListRuns(r.Context(), service.RunListParams{
+			SessionID: &sessionID,
+			Limit:     10,
+			OrderBy:   "created_at",
+			OrderDir:  "desc",
+		})
+		if runsErr == nil && runs != nil {
+			for _, run := range runs.Runs {
+				if run.State != "completed" && run.State != "failed" && run.State != "cancelled" {
+					pendingRunID = &run.ID
+					pendingRunState = run.State
+					// Fetch tool executions for immediate display
+					if execs, execErr := rt.svc.GetRunToolExecutions(r.Context(), run.ID); execErr == nil {
+						pendingToolExecutions = execs
+					}
+					break // Use the most recent in-progress run
 				}
 			}
 		}
@@ -783,6 +883,8 @@ func (rt *router[TTx]) handleChatSession(w http.ResponseWriter, r *http.Request)
 		"Agents":                   agents,
 		"Sessions":                 sessionList,
 		"PendingRunID":             pendingRunID,
+		"PendingRunState":          pendingRunState,
+		"PendingToolExecutions":    pendingToolExecutions,
 	}
 
 	if err := rt.renderer.render(w, r, "chat/interface.html", data); err != nil {

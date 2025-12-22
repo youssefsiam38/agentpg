@@ -29,10 +29,10 @@
             {{/* Inline tool result - look up by ToolUseID */}}
             {{if $.ToolResults}}
             {{$result := index $.ToolResults .ToolUseID}}
-            {{if $result}}
+            {{if $result.Type}}{{/* Check Type field to verify result exists (empty struct returns zero value) */}}
             <details class="mt-2">
                 <summary class="text-xs cursor-pointer {{if $result.IsError}}text-red-400{{else}}text-green-400{{end}}">{{if $result.IsError}}View Error{{else}}View Output{{end}}</summary>
-                <div class="mt-1 p-2 rounded text-xs {{if $result.IsError}}bg-red-500/10 border border-red-500/30 text-red-300{{else}}bg-green-500/10 border border-green-500/30 text-green-300{{end}} whitespace-pre-wrap overflow-x-auto">{{$result.ToolContent | truncate 500}}</div>
+                <div class="mt-1 p-2 rounded text-xs {{if $result.IsError}}bg-red-500/10 border border-red-500/30 text-red-300{{else}}bg-green-500/10 border border-green-500/30 text-green-300{{end}} whitespace-pre-wrap overflow-x-auto">{{markdown $result.ToolContent}}</div>
             </details>
             {{else}}
             {{/* No result yet - check if run is still in progress */}}

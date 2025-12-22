@@ -30,13 +30,19 @@
             {{.Group.Run.AgentName}}
         </span>
 
-        {{/* State badge */}}
-        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium
+        {{/* State badge with spinner for in-progress states */}}
+        <span class="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-xs font-medium
               {{if eq .Group.Run.State "completed"}}bg-green-500/20 text-green-400 ring-1 ring-green-500/30{{end}}
               {{if eq .Group.Run.State "failed"}}bg-red-500/20 text-red-400 ring-1 ring-red-500/30{{end}}
               {{if or (eq .Group.Run.State "pending") (eq .Group.Run.State "streaming") (eq .Group.Run.State "batch_processing")}}bg-yellow-500/20 text-yellow-400 ring-1 ring-yellow-500/30{{end}}
               {{if eq .Group.Run.State "pending_tools"}}bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/30{{end}}">
-            {{.Group.Run.State}}
+            {{if not (or (eq .Group.Run.State "completed") (eq .Group.Run.State "failed") (eq .Group.Run.State "cancelled"))}}
+            <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            {{end}}
+            <span>{{.Group.Run.State}}</span>
         </span>
 
         {{/* Message count */}}
@@ -56,6 +62,46 @@
     <div class="run-group-content space-y-3 mb-3">
         {{range .Group.Messages}}
         {{template "message-bubble" (dict "Msg" . "BasePath" $.BasePath "ToolResults" $.ToolResults)}}
+        {{end}}
+
+        {{/* Show processing indicator if run is in progress (but NOT for pending_tools since tool_use blocks show their own status) */}}
+        {{if and .Group.Run (not (or (eq .Group.Run.State "completed") (eq .Group.Run.State "failed") (eq .Group.Run.State "cancelled") (eq .Group.Run.State "pending_tools")))}}
+        <div class="flex justify-start">
+            <div class="max-w-3xl bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 shadow-sm">
+                {{template "processing-indicator" (dict "State" .Group.Run.State)}}
+            </div>
+        </div>
+        {{end}}
+
+        {{/* Show pending/running tool executions only for states where tool_use blocks may not exist yet.
+             Skip for pending_tools state since all tool executions there have corresponding tool_use blocks in messages. */}}
+        {{if and .Group.Run (not (or (eq .Group.Run.State "completed") (eq .Group.Run.State "failed") (eq .Group.Run.State "cancelled") (eq .Group.Run.State "pending_tools")))}}
+        {{if .Group.ToolExecutions}}
+        <div class="pending-tools space-y-2 mt-2">
+            {{range .Group.ToolExecutions}}
+            {{if or (eq .State "pending") (eq .State "running")}}
+            <div class="flex justify-start">
+                <div class="max-w-3xl p-2 rounded bg-gray-700/50 border border-gray-600">
+                    <div class="flex items-center space-x-2 text-sm">
+                        <svg class="w-3 h-3 animate-spin text-purple-400" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <span class="text-gray-300">{{.ToolName}}</span>
+                        <span class="text-xs text-gray-500">{{.State}}</span>
+                    </div>
+                    {{if .ToolInput}}
+                    <details class="mt-2">
+                        <summary class="text-xs text-gray-400 cursor-pointer">View Input</summary>
+                        <pre class="mt-1 text-xs text-green-400 overflow-x-auto bg-gray-950 p-2 rounded border border-gray-700">{{json .ToolInput}}</pre>
+                    </details>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+            {{end}}
+        </div>
+        {{end}}
         {{end}}
     </div>
 

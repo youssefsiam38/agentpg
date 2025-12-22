@@ -63,12 +63,39 @@ func (s *Service[TTx]) GetConversation(ctx context.Context, sessionID uuid.UUID,
 		}
 	}
 
-	// Second pass: filter to only include root-level messages (depth=0 or no run)
-	// and skip messages that only contain tool_result blocks
+	// Also add completed tool execution outputs to ToolResults
+	// This handles agent-as-tool where the result is in tool_execution.tool_output
+	// before the tool_result message is created
+	for _, run := range runs {
+		state := string(run.State)
+		if state != "completed" && state != "failed" && state != "cancelled" {
+			execs, err := s.GetRunToolExecutions(ctx, run.ID)
+			if err == nil {
+				for _, exec := range execs {
+					if exec.ToolUseID != "" && exec.State == "completed" {
+						if _, exists := view.ToolResults[exec.ToolUseID]; !exists {
+							fullExec, err := s.store.GetToolExecution(ctx, exec.ID)
+							if err == nil && fullExec.ToolOutput != nil {
+								view.ToolResults[exec.ToolUseID] = driver.ContentBlock{
+									Type:               "tool_result",
+									ToolResultForUseID: exec.ToolUseID,
+									ToolContent:        *fullExec.ToolOutput,
+									IsError:            fullExec.IsError,
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Second pass: filter to ONLY include messages from root-level runs (depth=0)
+	// Skip: nested runs (depth > 0), orphan messages (no run), unknown depth
 	count := 0
 	for _, msgInfo := range messagesWithInfo {
-		// Skip messages from nested runs (depth > 0)
-		if msgInfo.RunDepth != nil && *msgInfo.RunDepth > 0 {
+		// Only show messages from root-level runs (depth must be exactly 0)
+		if msgInfo.RunDepth == nil || *msgInfo.RunDepth != 0 {
 			continue
 		}
 
@@ -264,8 +291,41 @@ func (s *Service[TTx]) GetHierarchicalConversation(ctx context.Context, sessionI
 		totalTokens += msgInfo.Usage.InputTokens + msgInfo.Usage.OutputTokens
 	}
 
+	// Fetch tool executions for in-progress runs and add completed results to toolResults
+	toolExecsByRun := make(map[uuid.UUID][]*ToolExecutionSummary)
+	for _, run := range runs {
+		state := string(run.State)
+		// Fetch tool executions for in-progress runs
+		if state != "completed" && state != "failed" && state != "cancelled" {
+			execs, err := s.GetRunToolExecutions(ctx, run.ID)
+			if err == nil && len(execs) > 0 {
+				toolExecsByRun[run.ID] = execs
+
+				// Add completed tool execution outputs to toolResults if not already present
+				// This handles agent-as-tool where the result is in tool_execution.tool_output
+				// before the tool_result message is created
+				for _, exec := range execs {
+					if exec.ToolUseID != "" && exec.State == "completed" {
+						if _, exists := toolResults[exec.ToolUseID]; !exists {
+							// Get full tool execution to access tool_output
+							fullExec, err := s.store.GetToolExecution(ctx, exec.ID)
+							if err == nil && fullExec.ToolOutput != nil {
+								toolResults[exec.ToolUseID] = driver.ContentBlock{
+									Type:               "tool_result",
+									ToolResultForUseID: exec.ToolUseID,
+									ToolContent:        *fullExec.ToolOutput,
+									IsError:            fullExec.IsError,
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Build hierarchical groups starting from root runs (depth=0)
-	rootGroups := s.buildRunMessageGroupsAtDepth(runs, messagesByRun, 0, nil)
+	rootGroups := s.buildRunMessageGroupsAtDepth(runs, messagesByRun, toolExecsByRun, 0, nil)
 
 	return &HierarchicalConversationView{
 		SessionID: sessionID,
@@ -288,7 +348,7 @@ func (s *Service[TTx]) GetHierarchicalConversation(ctx context.Context, sessionI
 
 // buildRunMessageGroupsAtDepth recursively builds run message groups for runs at a given depth
 // with the specified parent run ID. Supports unlimited depth.
-func (s *Service[TTx]) buildRunMessageGroupsAtDepth(allRuns []*driver.Run, messagesByRun map[uuid.UUID][]*MessageWithBlocks, depth int, parentRunID *uuid.UUID) []*RunMessageGroup {
+func (s *Service[TTx]) buildRunMessageGroupsAtDepth(allRuns []*driver.Run, messagesByRun map[uuid.UUID][]*MessageWithBlocks, toolExecsByRun map[uuid.UUID][]*ToolExecutionSummary, depth int, parentRunID *uuid.UUID) []*RunMessageGroup {
 	var groups []*RunMessageGroup
 
 	for _, run := range allRuns {
@@ -310,14 +370,33 @@ func (s *Service[TTx]) buildRunMessageGroupsAtDepth(allRuns []*driver.Run, messa
 			}
 		}
 
+		// Build set of ToolUseIDs already shown in messages to avoid duplication
+		toolUseIDsInMessages := make(map[string]bool)
+		for _, msg := range messagesByRun[run.ID] {
+			for _, block := range msg.ContentBlocks {
+				if block.Type == "tool_use" && block.ToolUseID != "" {
+					toolUseIDsInMessages[block.ToolUseID] = true
+				}
+			}
+		}
+
+		// Filter out tool executions that already have tool_use blocks in messages
+		var filteredExecs []*ToolExecutionSummary
+		for _, exec := range toolExecsByRun[run.ID] {
+			if exec.ToolUseID == "" || !toolUseIDsInMessages[exec.ToolUseID] {
+				filteredExecs = append(filteredExecs, exec)
+			}
+		}
+
 		group := &RunMessageGroup{
-			Run:      s.runToSummary(run),
-			Messages: messagesByRun[run.ID],
-			Depth:    run.Depth,
+			Run:            s.runToSummary(run),
+			Messages:       messagesByRun[run.ID],
+			Depth:          run.Depth,
+			ToolExecutions: filteredExecs, // Only tool executions not shown in messages
 		}
 
 		// Recursively build child groups (supports any depth)
-		group.ChildGroups = s.buildRunMessageGroupsAtDepth(allRuns, messagesByRun, depth+1, &run.ID)
+		group.ChildGroups = s.buildRunMessageGroupsAtDepth(allRuns, messagesByRun, toolExecsByRun, depth+1, &run.ID)
 
 		groups = append(groups, group)
 	}
