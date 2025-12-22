@@ -1,21 +1,26 @@
 {{define "chat/pending.html"}}
-<!-- User message -->
+<!-- User message - consistent bubble style with message-bubble template -->
 <div class="flex justify-end">
     <div class="max-w-3xl bg-cyan-700 text-white rounded-lg px-4 py-3 shadow-sm">
-        <div class="prose prose-sm prose-invert max-w-none">
-            <p class="whitespace-pre-wrap">{{.Message}}</p>
+        <div class="prose prose-sm max-w-none prose-invert [&_*]:text-white [&_a]:text-cyan-200 [&_strong]:text-white [&_code]:bg-cyan-800 [&_code]:text-cyan-100 [&_pre]:bg-gray-950 [&_pre]:text-green-400 [&_pre]:border [&_pre]:border-gray-700 [&_pre_code]:bg-transparent [&_pre_code]:text-green-400">
+            {{markdown .Message}}
         </div>
         <div class="mt-2 text-xs text-cyan-300">just now</div>
     </div>
 </div>
 
-<!-- Assistant response (pending) -->
+<!-- Pending assistant response with polling -->
 <div id="run-{{.RunID}}"
      class="flex justify-start"
-     hx-get="{{.BasePath}}/chat/poll/{{.RunID}}"
+     hx-get="{{.BasePath}}/chat/poll/{{.RunID}}?view={{.ViewMode}}"
      hx-trigger="every 1s"
      hx-swap="outerHTML">
     <div class="max-w-3xl bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 shadow-sm">
+        {{if .AgentName}}
+        <div class="flex items-center space-x-2 mb-2 text-gray-400 text-xs">
+            <span>{{.AgentName}}</span>
+        </div>
+        {{end}}
         {{template "processing-indicator" (dict "State" .State)}}
     </div>
 </div>

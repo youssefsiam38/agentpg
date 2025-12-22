@@ -302,20 +302,22 @@ type ToolExecutionListParams struct {
 
 // ToolExecutionSummary contains summary information about a tool execution.
 type ToolExecutionSummary struct {
-	ID           uuid.UUID      `json:"id"`
-	RunID        uuid.UUID      `json:"run_id"`
-	IterationID  uuid.UUID      `json:"iteration_id"`
-	ToolName     string         `json:"tool_name"`
-	State        string         `json:"state"`
-	IsAgentTool  bool           `json:"is_agent_tool"`
-	AgentName    *string        `json:"agent_name,omitempty"`
-	ChildRunID   *uuid.UUID     `json:"child_run_id,omitempty"`
-	IsError      bool           `json:"is_error"`
-	AttemptCount int            `json:"attempt_count"`
-	MaxAttempts  int            `json:"max_attempts"`
-	Duration     *time.Duration `json:"duration,omitempty"`
-	CreatedAt    time.Time      `json:"created_at"`
-	CompletedAt  *time.Time     `json:"completed_at,omitempty"`
+	ID           uuid.UUID       `json:"id"`
+	RunID        uuid.UUID       `json:"run_id"`
+	IterationID  uuid.UUID       `json:"iteration_id"`
+	ToolUseID    string          `json:"tool_use_id,omitempty"`
+	ToolName     string          `json:"tool_name"`
+	ToolInput    json.RawMessage `json:"tool_input,omitempty"`
+	State        string          `json:"state"`
+	IsAgentTool  bool            `json:"is_agent_tool"`
+	AgentName    *string         `json:"agent_name,omitempty"`
+	ChildRunID   *uuid.UUID      `json:"child_run_id,omitempty"`
+	IsError      bool            `json:"is_error"`
+	AttemptCount int             `json:"attempt_count"`
+	MaxAttempts  int             `json:"max_attempts"`
+	Duration     *time.Duration  `json:"duration,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
+	CompletedAt  *time.Time      `json:"completed_at,omitempty"`
 }
 
 // ToolExecutionDetail contains detailed information about a tool execution.
@@ -366,10 +368,11 @@ type ConversationView struct {
 // Used for hierarchical conversation views where nested agent messages
 // are displayed in a tree structure. Supports any depth of nesting.
 type RunMessageGroup struct {
-	Run         *RunSummary          `json:"run"`
-	Messages    []*MessageWithBlocks `json:"messages"`
-	ChildGroups []*RunMessageGroup   `json:"child_groups,omitempty"`
-	Depth       int                  `json:"depth"`
+	Run            *RunSummary              `json:"run"`
+	Messages       []*MessageWithBlocks     `json:"messages"`
+	ChildGroups    []*RunMessageGroup       `json:"child_groups,omitempty"`
+	Depth          int                      `json:"depth"`
+	ToolExecutions []*ToolExecutionSummary  `json:"tool_executions,omitempty"`
 }
 
 // HierarchicalConversationView contains a conversation grouped by run hierarchy.

@@ -1,20 +1,37 @@
 {{define "chat/response.html"}}
 {{if .IsComplete}}
 <!-- Empty div replaces the polling element, messages loaded via OOB swap -->
-<div hx-get="{{.BasePath}}/chat/session/{{.SessionID}}/messages"
+<div hx-get="{{.BasePath}}/chat/session/{{.SessionID}}/messages?view={{.ViewMode}}"
      hx-trigger="load"
      hx-swap="none">
 </div>
 {{else}}
+{{/* Main polling response - this replaces the run-{id} div */}}
+{{if .IncludeMessagesOOB}}
+{{/* For hierarchy view: minimal polling div - all UI is in OOB messages-area */}}
+<div id="run-{{.Run.ID}}"
+     hx-get="{{.BasePath}}/chat/poll/{{.Run.ID}}?view={{.ViewMode}}"
+     hx-trigger="every 1s"
+     hx-swap="outerHTML">
+</div>
+{{else}}
+{{/* For top-level view: show processing indicator and tool executions */}}
+{{/* When state is pending_tools, messages already have tool_use blocks - show minimal polling div */}}
+{{if eq .Run.State "pending_tools"}}
+<div id="run-{{.Run.ID}}"
+     hx-get="{{.BasePath}}/chat/poll/{{.Run.ID}}?view={{.ViewMode}}"
+     hx-trigger="every 1s"
+     hx-swap="outerHTML">
+</div>
+{{else}}
 <div id="run-{{.Run.ID}}"
      class="flex justify-start"
-     hx-get="{{.BasePath}}/chat/poll/{{.Run.ID}}"
+     hx-get="{{.BasePath}}/chat/poll/{{.Run.ID}}?view={{.ViewMode}}"
      hx-trigger="every 1s"
      hx-swap="outerHTML">
     <div class="max-w-3xl bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 shadow-sm">
         {{template "processing-indicator" (dict "State" .Run.State)}}
 
-        <!-- Show in-progress tool executions -->
         {{range .ToolExecutions}}
         {{if or (eq .State "pending") (eq .State "running")}}
         <div class="mt-2 p-2 rounded bg-gray-700/50 border border-gray-600">
@@ -23,10 +40,64 @@
                 <span class="text-gray-300">{{.ToolName}}</span>
                 <span class="text-xs text-gray-500">{{.State}}</span>
             </div>
+            {{if .ToolInput}}
+            <details class="mt-2">
+                <summary class="text-xs text-gray-400 cursor-pointer">View Input</summary>
+                <pre class="mt-1 text-xs text-green-400 overflow-x-auto bg-gray-950 p-2 rounded border border-gray-700">{{json .ToolInput}}</pre>
+            </details>
+            {{end}}
         </div>
         {{end}}
         {{end}}
     </div>
 </div>
+{{end}}
+{{end}}
+
+{{/* OOB updates - refresh messages in real-time for both view modes */}}
+{{if .IncludeMessagesOOB}}
+<!-- OOB swap to update stats -->
+<div id="chat-stats" hx-swap-oob="true" class="flex items-center space-x-4">
+    <span class="text-sm text-gray-400">{{.MessageCount}} messages</span>
+    <span class="text-sm text-gray-400">{{formatTokens .TotalTokens}} tokens</span>
+</div>
+
+<!-- OOB swap to update messages area (before pending-response) -->
+<div id="messages-area" hx-swap-oob="true" class="space-y-4">
+{{if eq .ViewMode "hierarchy"}}
+    {{/* Hierarchy View */}}
+    {{if .OrphanMessages}}
+    <div class="orphan-messages mb-4">
+        {{range .OrphanMessages}}
+        {{template "message-bubble" (dict "Msg" . "BasePath" $.BasePath "ToolResults" $.ToolResults)}}
+        {{end}}
+    </div>
+    {{end}}
+
+    {{if .RootGroups}}
+    <div class="run-groups space-y-4">
+        {{range .RootGroups}}
+        {{template "run-message-group" (dict "Group" . "BasePath" $.BasePath "ToolResults" $.ToolResults)}}
+        {{end}}
+    </div>
+    {{end}}
+{{else}}
+    {{/* Top-Level View */}}
+    {{range .Messages}}
+    {{template "message-bubble" (dict "Msg" . "BasePath" $.BasePath "ToolResults" $.ToolResults)}}
+    {{end}}
+{{end}}
+</div>
+
+<!-- OOB swap to update pending-response - remove user message that was shown from pending.html,
+     since it's now in messages-area. Keep only the minimal polling div. -->
+<div id="pending-response" hx-swap-oob="true">
+    <div id="run-{{.Run.ID}}"
+         hx-get="{{.BasePath}}/chat/poll/{{.Run.ID}}?view={{.ViewMode}}"
+         hx-trigger="every 1s"
+         hx-swap="outerHTML">
+    </div>
+</div>
+{{end}}
 {{end}}
 {{end}}
