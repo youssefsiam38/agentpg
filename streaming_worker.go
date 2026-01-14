@@ -360,7 +360,7 @@ func (w *streamingWorker[TTx]) processResult(ctx context.Context, iter *driver.I
 }
 
 func (w *streamingWorker[TTx]) buildToolParams(iter *driver.Iteration, run *driver.Run, content []anthropic.ContentBlockUnion) []driver.CreateToolExecutionParams {
-	var params []driver.CreateToolExecutionParams
+	params := make([]driver.CreateToolExecutionParams, 0, len(content))
 	for _, block := range content {
 		toolUse, ok := block.AsAny().(anthropic.ToolUseBlock)
 		if !ok {

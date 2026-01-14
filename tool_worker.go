@@ -318,7 +318,7 @@ func (w *toolWorker[TTx]) handleAllToolsComplete(ctx context.Context, runID uuid
 	}
 
 	// Build tool result message content
-	var contentBlocks []driver.ContentBlock
+	contentBlocks := make([]driver.ContentBlock, 0, len(executions))
 	for _, exec := range executions {
 		output := Deref(exec.ToolOutput)
 		if output == "" && exec.IsError {

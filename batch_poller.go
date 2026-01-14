@@ -419,7 +419,7 @@ func (p *batchPoller[TTx]) buildToolParams(iter *driver.Iteration, run *driver.R
 	Name  string          `json:"name,omitempty"`
 	Input json.RawMessage `json:"input,omitempty"`
 }) []driver.CreateToolExecutionParams {
-	var params []driver.CreateToolExecutionParams
+	params := make([]driver.CreateToolExecutionParams, 0, len(content))
 	for _, block := range content {
 		if block.Type != ContentTypeToolUse {
 			continue
