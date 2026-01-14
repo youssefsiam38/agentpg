@@ -349,7 +349,7 @@ func (s *Service[TTx]) GetHierarchicalConversation(ctx context.Context, sessionI
 // buildRunMessageGroupsAtDepth recursively builds run message groups for runs at a given depth
 // with the specified parent run ID. Supports unlimited depth.
 func (s *Service[TTx]) buildRunMessageGroupsAtDepth(allRuns []*driver.Run, messagesByRun map[uuid.UUID][]*MessageWithBlocks, toolExecsByRun map[uuid.UUID][]*ToolExecutionSummary, depth int, parentRunID *uuid.UUID) []*RunMessageGroup {
-	var groups []*RunMessageGroup
+	groups := make([]*RunMessageGroup, 0, len(allRuns))
 
 	for _, run := range allRuns {
 		// Match runs at this depth with the correct parent
