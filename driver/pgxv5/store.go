@@ -276,7 +276,7 @@ func (s *Store) GetAgent(ctx context.Context, name string) (*driver.AgentDefinit
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(config, &agent.Config)
+	_ = json.Unmarshal(config, &agent.Config)
 	return &agent, nil
 }
 
@@ -306,7 +306,7 @@ func (s *Store) ListAgents(ctx context.Context) ([]*driver.AgentDefinition, erro
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(config, &agent.Config)
+		_ = json.Unmarshal(config, &agent.Config)
 		agents = append(agents, &agent)
 	}
 	return agents, rows.Err()
@@ -347,8 +347,8 @@ func (s *Store) GetTool(ctx context.Context, name string) (*driver.ToolDefinitio
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(inputSchema, &tool.InputSchema)
-	json.Unmarshal(metadata, &tool.Metadata)
+	_ = json.Unmarshal(inputSchema, &tool.InputSchema)
+	_ = json.Unmarshal(metadata, &tool.Metadata)
 	return &tool, nil
 }
 
@@ -377,8 +377,8 @@ func (s *Store) ListTools(ctx context.Context) ([]*driver.ToolDefinition, error)
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(inputSchema, &tool.InputSchema)
-		json.Unmarshal(metadata, &tool.Metadata)
+		_ = json.Unmarshal(inputSchema, &tool.InputSchema)
+		_ = json.Unmarshal(metadata, &tool.Metadata)
 		tools = append(tools, &tool)
 	}
 	return tools, rows.Err()
@@ -426,7 +426,7 @@ func (s *Store) createRun(ctx context.Context, e executor, params driver.CreateR
 	if err != nil {
 		return nil, fmt.Errorf("failed to create run: %w", err)
 	}
-	json.Unmarshal(metadata, &run.Metadata)
+	_ = json.Unmarshal(metadata, &run.Metadata)
 	return &run, nil
 }
 
@@ -456,7 +456,7 @@ func (s *Store) GetRun(ctx context.Context, id uuid.UUID) (*driver.Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(metadata, &run.Metadata)
+	_ = json.Unmarshal(metadata, &run.Metadata)
 	return &run, nil
 }
 
@@ -473,8 +473,9 @@ func (s *Store) UpdateRunState(ctx context.Context, id uuid.UUID, state driver.R
 }
 
 func (s *Store) updateRun(ctx context.Context, id uuid.UUID, updates map[string]any) error {
-	sets := []string{}
-	args := []any{id}
+	sets := make([]string, 0, len(updates))
+	args := make([]any, 0, 1+len(updates))
+	args = append(args, id)
 	i := 2
 
 	for k, v := range updates {
@@ -717,8 +718,9 @@ func (s *Store) GetIteration(ctx context.Context, id uuid.UUID) (*driver.Iterati
 }
 
 func (s *Store) UpdateIteration(ctx context.Context, id uuid.UUID, updates map[string]any) error {
-	sets := []string{}
-	args := []any{id}
+	sets := make([]string, 0, len(updates))
+	args := make([]any, 0, 1+len(updates))
+	args = append(args, id)
 	i := 2
 
 	for k, v := range updates {
@@ -795,7 +797,7 @@ func (s *Store) CreateToolExecution(ctx context.Context, params driver.CreateToo
 }
 
 func (s *Store) CreateToolExecutions(ctx context.Context, params []driver.CreateToolExecutionParams) ([]*driver.ToolExecution, error) {
-	var execs []*driver.ToolExecution
+	execs := make([]*driver.ToolExecution, 0, len(params))
 	for _, p := range params {
 		exec, err := s.CreateToolExecution(ctx, p)
 		if err != nil {
@@ -881,8 +883,9 @@ func (s *Store) GetToolExecution(ctx context.Context, id uuid.UUID) (*driver.Too
 }
 
 func (s *Store) UpdateToolExecution(ctx context.Context, id uuid.UUID, updates map[string]any) error {
-	sets := []string{}
-	args := []any{id}
+	sets := make([]string, 0, len(updates))
+	args := make([]any, 0, 1+len(updates))
+	args = append(args, id)
 	i := 2
 
 	for k, v := range updates {
@@ -1158,8 +1161,8 @@ func (s *Store) CompleteToolsAndContinueRun(ctx context.Context, sessionID, runI
 	msg.IsSummary = *isSummary
 	msg.CreatedAt = *createdAt
 	msg.UpdatedAt = *updatedAt
-	json.Unmarshal(usage, &msg.Usage)
-	json.Unmarshal(metadata, &msg.Metadata)
+	_ = json.Unmarshal(usage, &msg.Usage)
+	_ = json.Unmarshal(metadata, &msg.Metadata)
 	msg.Content = contentBlocks
 
 	return &msg, nil
@@ -1208,8 +1211,8 @@ func (s *Store) CreateMessage(ctx context.Context, params driver.CreateMessagePa
 	if err != nil {
 		return nil, fmt.Errorf("failed to create message: %w", err)
 	}
-	json.Unmarshal(usage, &msg.Usage)
-	json.Unmarshal(metadata, &msg.Metadata)
+	_ = json.Unmarshal(usage, &msg.Usage)
+	_ = json.Unmarshal(metadata, &msg.Metadata)
 
 	// Create content blocks
 	if err := s.CreateContentBlocks(ctx, msg.ID, params.Content); err != nil {
@@ -1235,8 +1238,8 @@ func (s *Store) GetMessage(ctx context.Context, id uuid.UUID) (*driver.Message, 
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(usage, &msg.Usage)
-	json.Unmarshal(metadata, &msg.Metadata)
+	_ = json.Unmarshal(usage, &msg.Usage)
+	_ = json.Unmarshal(metadata, &msg.Metadata)
 
 	// Get content blocks
 	blocks, err := s.GetContentBlocks(ctx, msg.ID)
@@ -1272,8 +1275,8 @@ func (s *Store) GetMessages(ctx context.Context, sessionID uuid.UUID, limit int)
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(usage, &msg.Usage)
-		json.Unmarshal(metadata, &msg.Metadata)
+		_ = json.Unmarshal(usage, &msg.Usage)
+		_ = json.Unmarshal(metadata, &msg.Metadata)
 
 		// Get content blocks
 		blocks, err := s.GetContentBlocks(ctx, msg.ID)
@@ -1318,8 +1321,8 @@ func (s *Store) GetMessagesWithRunInfo(ctx context.Context, sessionID uuid.UUID,
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(usage, &msg.Usage)
-		json.Unmarshal(metadata, &msg.Metadata)
+		_ = json.Unmarshal(usage, &msg.Usage)
+		_ = json.Unmarshal(metadata, &msg.Metadata)
 		msg.RunState = runState
 
 		// Get content blocks
@@ -1353,8 +1356,8 @@ func (s *Store) GetMessagesByRun(ctx context.Context, runID uuid.UUID) ([]*drive
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(usage, &msg.Usage)
-		json.Unmarshal(metadata, &msg.Metadata)
+		_ = json.Unmarshal(usage, &msg.Usage)
+		_ = json.Unmarshal(metadata, &msg.Metadata)
 
 		// Get content blocks
 		blocks, err := s.GetContentBlocks(ctx, msg.ID)
@@ -1414,8 +1417,8 @@ func (s *Store) GetMessagesForRunContext(ctx context.Context, runID uuid.UUID) (
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(usage, &msg.Usage)
-		json.Unmarshal(metadata, &msg.Metadata)
+		_ = json.Unmarshal(usage, &msg.Usage)
+		_ = json.Unmarshal(metadata, &msg.Metadata)
 
 		// Get content blocks
 		blocks, err := s.GetContentBlocks(ctx, msg.ID)
@@ -1430,8 +1433,10 @@ func (s *Store) GetMessagesForRunContext(ctx context.Context, runID uuid.UUID) (
 }
 
 func (s *Store) UpdateMessage(ctx context.Context, id uuid.UUID, updates map[string]any) error {
-	sets := []string{"updated_at = NOW()"}
-	args := []any{id}
+	sets := make([]string, 0, 1+len(updates))
+	sets = append(sets, "updated_at = NOW()")
+	args := make([]any, 0, 1+len(updates))
+	args = append(args, id)
 	i := 2
 
 	for k, v := range updates {
@@ -1514,7 +1519,7 @@ func (s *Store) GetContentBlocks(ctx context.Context, messageID uuid.UUID) ([]dr
 		}
 		block.Source = source
 		block.SearchResults = searchResults
-		json.Unmarshal(metadata, &block.Metadata)
+		_ = json.Unmarshal(metadata, &block.Metadata)
 		blocks = append(blocks, block)
 	}
 	return blocks, rows.Err()
@@ -1575,7 +1580,7 @@ func (s *Store) GetInstance(ctx context.Context, instanceID string) (*driver.Ins
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(metadata, &inst.Metadata)
+	_ = json.Unmarshal(metadata, &inst.Metadata)
 	// ActiveRunCount and ActiveToolCount are calculated on-the-fly via GetInstanceActiveCounts
 	return &inst, nil
 }
@@ -1602,7 +1607,7 @@ func (s *Store) ListInstances(ctx context.Context) ([]*driver.Instance, error) {
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(metadata, &inst.Metadata)
+		_ = json.Unmarshal(metadata, &inst.Metadata)
 		// ActiveRunCount and ActiveToolCount are calculated on-the-fly via GetAllInstanceActiveCounts
 		instances = append(instances, &inst)
 	}
@@ -1686,15 +1691,15 @@ func (s *Store) GetAllInstanceActiveCounts(ctx context.Context) (map[string][2]i
 	for rows.Next() {
 		var instanceID string
 		var count int
-		if err := rows.Scan(&instanceID, &count); err != nil {
-			return nil, err
+		if scanErr := rows.Scan(&instanceID, &count); scanErr != nil {
+			return nil, scanErr
 		}
 		counts := result[instanceID]
 		counts[0] = count
 		result[instanceID] = counts
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
 	}
 
 	// Get active tool counts by instance
@@ -1874,7 +1879,7 @@ func (s *Store) CreateCompactionEvent(ctx context.Context, params driver.CreateC
 	if err != nil {
 		return nil, fmt.Errorf("failed to create compaction event: %w", err)
 	}
-	json.Unmarshal(preservedIDs, &event.PreservedMessageIDs)
+	_ = json.Unmarshal(preservedIDs, &event.PreservedMessageIDs)
 	return &event, nil
 }
 
@@ -1907,7 +1912,7 @@ func (s *Store) GetCompactionEvents(ctx context.Context, sessionID uuid.UUID, li
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(preservedIDs, &event.PreservedMessageIDs)
+		_ = json.Unmarshal(preservedIDs, &event.PreservedMessageIDs)
 		events = append(events, &event)
 	}
 	return events, rows.Err()
@@ -1975,7 +1980,7 @@ func collectRuns(rows pgx.Rows) ([]*driver.Run, error) {
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(metadata, &run.Metadata)
+		_ = json.Unmarshal(metadata, &run.Metadata)
 		runs = append(runs, &run)
 	}
 	return runs, rows.Err()

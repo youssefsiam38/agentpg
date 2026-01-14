@@ -34,19 +34,19 @@ type Meta struct {
 // writeJSON writes a JSON response.
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(Response{Data: data})
+	_ = json.NewEncoder(w).Encode(Response{Data: data})
 }
 
 // writeJSONWithMeta writes a JSON response with metadata.
 func writeJSONWithMeta(w http.ResponseWriter, status int, data any, meta *Meta) {
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(Response{Data: data, Meta: meta})
+	_ = json.NewEncoder(w).Encode(Response{Data: data, Meta: meta})
 }
 
 // writeError writes a JSON error response.
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(Response{
+	_ = json.NewEncoder(w).Encode(Response{
 		Error: &APIError{Code: code, Message: message},
 	})
 }
@@ -110,9 +110,9 @@ func (rt *router[TTx]) handleDashboardEvents(w http.ResponseWriter, r *http.Requ
 	stats, err := rt.svc.GetDashboardStats(r.Context(), rt.config.TenantID)
 	if err == nil {
 		data, _ := json.Marshal(stats)
-		w.Write([]byte("event: stats\ndata: "))
-		w.Write(data)
-		w.Write([]byte("\n\n"))
+		_, _ = w.Write([]byte("event: stats\ndata: "))
+		_, _ = w.Write(data)
+		_, _ = w.Write([]byte("\n\n"))
 		flusher.Flush()
 	}
 

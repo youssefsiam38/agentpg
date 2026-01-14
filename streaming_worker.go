@@ -124,20 +124,20 @@ func (w *streamingWorker[TTx]) processRun(ctx context.Context, run *driver.Run) 
 
 	// Update iteration with streaming start time
 	now := time.Now()
-	if err := store.UpdateIteration(ctx, iteration.ID, map[string]any{
+	if updateIterErr := store.UpdateIteration(ctx, iteration.ID, map[string]any{
 		"streaming_started_at": now,
 		"started_at":           now,
-	}); err != nil {
-		return fmt.Errorf("failed to update iteration start time: %w", err)
+	}); updateIterErr != nil {
+		return fmt.Errorf("failed to update iteration start time: %w", updateIterErr)
 	}
 
 	// Update run with current iteration info
-	if err := store.UpdateRun(ctx, run.ID, map[string]any{
+	if updateRunErr := store.UpdateRun(ctx, run.ID, map[string]any{
 		"current_iteration":    iterationNumber,
 		"current_iteration_id": iteration.ID,
 		"started_at":           now,
-	}); err != nil {
-		return fmt.Errorf("failed to update run: %w", err)
+	}); updateRunErr != nil {
+		return fmt.Errorf("failed to update run: %w", updateRunErr)
 	}
 
 	// Build messages for Claude API (reuse logic from runWorker)
@@ -201,7 +201,7 @@ func (w *streamingWorker[TTx]) processRun(ctx context.Context, run *driver.Run) 
 	var message anthropic.Message
 	for stream.Next() {
 		event := stream.Current()
-		message.Accumulate(event)
+		_ = message.Accumulate(event)
 	}
 
 	if err := stream.Err(); err != nil {
@@ -424,7 +424,7 @@ func (w *streamingWorker[TTx]) buildMessages(ctx context.Context, run *driver.Ru
 			case ContentTypeToolUse:
 				var input any
 				if len(block.ToolInput) > 0 {
-					json.Unmarshal(block.ToolInput, &input)
+					_ = json.Unmarshal(block.ToolInput, &input)
 				}
 				content = append(content, anthropic.NewToolUseBlock(block.ToolUseID, input, block.ToolName))
 			case ContentTypeToolResult:

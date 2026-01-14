@@ -195,8 +195,8 @@ func (s *Service[TTx]) GetSessionDetail(ctx context.Context, id uuid.UUID) (*Ses
 
 	// Get parent session if exists
 	if session.ParentSessionID != nil {
-		parent, err := s.store.GetSession(ctx, *session.ParentSessionID)
-		if err == nil {
+		parent, parentErr := s.store.GetSession(ctx, *session.ParentSessionID)
+		if parentErr == nil {
 			detail.ParentSession = &SessionSummary{
 				ID:              parent.ID,
 				TenantID:        parent.TenantID,

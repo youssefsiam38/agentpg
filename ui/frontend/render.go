@@ -259,7 +259,7 @@ func jsonEncode(v any) string {
 // This prevents XSS attacks while allowing safe HTML content.
 func safeHTML(s string) template.HTML {
 	safe := mdSanitize.Sanitize(s)
-	return template.HTML(safe)
+	return template.HTML(safe) //nolint:gosec // Safe: sanitized by bluemonday
 }
 
 // markdown converts markdown text to sanitized HTML.
@@ -291,11 +291,11 @@ func markdown(s string) template.HTML {
 	var buf bytes.Buffer
 	if err := mdParser.Convert([]byte(s), &buf); err != nil {
 		// On error, escape and return as-is
-		return template.HTML(template.HTMLEscapeString(s))
+		return template.HTML(template.HTMLEscapeString(s)) //nolint:gosec // Safe: HTMLEscapeString escapes all dangerous chars
 	}
 	// Sanitize the HTML output
 	safe := mdSanitize.SanitizeBytes(buf.Bytes())
-	return template.HTML(safe)
+	return template.HTML(safe) //nolint:gosec // Safe: sanitized by bluemonday
 }
 
 func add(a, b int) int {

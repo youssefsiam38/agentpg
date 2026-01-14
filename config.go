@@ -265,7 +265,7 @@ func (c *ToolRetryConfig) NextRetryDelay(attemptCount int) time.Duration {
 
 	// Apply jitter (±jitter%)
 	jitterRange := float64(delay) * c.Jitter
-	jitterOffset := (rand.Float64() * 2 * jitterRange) - jitterRange
+	jitterOffset := (rand.Float64() * 2 * jitterRange) - jitterRange //nolint:gosec // G404: math/rand is fine for jitter, not security
 	delay = time.Duration(float64(delay) + jitterOffset)
 
 	// Ensure delay is at least 1 second when using backoff
