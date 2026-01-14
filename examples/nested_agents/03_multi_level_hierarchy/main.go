@@ -1,3 +1,21 @@
+// Package main demonstrates the Client API with multi-level agent hierarchy.
+//
+// This example shows:
+// - 3-level agent hierarchy (Project Manager → Team Leads → Workers)
+// - Worker agents with specialized tools
+// - Per-client registration (no global state)
+// - Using Agents field in AgentDefinition to build the hierarchy
+// - Top-down delegation and bottom-up status aggregation
+//
+// Architecture:
+//
+//	Level 1 (Project Manager)
+//	    └── Engineering Lead (Level 2)
+//	    │       ├── Frontend Developer (Level 3) [lint_frontend]
+//	    │       ├── Backend Developer (Level 3)  [run_tests]
+//	    │       └── Database Specialist (Level 3) [run_migration]
+//	    └── Design Lead (Level 2)
+//	            └── UX Designer (Level 3)        [review_design]
 package main
 
 import (
@@ -6,9 +24,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
@@ -100,7 +118,9 @@ func (d *DesignReviewTool) Execute(ctx context.Context, input json.RawMessage) (
 }
 
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -120,107 +140,121 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-
-	// Create driver
+	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
 
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+		Name:   "hierarchy-demo",
+	})
+	if err != nil {
+		log.Fatalf("Failed to create client: %v", err)
+	}
+
+	maxTokensWorker := 1024
+	maxTokensLead := 1536
+	maxTokensManager := 2048
+
 	// ==========================================================
-	// LEVEL 3: Worker Agents (with specialized tools)
+	// REGISTER TOOLS FIRST (agents will reference them)
 	// ==========================================================
 
-	fmt.Println("Creating Level 3 workers...")
+	fmt.Println("Registering tools...")
+
+	if err := client.RegisterTool(&FrontendLintTool{}); err != nil {
+		log.Fatalf("Failed to register lint_frontend tool: %v", err)
+	}
+	if err := client.RegisterTool(&BackendTestTool{}); err != nil {
+		log.Fatalf("Failed to register run_tests tool: %v", err)
+	}
+	if err := client.RegisterTool(&DatabaseMigrationTool{}); err != nil {
+		log.Fatalf("Failed to register run_migration tool: %v", err)
+	}
+	if err := client.RegisterTool(&DesignReviewTool{}); err != nil {
+		log.Fatalf("Failed to register review_design tool: %v", err)
+	}
+
+	// ==========================================================
+	// LEVEL 3: Worker Agents (with their specialized tools)
+	// ==========================================================
+
+	fmt.Println("Registering agents...")
 
 	// Frontend Developer
-	frontendDev, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client: &client,
-			Model:  "claude-sonnet-4-5-20250929",
-			SystemPrompt: `You are a frontend developer specialist. You:
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:        "frontend-developer",
+		Description: "Frontend developer specialist for React/TypeScript",
+		Model:       "claude-sonnet-4-5-20250929",
+		SystemPrompt: `You are a frontend developer specialist. You:
 1. Work with React, TypeScript, and CSS
 2. Use lint_frontend tool to check code quality
 3. Focus on UI components and user experience
 4. Report status clearly to your team lead`,
-		},
-		agentpg.WithMaxTokens(1024),
-	)
-	if err != nil {
-		log.Fatalf("Failed to create frontend dev: %v", err)
+		Tools:     []string{"lint_frontend"},
+		MaxTokens: &maxTokensWorker,
+	}); err != nil {
+		log.Fatalf("Failed to register frontend-developer: %v", err)
 	}
-	frontendDev.RegisterTool(&FrontendLintTool{})
 
 	// Backend Developer
-	backendDev, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client: &client,
-			Model:  "claude-sonnet-4-5-20250929",
-			SystemPrompt: `You are a backend developer specialist. You:
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:        "backend-developer",
+		Description: "Backend developer specialist for Go/APIs",
+		Model:       "claude-sonnet-4-5-20250929",
+		SystemPrompt: `You are a backend developer specialist. You:
 1. Work with Go, APIs, and databases
 2. Use run_tests tool to verify code
 3. Focus on performance and reliability
 4. Report status clearly to your team lead`,
-		},
-		agentpg.WithMaxTokens(1024),
-	)
-	if err != nil {
-		log.Fatalf("Failed to create backend dev: %v", err)
+		Tools:     []string{"run_tests"},
+		MaxTokens: &maxTokensWorker,
+	}); err != nil {
+		log.Fatalf("Failed to register backend-developer: %v", err)
 	}
-	backendDev.RegisterTool(&BackendTestTool{})
 
 	// Database Specialist
-	dbSpecialist, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client: &client,
-			Model:  "claude-sonnet-4-5-20250929",
-			SystemPrompt: `You are a database specialist. You:
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:        "database-specialist",
+		Description: "Database specialist for schemas and migrations",
+		Model:       "claude-sonnet-4-5-20250929",
+		SystemPrompt: `You are a database specialist. You:
 1. Manage database schemas and migrations
 2. Use run_migration tool for schema changes
 3. Optimize queries and indexes
 4. Report status clearly to your team lead`,
-		},
-		agentpg.WithMaxTokens(1024),
-	)
-	if err != nil {
-		log.Fatalf("Failed to create db specialist: %v", err)
+		Tools:     []string{"run_migration"},
+		MaxTokens: &maxTokensWorker,
+	}); err != nil {
+		log.Fatalf("Failed to register database-specialist: %v", err)
 	}
-	dbSpecialist.RegisterTool(&DatabaseMigrationTool{})
 
 	// UX Designer
-	uxDesigner, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client: &client,
-			Model:  "claude-sonnet-4-5-20250929",
-			SystemPrompt: `You are a UX designer. You:
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:        "ux-designer",
+		Description: "UX designer for accessibility and design",
+		Model:       "claude-sonnet-4-5-20250929",
+		SystemPrompt: `You are a UX designer. You:
 1. Create and review UI designs
 2. Use review_design tool for accessibility checks
 3. Focus on user experience and accessibility
 4. Report status clearly to your team lead`,
-		},
-		agentpg.WithMaxTokens(1024),
-	)
-	if err != nil {
-		log.Fatalf("Failed to create ux designer: %v", err)
+		Tools:     []string{"review_design"},
+		MaxTokens: &maxTokensWorker,
+	}); err != nil {
+		log.Fatalf("Failed to register ux-designer: %v", err)
 	}
-	uxDesigner.RegisterTool(&DesignReviewTool{})
 
 	// ==========================================================
-	// LEVEL 2: Team Lead Agents
+	// LEVEL 2: Team Lead Agents (delegate to Level 3 workers)
 	// ==========================================================
 
-	fmt.Println("Creating Level 2 team leads...")
-
-	// Engineering Lead (manages frontend, backend, db)
-	engineeringLead, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client: &client,
-			Model:  "claude-sonnet-4-5-20250929",
-			SystemPrompt: `You are the Engineering Team Lead. You:
+	// Engineering Lead - delegates to frontend, backend, and database specialists
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:        "engineering-lead",
+		Description: "Engineering team lead coordinating technical work",
+		Model:       "claude-sonnet-4-5-20250929",
+		SystemPrompt: `You are the Engineering Team Lead. You:
 1. Coordinate frontend, backend, and database work
 2. Delegate technical tasks to appropriate specialists
 3. Synthesize status updates from your team
@@ -230,25 +264,18 @@ Your team members:
 - Frontend Developer: React/TypeScript specialist
 - Backend Developer: Go/API specialist
 - Database Specialist: Schema/migration specialist`,
-		},
-		agentpg.WithMaxTokens(1536),
-	)
-	if err != nil {
-		log.Fatalf("Failed to create engineering lead: %v", err)
+		Agents:    []string{"frontend-developer", "backend-developer", "database-specialist"},
+		MaxTokens: &maxTokensLead,
+	}); err != nil {
+		log.Fatalf("Failed to register engineering-lead: %v", err)
 	}
 
-	// Register workers as tools for engineering lead
-	frontendDev.AsToolFor(engineeringLead)
-	backendDev.AsToolFor(engineeringLead)
-	dbSpecialist.AsToolFor(engineeringLead)
-
-	// Design Lead (manages UX designer)
-	designLead, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client: &client,
-			Model:  "claude-sonnet-4-5-20250929",
-			SystemPrompt: `You are the Design Team Lead. You:
+	// Design Lead - delegates to UX designer
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:        "design-lead",
+		Description: "Design team lead coordinating UX work",
+		Model:       "claude-sonnet-4-5-20250929",
+		SystemPrompt: `You are the Design Team Lead. You:
 1. Coordinate design and UX work
 2. Delegate design tasks to your team
 3. Ensure accessibility and user experience standards
@@ -256,28 +283,21 @@ Your team members:
 
 Your team:
 - UX Designer: Accessibility and design specialist`,
-		},
-		agentpg.WithMaxTokens(1536),
-	)
-	if err != nil {
-		log.Fatalf("Failed to create design lead: %v", err)
+		Agents:    []string{"ux-designer"},
+		MaxTokens: &maxTokensLead,
+	}); err != nil {
+		log.Fatalf("Failed to register design-lead: %v", err)
 	}
 
-	// Register UX designer as tool for design lead
-	uxDesigner.AsToolFor(designLead)
-
 	// ==========================================================
-	// LEVEL 1: Project Manager (Top-level orchestrator)
+	// LEVEL 1: Project Manager (delegates to Level 2 leads)
 	// ==========================================================
 
-	fmt.Println("Creating Level 1 project manager...")
-
-	projectManager, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client: &client,
-			Model:  "claude-sonnet-4-5-20250929",
-			SystemPrompt: `You are the Project Manager. You:
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:        "project-manager",
+		Description: "Project manager coordinating all teams",
+		Model:       "claude-sonnet-4-5-20250929",
+		SystemPrompt: `You are the Project Manager. You:
 1. Coordinate the overall project progress
 2. Delegate to team leads based on the request type
 3. Synthesize updates from all teams
@@ -291,16 +311,26 @@ When given a task:
 1. Break it down into engineering and design components
 2. Delegate appropriately to team leads
 3. Synthesize their reports into a cohesive update`,
-		},
-		agentpg.WithMaxTokens(2048),
-	)
-	if err != nil {
-		log.Fatalf("Failed to create project manager: %v", err)
+		Agents:    []string{"engineering-lead", "design-lead"},
+		MaxTokens: &maxTokensManager,
+	}); err != nil {
+		log.Fatalf("Failed to register project-manager: %v", err)
 	}
 
-	// Register team leads as tools for project manager
-	engineeringLead.AsToolFor(projectManager)
-	designLead.AsToolFor(projectManager)
+	// ==========================================================
+	// START THE CLIENT
+	// ==========================================================
+
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
 	// ==========================================================
 	// Display hierarchy
@@ -314,15 +344,10 @@ When given a task:
     │       └── Database Specialist (Level 3) [run_migration]
     └── Design Lead (Level 2)
             └── UX Designer (Level 3)        [review_design]`)
-
-	fmt.Println("Project Manager Tools:")
-	for _, name := range projectManager.GetTools() {
-		fmt.Printf("  - %s\n", name)
-	}
 	fmt.Println()
 
 	// Create session
-	sessionID, err := projectManager.NewSession(ctx, "1", "hierarchy-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, "tenant-1", "hierarchy-demo", nil, map[string]any{
 		"description": "Multi-level hierarchy demonstration",
 	})
 	if err != nil {
@@ -335,45 +360,60 @@ When given a task:
 	// Example 1: Full project status
 	// ==========================================================
 	fmt.Println("=== Example 1: Full Project Status ===")
-	response1, err := projectManager.Run(ctx, "I need a complete status update on the user authentication feature. Check with engineering on code quality and tests, and with design on the login page accessibility.")
+	response1, err := client.RunFastSync(ctx, sessionID, "project-manager",
+		"I need a complete status update on the user authentication feature. Check with engineering on code quality and tests, and with design on the login page accessibility.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
 
-	for _, block := range response1.Message.Content {
-		if block.Type == agentpg.ContentTypeText {
-			fmt.Println(block.Text)
+	if response1.Message != nil {
+		for _, block := range response1.Message.Content {
+			if block.Type == agentpg.ContentTypeText {
+				fmt.Println(block.Text)
+			}
 		}
+	} else {
+		fmt.Println(response1.Text)
 	}
 
 	// ==========================================================
 	// Example 2: Engineering-focused request
 	// ==========================================================
 	fmt.Println("\n=== Example 2: Engineering Focus ===")
-	response2, err := projectManager.Run(ctx, "We need to deploy a database migration and ensure all backend tests pass. Please coordinate with the engineering team.")
+	response2, err := client.RunFastSync(ctx, sessionID, "project-manager",
+		"We need to deploy a database migration and ensure all backend tests pass. Please coordinate with the engineering team.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
 
-	for _, block := range response2.Message.Content {
-		if block.Type == agentpg.ContentTypeText {
-			fmt.Println(block.Text)
+	if response2.Message != nil {
+		for _, block := range response2.Message.Content {
+			if block.Type == agentpg.ContentTypeText {
+				fmt.Println(block.Text)
+			}
 		}
+	} else {
+		fmt.Println(response2.Text)
 	}
 
 	// ==========================================================
 	// Example 3: Design-focused request
 	// ==========================================================
 	fmt.Println("\n=== Example 3: Design Focus ===")
-	response3, err := projectManager.Run(ctx, "Please have the design team review the new dashboard component for accessibility compliance.")
+	response3, err := client.RunFastSync(ctx, sessionID, "project-manager",
+		"Please have the design team review the new dashboard component for accessibility compliance.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
 
-	for _, block := range response3.Message.Content {
-		if block.Type == agentpg.ContentTypeText {
-			fmt.Println(block.Text)
+	if response3.Message != nil {
+		for _, block := range response3.Message.Content {
+			if block.Type == agentpg.ContentTypeText {
+				fmt.Println(block.Text)
+			}
 		}
+	} else {
+		fmt.Println(response3.Text)
 	}
 
 	// Print token usage

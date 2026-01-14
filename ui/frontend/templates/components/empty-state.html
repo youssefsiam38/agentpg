@@ -1,0 +1,44 @@
+{{define "empty-state"}}
+{{/*
+  Empty state placeholder with icon, title, and description.
+
+  Parameters (via dict):
+    Icon        - string: Icon name ("chat", "tool", "server", "computer", "compress", "inbox")
+    Title       - string: Main heading text (required)
+    Description - string: Explanatory text (optional)
+    ColSpan     - int: For table cells (optional, renders as <tr><td>)
+*/}}
+{{if .ColSpan}}
+<tr>
+    <td colspan="{{.ColSpan}}" class="px-6 py-12 text-center">
+{{else}}
+<div class="text-center py-12">
+{{end}}
+        {{if eq .Icon "chat"}}
+        {{template "icon-chat" (dict "Class" "mx-auto h-12 w-12 text-gray-600")}}
+        {{else if eq .Icon "tool"}}
+        {{template "icon-tool" (dict "Class" "mx-auto h-12 w-12 text-gray-600")}}
+        {{else if eq .Icon "server"}}
+        {{template "icon-server" (dict "Class" "mx-auto h-12 w-12 text-gray-600")}}
+        {{else if eq .Icon "computer"}}
+        {{template "icon-computer" (dict "Class" "mx-auto h-12 w-12 text-gray-600")}}
+        {{else if eq .Icon "compress"}}
+        {{template "icon-compress" (dict "Class" "mx-auto h-12 w-12 text-gray-600")}}
+        {{else if eq .Icon "inbox"}}
+        {{template "icon-inbox" (dict "Class" "mx-auto h-12 w-12 text-gray-600")}}
+        {{else if eq .Icon "archive"}}
+        {{template "icon-archive" (dict "Class" "mx-auto h-12 w-12 text-gray-600")}}
+        {{else}}
+        {{template "icon-inbox" (dict "Class" "mx-auto h-12 w-12 text-gray-600")}}
+        {{end}}
+        <h3 class="mt-2 text-sm font-medium text-gray-100">{{.Title}}</h3>
+        {{if .Description}}
+        <p class="mt-1 text-sm text-gray-400">{{.Description}}</p>
+        {{end}}
+{{if .ColSpan}}
+    </td>
+</tr>
+{{else}}
+</div>
+{{end}}
+{{end}}

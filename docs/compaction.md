@@ -1,477 +1,609 @@
-# Context Compaction Guide
+# Context Compaction
 
-This guide explains how AgentPG manages context windows for long conversations through intelligent compaction strategies.
+Long-running conversations can exceed Claude's context window (200K tokens). AgentPG provides automatic and manual compaction to manage context size while preserving important information.
 
-## The Problem
+## Table of Contents
 
-Claude models have finite context windows (e.g., 200K tokens). As conversations grow, you must either:
-1. **Truncate** - Lose old messages entirely
-2. **Summarize** - Compress old messages into summaries
-3. **Hybrid** - Smart combination of strategies
-
-AgentPG implements option 3 with full auditability and rollback support.
-
-## How Compaction Works
-
-### Overview
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                    Before Compaction                              │
-│  ┌─────────┬─────────┬─────────┬─────────┬─────────┬─────────┐  │
-│  │ System  │ Msg 1   │ Msg 2   │ Msg 3   │ Msg 4   │ Msg 5   │  │
-│  │ 1K      │ 30K     │ 40K     │ 35K     │ 50K     │ 20K     │  │
-│  └─────────┴─────────┴─────────┴─────────┴─────────┴─────────┘  │
-│  Total: 176K tokens (88% of 200K limit)                          │
-└──────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                    After Compaction                               │
-│  ┌─────────┬─────────────────────┬─────────┬─────────┐           │
-│  │ System  │      Summary        │ Msg 4   │ Msg 5   │           │
-│  │ 1K      │        8K           │ 50K     │ 20K     │           │
-│  └─────────┴─────────────────────┴─────────┴─────────┘           │
-│  Total: 79K tokens (40% of 200K limit)                           │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-### Process Flow
-
-1. **Detection** - Monitor token usage against trigger threshold
-2. **Partitioning** - Separate protected vs compactable messages
-3. **Strategy Execution** - Apply selected compaction strategy
-4. **Persistence** - Save atomically with transaction support
-5. **Audit** - Record compaction event for analysis
+1. [Overview](#overview)
+2. [Configuration](#configuration)
+3. [Compaction Strategies](#compaction-strategies)
+4. [Message Partitioning](#message-partitioning)
+5. [Client Methods](#client-methods)
+6. [Token Counting](#token-counting)
+7. [Database Schema](#database-schema)
+8. [Usage Examples](#usage-examples)
+9. [Best Practices](#best-practices)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
-## Configuration Options
+## Overview
+
+Context compaction reduces the number of tokens in a conversation while preserving essential information. This is critical for:
+
+- **Long conversations**: Multi-turn dialogues that accumulate tokens over time
+- **Tool-heavy sessions**: Tool outputs can be verbose and consume significant context
+- **Cost optimization**: Smaller contexts reduce API costs
+- **Reliability**: Prevents context overflow errors
+
+### How It Works
+
+1. **Token counting**: Estimate current context size
+2. **Threshold check**: Compare against trigger threshold (default 85%)
+3. **Message partitioning**: Categorize messages into protected/compactable groups
+4. **Strategy execution**: Apply hybrid or summarization strategy
+5. **Archive and replace**: Archive old messages, insert summary
+
+---
+
+## Configuration
 
 ### Basic Configuration
 
 ```go
-agent, _ := agentpg.New(cfg,
-    // Enable/disable auto-compaction (default: true)
-    agentpg.WithAutoCompaction(true),
+import "github.com/youssefsiam38/agentpg/compaction"
 
-    // When to trigger (default: 0.85 = 85% of context)
-    agentpg.WithCompactionTrigger(0.85),
+client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
+    APIKey: apiKey,
 
-    // Target tokens after compaction (default: 40% of max)
-    agentpg.WithCompactionTarget(80000),
+    // Enable auto-compaction after each run
+    AutoCompactionEnabled: true,
 
-    // Strategy to use (default: hybrid)
-    agentpg.WithCompactionStrategy(agentpg.HybridStrategy),
-)
+    // Compaction settings
+    CompactionConfig: &compaction.Config{
+        Strategy:            compaction.StrategyHybrid,
+        Trigger:             0.85,       // 85% context usage threshold
+        TargetTokens:        80000,      // Target after compaction
+        PreserveLastN:       10,         // Always keep last 10 messages
+        ProtectedTokens:     40000,      // Never touch last 40K tokens
+        MaxTokensForModel:   200000,     // Claude's context window
+        SummarizerModel:     "claude-3-5-haiku-20241022",
+        SummarizerMaxTokens: 4096,
+        PreserveToolOutputs: false,      // Prune tool outputs in hybrid mode
+        UseTokenCountingAPI: true,       // Use Claude's token counting API
+    },
+})
 ```
 
-### Protection Settings
+### Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `Strategy` | `Strategy` | `StrategyHybrid` | Compaction strategy to use |
+| `Trigger` | `float64` | `0.85` | Context usage threshold (0.0-1.0) |
+| `TargetTokens` | `int` | `80000` | Desired token count after compaction |
+| `PreserveLastN` | `int` | `10` | Minimum recent messages to preserve |
+| `ProtectedTokens` | `int` | `40000` | End-of-conversation tokens never touched |
+| `MaxTokensForModel` | `int` | `200000` | Claude's context window size |
+| `SummarizerModel` | `string` | `claude-3-5-haiku-20241022` | Model for summarization |
+| `SummarizerMaxTokens` | `int` | `4096` | Max tokens for summary response |
+| `PreserveToolOutputs` | `bool` | `false` | Keep tool outputs in hybrid mode |
+| `UseTokenCountingAPI` | `bool` | `true` | Use Claude API for token counting |
+
+### Default Configuration
+
+Use `DefaultConfig()` for production-tested defaults:
 
 ```go
-agent, _ := agentpg.New(cfg,
-    // Always preserve last N messages (default: 10)
-    agentpg.WithCompactionPreserveN(10),
-
-    // Never compact last N tokens (default: 40000)
-    agentpg.WithCompactionProtectedTokens(40000),
-
-    // Keep full tool outputs (default: false)
-    agentpg.WithPreserveToolOutputs(true),
-)
-```
-
-### Summarizer Configuration
-
-```go
-agent, _ := agentpg.New(cfg,
-    // Model for generating summaries (default: haiku)
-    agentpg.WithSummarizerModel("claude-3-5-haiku-20241022"),
-
-    // Override context window size
-    agentpg.WithMaxContextTokens(200000),
-)
+config := compaction.DefaultConfig()
+// Modify as needed
+config.TargetTokens = 60000
 ```
 
 ---
 
-## Manual Compaction
-
-While auto-compaction handles most scenarios, you may want manual control for:
-- Compacting at logical breakpoints (end of task, topic change)
-- Preserving context during critical exchanges
-- Batch processing workflows
-- Cost optimization (compact only when necessary)
-
-### Using agent.Compact()
-
-```go
-// Disable auto-compaction for manual control
-agent, _ := agentpg.New(cfg,
-    agentpg.WithAutoCompaction(false),
-    agentpg.WithCompactionTarget(40000),
-)
-
-// ... run your conversation ...
-
-// Check current context usage
-stats, _ := agent.GetCompactionStats(ctx)
-fmt.Printf("Utilization: %.1f%% (%d tokens)\n",
-    stats.UtilizationPct, stats.CurrentTokens)
-
-// Manually trigger compaction when ready
-result, err := agent.Compact(ctx)
-if err != nil {
-    log.Fatal(err)
-}
-
-if result != nil {
-    fmt.Printf("Compacted: %d -> %d tokens\n",
-        result.OriginalTokens, result.CompactedTokens)
-}
-```
-
-### Using agent.CompactTx() for Atomicity
-
-Combine compaction with other database operations in a single transaction:
-
-```go
-tx, _ := pool.Begin(ctx)
-defer tx.Rollback(ctx)
-
-// Compact within the transaction
-result, err := agent.CompactTx(ctx, tx)
-if err != nil {
-    return err
-}
-
-// Other operations in same transaction
-if result != nil {
-    tx.Exec(ctx, "UPDATE sessions SET last_compacted = NOW() WHERE id = $1", sessionID)
-}
-
-tx.Commit(ctx)
-```
-
-### Monitoring Context Usage
-
-Use `GetCompactionStats()` to monitor context growth:
-
-```go
-stats, _ := agent.GetCompactionStats(ctx)
-
-fmt.Printf("Current tokens: %d / %d (%.1f%%)\n",
-    stats.CurrentTokens, stats.MaxTokens, stats.UtilizationPct)
-fmt.Printf("Message count: %d\n", stats.MessageCount)
-fmt.Printf("Compaction count: %d\n", stats.CompactionCount)
-fmt.Printf("Should compact (by threshold): %v\n", stats.ShouldCompact)
-```
-
-### CompactionResult Structure
-
-```go
-type CompactionResult struct {
-    Strategy           string      // Strategy used ("hybrid", "summarization")
-    OriginalTokens     int         // Tokens before compaction
-    CompactedTokens    int         // Tokens after compaction
-    MessagesRemoved    int         // Number of messages removed
-    PreservedMessages  []*Message  // Messages that were kept
-    Summary            string      // Generated summary (if any)
-}
-```
-
----
-
-## Strategies
+## Compaction Strategies
 
 ### Hybrid Strategy (Default)
 
-The hybrid strategy is the recommended approach for most use cases.
+The hybrid strategy is a two-phase approach that minimizes API costs:
 
-**Process:**
-1. **Phase 1: Prune Tool Outputs** - Replace large tool results with truncated versions
-2. **Phase 2: Summarize** - If still over target, summarize old messages
+**Phase 1: Pruning (Free)**
+- Replaces tool output content with `[TOOL OUTPUT PRUNED]` placeholder
+- Preserves tool structure and metadata
+- No API calls required
 
-**Benefits:**
-- Preserves more conversation detail
-- Reduces API costs (less summarization)
-- Maintains tool context when possible
+**Phase 2: Summarization (If Needed)**
+- Only triggered if Phase 1 is insufficient
+- Uses Claude to summarize remaining compactable messages
+- Creates structured 9-section summary
 
 ```go
-agentpg.WithCompactionStrategy(agentpg.HybridStrategy)
+CompactionConfig: &compaction.Config{
+    Strategy:            compaction.StrategyHybrid,
+    PreserveToolOutputs: false,  // Enable pruning
+}
 ```
+
+**Best for**: Tool-heavy conversations where outputs are verbose but tool invocations themselves provide context.
 
 ### Summarization Strategy
 
-Pure summarization approach using Claude to create conversation summaries.
-
-**Process:**
-1. Identify compactable messages
-2. Send to summarizer model
-3. Replace with summary message
-
-**Benefits:**
-- Maximum compression
-- Consistent output size
-- Good for conversation-heavy sessions
+Direct summarization of all compactable messages:
 
 ```go
-agentpg.WithCompactionStrategy(agentpg.SummarizationStrategy)
+CompactionConfig: &compaction.Config{
+    Strategy: compaction.StrategySummarization,
+}
+```
+
+**Best for**: General conversations without heavy tool usage, or when full context preservation is important.
+
+### Summary Format
+
+Both strategies create a structured 9-section summary:
+
+1. **Primary Request and Intent** - Original user goal
+2. **Key Technical Concepts** - Important technical details
+3. **Files and Code Sections** - Referenced files and code
+4. **Errors and Fixes** - Problems encountered and solutions
+5. **Problem Solving** - Approach taken and rationale
+6. **User Preferences and Constraints** - Expressed requirements
+7. **Pending Tasks** - Outstanding items
+8. **Current Work** - Active work in progress
+9. **Next Step** - Immediate next action
+
+---
+
+## Message Partitioning
+
+Messages are categorized into **5 mutually exclusive groups**:
+
+| Category | Description | Compactable |
+|----------|-------------|-------------|
+| **Protected** | Within last `ProtectedTokens` | No |
+| **Preserved** | Marked `is_preserved=true` | No |
+| **Recent** | Last `PreserveLastN` messages | No |
+| **Summaries** | Previous summaries (`is_summary=true`) | No |
+| **Compactable** | Everything else | Yes |
+
+### Partitioning Algorithm
+
+```
+1. Start from newest message, work backwards
+2. First 40K tokens (ProtectedTokens) → Protected zone
+3. Next 10 messages (PreserveLastN) not in Protected → Recent
+4. Messages with is_summary=true → Summaries
+5. Messages with is_preserved=true → Preserved
+6. Everything else → Compactable
+```
+
+### Partition Statistics
+
+```go
+stats, _ := client.GetCompactionStats(ctx, sessionID)
+
+fmt.Printf("Total: %d messages, %d tokens\n", stats.TotalMessages, stats.TotalTokens)
+fmt.Printf("Usage: %.1f%%\n", stats.UsagePercent*100)
+fmt.Printf("Protected: %d messages\n", stats.ProtectedMessages)
+fmt.Printf("Preserved: %d messages\n", stats.PreservedMessages)
+fmt.Printf("Summaries: %d messages\n", stats.SummaryMessages)
+fmt.Printf("Compactable: %d messages\n", stats.CompactableMessages)
+fmt.Printf("Needs compaction: %v\n", stats.NeedsCompaction)
+```
+
+### Preserving Important Messages
+
+Mark critical messages to never be compacted:
+
+```sql
+UPDATE agentpg_messages
+SET is_preserved = true
+WHERE id = 'important-message-id';
 ```
 
 ---
 
-## Message Protection
+## Client Methods
 
-### Automatic Protection
-
-These messages are automatically protected from compaction:
-
-1. **System Messages** - Never compacted
-2. **Recent Messages** - Last N messages (configurable)
-3. **Recent Tokens** - Last N tokens (configurable)
-
-### Manual Protection
-
-Mark individual messages as preserved:
+### Check If Compaction Needed
 
 ```go
-// When creating messages
-msg := &Message{
-    // ...
-    IsPreserved: true,  // Never compacted
+needs, err := client.NeedsCompaction(ctx, sessionID)
+if needs {
+    // Context usage exceeds threshold
 }
-
-// Messages marked is_preserved=true in the database are always kept
 ```
 
-**Use Cases for Manual Protection:**
-- Critical user instructions
-- Important context that must persist
-- Key decisions or agreements
+### Get Compaction Statistics
+
+```go
+stats, err := client.GetCompactionStats(ctx, sessionID)
+
+fmt.Printf("Session: %s\n", stats.SessionID)
+fmt.Printf("Total: %d messages, %d tokens\n", stats.TotalMessages, stats.TotalTokens)
+fmt.Printf("Usage: %.1f%% of context\n", stats.UsagePercent*100)
+fmt.Printf("Compaction count: %d\n", stats.CompactionCount)
+fmt.Printf("Compactable: %d messages\n", stats.CompactableMessages)
+```
+
+### Manual Compaction
+
+```go
+// Always compact (returns error if no compactable messages)
+result, err := client.Compact(ctx, sessionID)
+
+// Only compact if threshold exceeded (returns nil if not needed)
+result, err := client.CompactIfNeeded(ctx, sessionID)
+```
+
+### Compaction with Custom Config
+
+```go
+// One-off override of configuration
+result, err := client.CompactWithConfig(ctx, sessionID, &compaction.Config{
+    Strategy:     compaction.StrategySummarization,
+    TargetTokens: 50000,
+})
+```
+
+### Compaction Result
+
+```go
+type Result struct {
+    EventID             uuid.UUID     // ID of compaction event record
+    Strategy            Strategy      // Strategy that was used
+    OriginalTokens      int           // Token count before compaction
+    CompactedTokens     int           // Token count after compaction
+    MessagesRemoved     int           // Number of messages archived
+    PreservedMessageIDs []uuid.UUID   // IDs of preserved messages
+    SummaryCreated      bool          // Whether a summary was created
+    Duration            time.Duration // How long compaction took
+}
+
+// Usage
+result, _ := client.Compact(ctx, sessionID)
+fmt.Printf("Reduced: %d -> %d tokens (%.1f%% reduction)\n",
+    result.OriginalTokens,
+    result.CompactedTokens,
+    float64(result.OriginalTokens-result.CompactedTokens)/float64(result.OriginalTokens)*100,
+)
+fmt.Printf("Archived: %d messages\n", result.MessagesRemoved)
+fmt.Printf("Duration: %v\n", result.Duration)
+```
 
 ---
 
-## Compaction Events
+## Token Counting
 
-Every compaction operation is logged for auditing:
+### Primary Method: Claude API
+
+When `UseTokenCountingAPI` is `true` (default), the compaction package uses Claude's token counting API for accurate counts:
 
 ```go
-type CompactionEvent struct {
-    ID                  string
-    SessionID           string
-    Strategy            string      // "hybrid", "summarization"
-    OriginalTokens      int         // Tokens before
-    CompactedTokens     int         // Tokens after
-    MessagesRemoved     int         // Count of removed messages
-    SummaryContent      string      // Generated summary
-    PreservedMessageIDs []string    // IDs of preserved messages
-    ModelUsed           string      // Summarizer model
-    DurationMs          int64       // Operation time
-    CreatedAt           time.Time
+// Accurate token counting via API
+client.Messages.CountTokens()
+```
+
+### Fallback: Character Approximation
+
+When the API is unavailable or fails, a character-based approximation is used:
+
+- Formula: `tokens ≈ (characters + 3) / 4`
+- Conservative estimate for images/documents (~200 tokens)
+- Automatic fallback, no configuration needed
+
+### Token Count Result
+
+```go
+type CountTokenResult struct {
+    TotalTokens int                // Sum of all tokens
+    UsedAPI     bool               // true if API used, false if approximation
+    PerMessage  map[uuid.UUID]int  // Token count per message (approximation only)
 }
+```
+
+---
+
+## Database Schema
+
+### Compaction Events Table
+
+```sql
+CREATE TABLE agentpg_compaction_events (
+    id UUID PRIMARY KEY,
+    session_id UUID REFERENCES agentpg_sessions(id) ON DELETE CASCADE,
+    strategy TEXT NOT NULL,           -- 'summarization' or 'hybrid'
+    original_tokens INTEGER NOT NULL,
+    compacted_tokens INTEGER NOT NULL,
+    messages_removed INTEGER NOT NULL,
+    summary_content TEXT,
+    preserved_message_ids JSONB,      -- Array of preserved message UUIDs
+    model_used TEXT,
+    duration_ms BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_compaction_events_session ON agentpg_compaction_events(session_id, created_at DESC);
+```
+
+### Message Archive Table
+
+Archived messages are stored for potential recovery:
+
+```sql
+CREATE TABLE agentpg_message_archive (
+    id UUID PRIMARY KEY,              -- Original message ID
+    compaction_event_id UUID REFERENCES agentpg_compaction_events(id) ON DELETE CASCADE,
+    session_id UUID REFERENCES agentpg_sessions(id) ON DELETE CASCADE,
+    original_message JSONB NOT NULL,  -- Full message JSON
+    archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_message_archive_event ON agentpg_message_archive(compaction_event_id);
+CREATE INDEX idx_message_archive_session ON agentpg_message_archive(session_id, archived_at DESC);
 ```
 
 ### Querying Compaction History
 
+```sql
+-- Recent compaction events for a session
+SELECT
+    strategy,
+    original_tokens,
+    compacted_tokens,
+    messages_removed,
+    duration_ms,
+    created_at
+FROM agentpg_compaction_events
+WHERE session_id = 'session-123'
+ORDER BY created_at DESC
+LIMIT 10;
+
+-- Calculate total reduction
+SELECT
+    SUM(original_tokens - compacted_tokens) as tokens_saved,
+    SUM(messages_removed) as total_messages_archived,
+    COUNT(*) as compaction_count
+FROM agentpg_compaction_events
+WHERE session_id = 'session-123';
+```
+
+### Retrieving Archived Messages
+
+```sql
+-- Get archived messages from a compaction event
+SELECT
+    id,
+    original_message->>'role' as role,
+    original_message->>'content' as content_preview,
+    archived_at
+FROM agentpg_message_archive
+WHERE compaction_event_id = 'event-123'
+ORDER BY archived_at;
+```
+
+---
+
+## Usage Examples
+
+### Auto-Compaction
+
+Enable automatic compaction after each run:
+
 ```go
-history, err := store.GetCompactionHistory(ctx, sessionID)
-for _, event := range history {
-    fmt.Printf("Compaction %s: %d -> %d tokens (removed %d messages)\n",
-        event.Strategy,
-        event.OriginalTokens,
-        event.CompactedTokens,
-        event.MessagesRemoved,
-    )
+client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
+    APIKey: apiKey,
+    AutoCompactionEnabled: true,
+    CompactionConfig: &compaction.Config{
+        Strategy:     compaction.StrategyHybrid,
+        Trigger:      0.85,
+        TargetTokens: 80000,
+    },
+})
+
+client.Start(ctx)
+
+// Long conversation...
+for i := 0; i < 100; i++ {
+    response, _ := client.RunSync(ctx, sessionID, "assistant", userPrompt)
+    // Auto-compaction triggers when threshold exceeded
 }
 ```
 
----
-
-## Message Archive
-
-Archived messages are preserved for potential rollback:
-
-```sql
--- View archived messages for a session
-SELECT
-    ma.id,
-    ma.original_message->>'role' as role,
-    ma.archived_at,
-    ce.strategy
-FROM message_archive ma
-JOIN compaction_events ce ON ma.compaction_event_id = ce.id
-WHERE ma.session_id = $1
-ORDER BY ma.archived_at DESC;
-```
-
-### Archive Retention
-
-Archives are automatically cleaned up when:
-- The session is deleted (CASCADE)
-- The compaction event is deleted (CASCADE)
-
-For manual cleanup:
-```sql
--- Remove archives older than 90 days
-DELETE FROM message_archive
-WHERE archived_at < NOW() - INTERVAL '90 days';
-```
-
----
-
-## Transaction Safety
-
-Compaction operations are atomic:
+### Manual Compaction with Monitoring
 
 ```go
-// Inside compaction manager
-tx, _ := store.BeginTx(ctx)
-defer tx.Rollback(ctx)
+// Check stats before compaction
+statsBefore, _ := client.GetCompactionStats(ctx, sessionID)
+fmt.Printf("Before: %d tokens (%.1f%%)\n", statsBefore.TotalTokens, statsBefore.UsagePercent*100)
 
-// 1. Archive original messages
-tx.ArchiveMessages(ctx, eventID, sessionID, toArchive)
+// Compact if needed
+if statsBefore.NeedsCompaction {
+    result, err := client.Compact(ctx, sessionID)
+    if err != nil {
+        log.Fatalf("Compaction failed: %v", err)
+    }
 
-// 2. Delete originals
-tx.DeleteMessages(ctx, messageIDs)
+    fmt.Printf("Compacted: %d -> %d tokens\n", result.OriginalTokens, result.CompactedTokens)
+    fmt.Printf("Archived: %d messages\n", result.MessagesRemoved)
+}
 
-// 3. Insert summary
-tx.SaveMessage(ctx, summaryMessage)
-
-// 4. Record event
-tx.SaveCompactionEvent(ctx, event)
-
-// Commit atomically
-tx.Commit(ctx)
+// Check stats after
+statsAfter, _ := client.GetCompactionStats(ctx, sessionID)
+fmt.Printf("After: %d tokens (%.1f%%)\n", statsAfter.TotalTokens, statsAfter.UsagePercent*100)
 ```
 
-If any step fails, the entire operation rolls back.
-
----
-
-## Hooks
-
-Monitor and customize compaction:
+### Strategy Comparison
 
 ```go
-// Before compaction starts
-agent.OnBeforeCompaction(func(ctx context.Context, sessionID string) error {
-    log.Printf("Starting compaction for session %s", sessionID)
-    return nil  // Return error to abort compaction
+// Test hybrid strategy
+hybridResult, _ := client.CompactWithConfig(ctx, session1, &compaction.Config{
+    Strategy: compaction.StrategyHybrid,
 })
 
-// After compaction completes
-agent.OnAfterCompaction(func(ctx context.Context, result *compaction.CompactionResult) error {
-    log.Printf("Compacted: %d -> %d tokens",
-        result.OriginalTokens,
-        result.CompactedTokens)
-
-    // Send metrics
-    metrics.RecordCompaction(result)
-    return nil
+// Test summarization strategy
+summaryResult, _ := client.CompactWithConfig(ctx, session2, &compaction.Config{
+    Strategy: compaction.StrategySummarization,
 })
+
+fmt.Printf("Hybrid: %d -> %d tokens, %d messages archived\n",
+    hybridResult.OriginalTokens, hybridResult.CompactedTokens, hybridResult.MessagesRemoved)
+fmt.Printf("Summarization: %d -> %d tokens, %d messages archived\n",
+    summaryResult.OriginalTokens, summaryResult.CompactedTokens, summaryResult.MessagesRemoved)
+```
+
+### Preserving Critical Messages
+
+```go
+// Before important context, mark as preserved
+_, _ = pool.Exec(ctx, `
+    UPDATE agentpg_messages
+    SET is_preserved = true
+    WHERE session_id = $1 AND content LIKE '%IMPORTANT%'
+`, sessionID)
+
+// These messages will never be compacted
+result, _ := client.Compact(ctx, sessionID)
+fmt.Printf("Preserved messages: %d\n", len(result.PreservedMessageIDs))
 ```
 
 ---
 
-## Tuning Guidelines
+## Best Practices
 
-### High-Volume Chat Applications
+### Configuration Recommendations
 
-```go
-// Trigger early, compact aggressively
-agentpg.WithCompactionTrigger(0.70),
-agentpg.WithCompactionTarget(40000),
-agentpg.WithCompactionPreserveN(5),
-agentpg.WithSummarizerModel("claude-3-5-haiku-20241022"),
-```
+| Scenario | Strategy | Trigger | TargetTokens | PreserveToolOutputs |
+|----------|----------|---------|--------------|---------------------|
+| Tool-heavy | Hybrid | 0.80 | 60000 | false |
+| General chat | Summarization | 0.85 | 80000 | N/A |
+| Cost-sensitive | Hybrid | 0.75 | 50000 | false |
+| Context-critical | Summarization | 0.90 | 100000 | N/A |
 
-### Complex Tool-Heavy Agents
+### Trigger Threshold
 
-```go
-// Preserve more context, especially tool outputs
-agentpg.WithCompactionTrigger(0.90),
-agentpg.WithCompactionPreserveN(20),
-agentpg.WithCompactionProtectedTokens(60000),
-agentpg.WithPreserveToolOutputs(true),
-```
+- **Lower (0.70-0.80)**: More frequent compaction, smaller context, lower cost
+- **Higher (0.85-0.95)**: Less frequent compaction, more context preserved
+- **Recommended**: Start at 0.85, adjust based on your conversation patterns
 
-### Long-Running Research Sessions
+### Target Tokens
 
-```go
-// Maximize context, high-quality summaries
-agentpg.WithExtendedContext(true),
-agentpg.WithCompactionTrigger(0.95),
-agentpg.WithSummarizerModel("claude-sonnet-4-5-20250929"),
-agentpg.WithCompactionPreserveN(30),
-```
+- Set to approximately 40% of max context window
+- Leave headroom for new messages and responses
+- Consider average response size in your use case
 
-### Cost-Sensitive Applications
+### Preserving Context
+
+1. **Mark critical messages**: Use `is_preserved=true` for essential context
+2. **Adjust PreserveLastN**: Increase for highly interactive sessions
+3. **Increase ProtectedTokens**: Protect more recent context
+
+### Monitoring
 
 ```go
-// Use cheapest summarizer, aggressive compaction
-agentpg.WithSummarizerModel("claude-3-5-haiku-20241022"),
-agentpg.WithCompactionTrigger(0.60),
-agentpg.WithCompactionTarget(30000),
-agentpg.WithCompactionStrategy(agentpg.HybridStrategy),
+// Periodic monitoring
+go func() {
+    ticker := time.NewTicker(5 * time.Minute)
+    for range ticker.C {
+        stats, _ := client.GetCompactionStats(ctx, sessionID)
+        if stats.UsagePercent > 0.90 {
+            log.Printf("Warning: Session %s at %.1f%% context usage", sessionID, stats.UsagePercent*100)
+        }
+    }
+}()
 ```
-
----
-
-## Metrics to Monitor
-
-| Metric | Description | Target |
-|--------|-------------|--------|
-| Compaction frequency | How often compaction triggers | < 1 per 10 messages |
-| Compression ratio | Original / Compacted tokens | 2:1 to 5:1 |
-| Summary quality | Manual review of summaries | Preserve key info |
-| Compaction duration | Time per compaction | < 5 seconds |
-| Token utilization | Steady-state token usage | 40-70% of max |
 
 ---
 
 ## Troubleshooting
 
-### Compaction Triggering Too Often
+### Common Issues
 
-**Symptoms:** Compaction runs every few messages
+#### "No messages to compact"
 
-**Solutions:**
-- Increase `WithCompactionTrigger(0.90)`
-- Decrease `WithCompactionTarget()`
-- Use `WithExtendedContext(true)` for more headroom
+**Cause**: All messages are protected, preserved, recent, or summaries.
 
-### Important Context Being Lost
+**Solution**: Check your configuration:
+```go
+stats, _ := client.GetCompactionStats(ctx, sessionID)
+fmt.Printf("Compactable messages: %d\n", stats.CompactableMessages)
+```
 
-**Symptoms:** Agent forgetting critical information
+If 0 compactable messages:
+- Reduce `ProtectedTokens`
+- Reduce `PreserveLastN`
+- Check for too many `is_preserved=true` messages
 
-**Solutions:**
-- Increase `WithCompactionPreserveN(20)`
-- Mark critical messages as `IsPreserved`
-- Increase `WithCompactionProtectedTokens()`
+#### Compaction not reducing enough tokens
 
-### Summaries Missing Key Details
+**Cause**: Preserved/protected zones too large, or compactable content is minimal.
 
-**Symptoms:** Poor summary quality
+**Solutions**:
+1. Reduce `ProtectedTokens` from 40000 to 20000
+2. Reduce `PreserveLastN` from 10 to 5
+3. Use summarization strategy instead of hybrid
+4. Reduce `TargetTokens` to force more aggressive compaction
 
-**Solutions:**
-- Use better summarizer model: `claude-sonnet-4-5-20250929`
-- Reduce amount being summarized at once
-- Consider custom summarization prompts (advanced)
+#### Token counting inaccurate
 
-### Compaction Taking Too Long
+**Cause**: Using character approximation instead of API.
 
-**Symptoms:** > 10 second compaction times
+**Solution**: Ensure `UseTokenCountingAPI: true` and check for API errors in logs.
 
-**Solutions:**
-- Use faster summarizer: `claude-3-5-haiku-20241022`
-- Reduce messages being summarized
-- Trigger compaction earlier (smaller batches)
+#### Compaction taking too long
 
----
+**Cause**: Large number of messages or slow summarization.
 
-## See Also
+**Solutions**:
+1. Use hybrid strategy (pruning is instant)
+2. Reduce context size before it grows too large
+3. Use faster model (`claude-3-5-haiku-20241022`)
 
-- [Architecture](./architecture.md) - Compaction in system context
-- [Configuration](./configuration.md) - All configuration options
-- [Storage](./storage.md) - Database schema for compaction
+### Debugging Queries
+
+```sql
+-- Check message distribution
+SELECT
+    is_preserved,
+    is_summary,
+    COUNT(*) as count
+FROM agentpg_messages
+WHERE session_id = 'session-123'
+GROUP BY is_preserved, is_summary;
+
+-- Find large messages
+SELECT
+    id,
+    role,
+    LENGTH(content::text) as content_length
+FROM agentpg_messages
+WHERE session_id = 'session-123'
+ORDER BY content_length DESC
+LIMIT 10;
+
+-- Check compaction history
+SELECT
+    strategy,
+    original_tokens,
+    compacted_tokens,
+    messages_removed,
+    created_at
+FROM agentpg_compaction_events
+WHERE session_id = 'session-123'
+ORDER BY created_at DESC;
+```
+
+### Error Handling
+
+```go
+result, err := client.Compact(ctx, sessionID)
+if err != nil {
+    var compactErr *compaction.CompactionError
+    if errors.As(err, &compactErr) {
+        log.Printf("Compaction failed: op=%s, session=%s, err=%v",
+            compactErr.Op, compactErr.SessionID, compactErr.Err)
+    }
+
+    switch {
+    case errors.Is(err, compaction.ErrNoMessagesToCompact):
+        log.Println("No messages eligible for compaction")
+    case errors.Is(err, compaction.ErrSummarizationFailed):
+        log.Println("Claude summarization API failed")
+    case errors.Is(err, compaction.ErrTokenCountingFailed):
+        log.Println("Token counting failed (using approximation)")
+    default:
+        log.Printf("Unknown error: %v", err)
+    }
+}
+```

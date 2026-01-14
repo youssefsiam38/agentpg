@@ -1,0 +1,85 @@
+{{define "content"}}
+<div class="space-y-6">
+    <div class="sm:flex sm:items-center sm:justify-between">
+        <h1 class="text-2xl font-semibold text-gray-100">Sessions</h1>
+        <div class="mt-4 sm:mt-0">
+            <span class="text-sm text-gray-400">{{.Data.TotalCount}} total sessions</span>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="bg-gray-800 shadow-lg shadow-gray-900/50 border border-gray-700 rounded-lg p-4">
+        <form method="get" class="flex flex-wrap gap-4 items-end">
+            {{if not $.TenantID}}
+            <div class="flex-1 min-w-[200px]">
+                <label for="tenant_id" class="block text-sm font-medium text-gray-300">Tenant</label>
+                <select id="tenant_id" name="tenant_id" class="mt-1 block w-full rounded-md border border-gray-600 bg-gray-900 text-gray-100 py-2 px-3 shadow-sm focus:border-cyan-500 focus:ring-cyan-500 sm:text-sm">
+                    <option value="">All Tenants</option>
+                    {{range .Data.Tenants}}
+                    <option value="{{.TenantID}}" {{if eq .TenantID $.Data.CurrentTenant}}selected{{end}}>{{.TenantID}} ({{.SessionCount}})</option>
+                    {{end}}
+                </select>
+            </div>
+            {{end}}
+            <div>
+                <button type="submit" class="inline-flex items-center rounded-md bg-cyan-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-cyan-500">
+                    Filter
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Sessions Table -->
+    <div class="bg-gray-800 shadow-lg shadow-gray-900/50 border border-gray-700 rounded-lg overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-700">
+            <thead class="bg-gray-800/50">
+                <tr>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">User ID</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Tenant</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Runs</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Messages</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Last Activity</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Created</th>
+                    <th scope="col" class="relative px-6 py-3"><span class="sr-only">View</span></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-700">
+                {{range .Data.Sessions}}
+                <tr class="hover:bg-gray-700/50">
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="flex items-center">
+                            {{if gt .Depth 0}}
+                            <span class="text-gray-500 mr-2">{{range seq 1 .Depth}}└{{end}}</span>
+                            {{end}}
+                            <a href="{{$.BasePath}}/sessions/{{.ID}}" class="text-cyan-400 hover:text-cyan-300 font-medium">{{.UserID}}</a>
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">{{.TenantID}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">{{.RunCount}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">{{.MessageCount}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">{{formatTimeAgo .LastActivityAt}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">{{formatTime .CreatedAt}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <a href="{{$.BasePath}}/sessions/{{.ID}}" class="text-cyan-400 hover:text-cyan-300">View</a>
+                    </td>
+                </tr>
+                {{else}}
+                {{template "empty-state" (dict "ColSpan" 7 "Title" "No sessions found")}}
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    {{template "pagination" (dict
+        "Offset" .Data.Offset
+        "Limit" .Data.Limit
+        "TotalCount" .Data.TotalCount
+        "CurrentPage" .Data.CurrentPage
+        "TotalPages" .Data.TotalPages
+        "HasMore" .Data.HasMore
+        "ItemCount" (len .Data.Sessions)
+        "QueryParams" (printf "tenant_id=%s" .Data.CurrentTenant)
+    )}}
+</div>
+{{end}}

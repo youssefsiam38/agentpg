@@ -1,421 +1,506 @@
-# Hooks Guide
+# Hooks and Extension System
 
-Hooks provide extensibility points for monitoring, logging, and customizing agent behavior.
+AgentPG provides multiple extension mechanisms for customizing and extending framework behavior.
 
-## Overview
+## Table of Contents
 
-Hooks allow you to:
-- Log agent activity
-- Collect metrics and telemetry
-- Validate inputs/outputs
-- Implement rate limiting
-- Create audit trails
-- Customize behavior
-
-## Available Hooks
-
-| Hook | Trigger | Use Cases |
-|------|---------|-----------|
-| `OnBeforeMessage` | Before sending to Claude | Logging, validation, rate limiting |
-| `OnAfterMessage` | After receiving response | Logging, metrics, post-processing |
-| `OnToolCall` | When a tool executes | Tool monitoring, audit trails |
-| `OnBeforeCompaction` | Before context compaction | Logging, backup |
-| `OnAfterCompaction` | After context compaction | Metrics, notifications |
+- [Extension Interfaces](#extension-interfaces)
+- [Event System (LISTEN/NOTIFY)](#event-system-listennotify)
+- [Metadata Fields](#metadata-fields)
+- [Tool Error Handling](#tool-error-handling)
+- [Configuration Hooks](#configuration-hooks)
+- [Future: Lifecycle Hooks](#future-lifecycle-hooks)
 
 ---
 
-## Registering Hooks
+## Extension Interfaces
 
-### OnBeforeMessage
+AgentPG uses interface-based extension for core components.
 
-Called before messages are sent to Claude:
+### Tool Interface
+
+The primary extension mechanism for custom functionality.
 
 ```go
-agent.OnBeforeMessage(func(ctx context.Context, messages []any) error {
-    log.Printf("Sending %d messages to Claude", len(messages))
+type Tool interface {
+    Name() string
+    Description() string
+    InputSchema() tool.ToolSchema
+    Execute(ctx context.Context, input json.RawMessage) (string, error)
+}
+```
 
-    // Validate messages
-    for _, msg := range messages {
-        if containsSensitiveData(msg) {
-            return fmt.Errorf("message contains sensitive data")
-        }
+**Example:**
+
+```go
+type WeatherTool struct {
+    apiKey string
+}
+
+func (t *WeatherTool) Name() string        { return "get_weather" }
+func (t *WeatherTool) Description() string { return "Get current weather for a city" }
+
+func (t *WeatherTool) InputSchema() tool.ToolSchema {
+    return tool.ToolSchema{
+        Type: "object",
+        Properties: map[string]tool.PropertyDef{
+            "city": {Type: "string", Description: "City name"},
+        },
+        Required: []string{"city"},
     }
+}
 
-    return nil  // Return error to abort the request
-})
-```
+func (t *WeatherTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    var params struct {
+        City string `json:"city"`
+    }
+    json.Unmarshal(input, &params)
 
-**Parameters:**
-- `ctx` - Request context
-- `messages` - Slice of messages being sent
-
-**Return:**
-- `nil` to continue
-- `error` to abort the request
-
-### OnAfterMessage
-
-Called after receiving a response from Claude:
-
-```go
-agent.OnAfterMessage(func(ctx context.Context, response any) error {
-    resp := response.(*agentpg.Response)
-
-    log.Printf("Received response: %s", resp.StopReason)
-    log.Printf("Tokens used: %d input, %d output",
-        resp.Usage.InputTokens,
-        resp.Usage.OutputTokens)
-
-    // Record metrics
-    metrics.RecordTokenUsage(resp.Usage)
-
-    return nil
-})
-```
-
-**Parameters:**
-- `ctx` - Request context
-- `response` - The `*agentpg.Response` object
-
-### OnToolCall
-
-Called when a tool is executed:
-
-```go
-agent.OnToolCall(func(ctx context.Context, toolName string, input json.RawMessage, output string, err error) error {
+    // Call weather API
+    weather, err := t.fetchWeather(params.City)
     if err != nil {
-        log.Printf("Tool %s failed: %v", toolName, err)
-        metrics.RecordToolFailure(toolName)
-    } else {
-        log.Printf("Tool %s succeeded", toolName)
-        metrics.RecordToolSuccess(toolName)
+        return "", err  // Error shown to Claude as tool_result with is_error=true
     }
+    return weather, nil
+}
 
-    // Audit trail
-    auditLog.Record(audit.Entry{
-        Tool:   toolName,
-        Input:  string(input),
-        Output: output,
-        Error:  err,
-        Time:   time.Now(),
-    })
-
-    return nil
-})
+// Register
+client.RegisterTool(&WeatherTool{apiKey: os.Getenv("WEATHER_API_KEY")})
 ```
 
-**Parameters:**
-- `ctx` - Request context
-- `toolName` - Name of the tool called
-- `input` - Raw JSON input to the tool
-- `output` - Tool output string
-- `err` - Error from tool execution (nil on success)
+### Logger Interface
 
-### OnBeforeCompaction
-
-Called before context compaction starts:
+Custom logging implementations.
 
 ```go
-agent.OnBeforeCompaction(func(ctx context.Context, sessionID string) error {
-    log.Printf("Starting compaction for session %s", sessionID)
-
-    // Optionally back up the session before compaction
-    if err := backupSession(ctx, sessionID); err != nil {
-        log.Printf("Backup failed: %v", err)
-        // Continue anyway, or return error to abort
-    }
-
-    return nil  // Return error to abort compaction
-})
+type Logger interface {
+    Debug(msg string, args ...any)
+    Info(msg string, args ...any)
+    Warn(msg string, args ...any)
+    Error(msg string, args ...any)
+}
 ```
 
-**Parameters:**
-- `ctx` - Request context
-- `sessionID` - Session being compacted
-
-### OnAfterCompaction
-
-Called after compaction completes:
+**Example with slog:**
 
 ```go
-agent.OnAfterCompaction(func(ctx context.Context, result any) error {
-    event := result.(*compaction.CompactionEvent)
+type SlogLogger struct {
+    logger *slog.Logger
+}
 
-    log.Printf("Compaction complete: %d -> %d tokens (%.1f%% reduction)",
-        event.OriginalTokens,
-        event.CompactedTokens,
-        100*(1-float64(event.CompactedTokens)/float64(event.OriginalTokens)),
-    )
+func (l *SlogLogger) Debug(msg string, args ...any) { l.logger.Debug(msg, args...) }
+func (l *SlogLogger) Info(msg string, args ...any)  { l.logger.Info(msg, args...) }
+func (l *SlogLogger) Warn(msg string, args ...any)  { l.logger.Warn(msg, args...) }
+func (l *SlogLogger) Error(msg string, args ...any) { l.logger.Error(msg, args...) }
 
-    // Record metrics
-    metrics.RecordCompaction(event)
-
-    // Alert if compaction is happening too frequently
-    if isCompactingTooOften(event.SessionID) {
-        alerting.Notify("Frequent compaction detected")
-    }
-
-    return nil
+// Use
+client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
+    Logger: &SlogLogger{logger: slog.Default()},
 })
 ```
 
-**Parameters:**
-- `ctx` - Request context
-- `result` - The compaction event/result
+### Driver Interface
+
+Custom database driver implementations.
+
+```go
+type Driver[TTx any] interface {
+    Store() Store[TTx]
+    Listener() Listener
+    BeginTx(ctx context.Context) (TTx, error)
+    CommitTx(ctx context.Context, tx TTx) error
+    RollbackTx(ctx context.Context, tx TTx) error
+    Close() error
+}
+```
+
+**Built-in implementations:**
+- `pgxv5.New(pool)` - pgx/v5 (recommended)
+- `databasesql.New(db)` - database/sql
+
+### Compaction Strategy
+
+Custom context compaction strategies.
+
+```go
+type StrategyExecutor interface {
+    Name() compaction.Strategy
+    Execute(ctx context.Context, partition *MessagePartition) (*StrategyResult, error)
+}
+```
+
+**Built-in strategies:**
+- `StrategySummarization` - Claude-based summarization
+- `StrategyHybrid` - Prune tool outputs first, then summarize
+
+**Override with custom config:**
+
+```go
+result, err := client.CompactWithConfig(ctx, sessionID, &compaction.Config{
+    Strategy:     compaction.StrategySummarization,
+    TargetTokens: 50000,
+})
+```
 
 ---
 
-## Use Cases
+## Event System (LISTEN/NOTIFY)
 
-### Logging
+PostgreSQL NOTIFY channels fire events at lifecycle milestones.
+
+### Available Channels
+
+| Channel | Event | Payload |
+|---------|-------|---------|
+| `agentpg_run_created` | New run submitted | `{run_id, session_id, agent_name, run_mode, depth}` |
+| `agentpg_run_state` | Run state changes | `{run_id, session_id, agent_name, state, previous_state}` |
+| `agentpg_run_finalized` | Run completed/failed/cancelled | `{run_id, session_id, state, parent_tool_execution_id}` |
+| `agentpg_tool_pending` | New tool execution pending | `{execution_id, run_id, tool_name, is_agent_tool}` |
+| `agentpg_tools_complete` | All tools for run completed | `{run_id}` |
+
+### External Event Consumer
+
+Subscribe to events from external services:
 
 ```go
-// Simple request logging
-agent.OnBeforeMessage(func(ctx context.Context, messages []any) error {
-    requestID := ctx.Value("request_id")
-    log.Printf("[%s] Sending request with %d messages", requestID, len(messages))
-    return nil
-})
+import "github.com/lib/pq"
 
-agent.OnAfterMessage(func(ctx context.Context, response any) error {
-    requestID := ctx.Value("request_id")
-    resp := response.(*agentpg.Response)
-    log.Printf("[%s] Response received: %s", requestID, resp.StopReason)
-    return nil
-})
+// Create listener
+listener := pq.NewListener(connStr, 10*time.Second, time.Minute, nil)
+listener.Listen("agentpg_run_finalized")
+
+// Process events
+for {
+    select {
+    case notif := <-listener.Notify:
+        var payload struct {
+            RunID     string `json:"run_id"`
+            SessionID string `json:"session_id"`
+            State     string `json:"state"`
+        }
+        json.Unmarshal([]byte(notif.Extra), &payload)
+
+        // Custom handling
+        if payload.State == "completed" {
+            sendWebhook(payload)
+            updateExternalSystem(payload)
+        }
+    }
+}
 ```
 
-### Metrics Collection
+### Use Cases
+
+- **Monitoring**: Track agent execution metrics
+- **Webhooks**: Notify external systems on completion
+- **Audit Logging**: Record all run state transitions
+- **Custom Analytics**: Build usage dashboards
+
+---
+
+## Metadata Fields
+
+Multiple entity types support arbitrary JSON metadata.
+
+### Available Metadata Fields
 
 ```go
-// Prometheus metrics example
-var (
-    requestsTotal = prometheus.NewCounter(...)
-    tokensUsed    = prometheus.NewHistogram(...)
-    toolCalls     = prometheus.NewCounterVec(...)
-)
-
-agent.OnAfterMessage(func(ctx context.Context, response any) error {
-    resp := response.(*agentpg.Response)
-    requestsTotal.Inc()
-    tokensUsed.Observe(float64(resp.Usage.InputTokens + resp.Usage.OutputTokens))
-    return nil
+// Session metadata
+session, _ := client.NewSession(ctx, "tenant", "user", nil, map[string]any{
+    "request_id":   "req-123",
+    "user_tier":    "premium",
+    "source":       "web",
 })
 
-agent.OnToolCall(func(ctx context.Context, name string, _ json.RawMessage, _ string, err error) error {
-    status := "success"
+// Run metadata (via CreateRunParams)
+type CreateRunParams struct {
+    Metadata map[string]any
+}
+
+// Message metadata (via CreateMessageParams)
+type CreateMessageParams struct {
+    Metadata map[string]any
+}
+
+// Instance metadata (via RegisterInstanceParams)
+type RegisterInstanceParams struct {
+    Metadata map[string]any
+}
+```
+
+### Query Metadata
+
+```sql
+-- Find premium user sessions
+SELECT * FROM agentpg_sessions
+WHERE metadata->>'user_tier' = 'premium';
+
+-- Find runs with specific request ID
+SELECT * FROM agentpg_runs r
+JOIN agentpg_sessions s ON r.session_id = s.id
+WHERE s.metadata->>'request_id' = 'req-123';
+```
+
+---
+
+## Tool Error Handling
+
+Tools can control retry behavior through error types.
+
+### Error Types
+
+```go
+import "github.com/youssefsiam38/agentpg/tool"
+
+func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    // Cancel immediately - no retry, permanent failure
+    if isInvalidInput(input) {
+        return "", tool.ToolCancel(errors.New("invalid input format"))
+    }
+
+    // Discard permanently - similar to cancel, for unrecoverable errors
+    if !isAuthorized(ctx) {
+        return "", tool.ToolDiscard(errors.New("unauthorized"))
+    }
+
+    // Snooze - retry after duration, does NOT consume an attempt
+    if isRateLimited(err) {
+        return "", tool.ToolSnooze(30*time.Second, err)
+    }
+
+    // Regular error - will be retried with exponential backoff
+    result, err := doWork(ctx)
     if err != nil {
-        status = "error"
+        return "", err  // Retries up to MaxAttempts
     }
-    toolCalls.WithLabelValues(name, status).Inc()
-    return nil
-})
+
+    return result, nil
+}
 ```
 
-### Rate Limiting
+### Error Behavior
+
+| Error Type | Retries | Consumes Attempt | Use Case |
+|------------|---------|------------------|----------|
+| Regular error | Yes | Yes | Transient failures |
+| `ToolCancel` | No | N/A | Invalid input, auth failure |
+| `ToolDiscard` | No | N/A | Malformed data |
+| `ToolSnooze` | Yes (after delay) | No | Rate limits, temporary unavailability |
+
+### Retry Configuration
 
 ```go
-type RateLimiter struct {
-    limiter *rate.Limiter
+ToolRetryConfig: &agentpg.ToolRetryConfig{
+    MaxAttempts: 2,    // 1 initial + 1 retry (default)
+    Jitter:      0.0,  // 0 = instant retry (default)
 }
 
-func (r *RateLimiter) Hook(ctx context.Context, messages []any) error {
-    if !r.limiter.Allow() {
-        return fmt.Errorf("rate limit exceeded")
-    }
-    return nil
+// With exponential backoff
+ToolRetryConfig: &agentpg.ToolRetryConfig{
+    MaxAttempts: 5,
+    Jitter:      0.1,  // Enables River's attempt^4 formula
 }
-
-// Register
-limiter := &RateLimiter{limiter: rate.NewLimiter(10, 1)} // 10 req/sec
-agent.OnBeforeMessage(limiter.Hook)
-```
-
-### Input Validation
-
-```go
-agent.OnBeforeMessage(func(ctx context.Context, messages []any) error {
-    for _, msg := range messages {
-        // Check for PII
-        if containsPII(msg) {
-            return fmt.Errorf("message contains PII - request blocked")
-        }
-
-        // Check content length
-        if getTokenCount(msg) > maxInputTokens {
-            return fmt.Errorf("input too long")
-        }
-    }
-    return nil
-})
-```
-
-### Audit Trail
-
-```go
-type AuditLogger struct {
-    db *sql.DB
-}
-
-func (a *AuditLogger) LogToolCall(ctx context.Context, name string, input json.RawMessage, output string, err error) error {
-    userID := ctx.Value("user_id").(string)
-
-    _, dbErr := a.db.ExecContext(ctx, `
-        INSERT INTO audit_log (user_id, tool_name, input, output, error, created_at)
-        VALUES ($1, $2, $3, $4, $5, NOW())
-    `, userID, name, string(input), output, errorString(err))
-
-    return dbErr
-}
-
-// Register
-auditor := &AuditLogger{db: db}
-agent.OnToolCall(auditor.LogToolCall)
-```
-
-### Cost Tracking
-
-```go
-type CostTracker struct {
-    mu    sync.Mutex
-    costs map[string]float64
-}
-
-func (c *CostTracker) Track(ctx context.Context, response any) error {
-    resp := response.(*agentpg.Response)
-    sessionID := ctx.Value("session_id").(string)
-
-    // Calculate cost (example rates)
-    inputCost := float64(resp.Usage.InputTokens) * 0.000003
-    outputCost := float64(resp.Usage.OutputTokens) * 0.000015
-    totalCost := inputCost + outputCost
-
-    c.mu.Lock()
-    c.costs[sessionID] += totalCost
-    c.mu.Unlock()
-
-    return nil
-}
-
-// Register
-tracker := &CostTracker{costs: make(map[string]float64)}
-agent.OnAfterMessage(tracker.Track)
+// Delays: 1s, 16s, 81s, 256s, 625s (with 10% jitter)
 ```
 
 ---
 
-## Error Handling
+## Configuration Hooks
 
-### Aborting Requests
-
-Return an error from `OnBeforeMessage` to abort the request:
+### Timing Configuration
 
 ```go
-agent.OnBeforeMessage(func(ctx context.Context, messages []any) error {
-    if isSystemMaintenance() {
-        return fmt.Errorf("system under maintenance")
-    }
-    return nil
-})
+type ClientConfig struct {
+    // Polling intervals
+    BatchPollInterval time.Duration  // Batch API status (default: 30s)
+    RunPollInterval   time.Duration  // Run claiming (default: 1s)
+    ToolPollInterval  time.Duration  // Tool claiming (default: 500ms)
+
+    // Heartbeat
+    HeartbeatInterval time.Duration  // Instance liveness (default: 15s)
+
+    // Leadership
+    LeaderTTL time.Duration  // Leader lease duration (default: 30s)
+
+    // Cleanup
+    InstanceTTL     time.Duration  // Stale instance timeout (default: 60s)
+    CleanupInterval time.Duration  // Cleanup frequency (default: 1min)
+}
 ```
 
-### Aborting Compaction
-
-Return an error from `OnBeforeCompaction` to abort compaction:
+### Concurrency Configuration
 
 ```go
-agent.OnBeforeCompaction(func(ctx context.Context, sessionID string) error {
-    if isImportantSession(sessionID) {
-        return fmt.Errorf("cannot compact important session")
-    }
-    return nil
-})
+type ClientConfig struct {
+    MaxConcurrentRuns          int  // Batch runs (default: 10)
+    MaxConcurrentStreamingRuns int  // Streaming runs (default: 5)
+    MaxConcurrentTools         int  // Tool executions (default: 50)
+}
 ```
 
-### Non-Blocking Hooks
-
-For hooks that shouldn't block on errors (e.g., logging):
+### Compaction Configuration
 
 ```go
-agent.OnAfterMessage(func(ctx context.Context, response any) error {
-    // Log errors but don't fail the request
-    if err := sendToAnalytics(response); err != nil {
-        log.Printf("Analytics error (non-fatal): %v", err)
-    }
-    return nil  // Always return nil to not affect the request
-})
+type ClientConfig struct {
+    AutoCompactionEnabled bool              // Auto-compact after runs (default: false)
+    CompactionConfig      *compaction.Config
+}
+
+type compaction.Config struct {
+    Strategy            Strategy  // StrategyHybrid or StrategySummarization
+    Trigger             float64   // Context usage threshold (default: 0.85)
+    TargetTokens        int       // Target after compaction (default: 80000)
+    PreserveLastN       int       // Keep last N messages (default: 10)
+    ProtectedTokens     int       // Never compact last N tokens (default: 40000)
+    SummarizerModel     string    // Summarization model
+    PreserveToolOutputs bool      // Keep tool outputs in hybrid mode
+}
 ```
 
 ---
 
-## Multiple Hooks
+## Future: Lifecycle Hooks
 
-You can register multiple hooks for the same event:
+AgentPG currently does **not** have explicit lifecycle hooks, but the following extension points are planned for future releases.
+
+### Proposed Run Hooks
 
 ```go
-// All hooks will be called in registration order
-agent.OnAfterMessage(loggingHook)
-agent.OnAfterMessage(metricsHook)
-agent.OnAfterMessage(costTrackingHook)
+// Future API - not yet implemented
+type RunHook interface {
+    OnRunCreated(ctx context.Context, run *Run) error
+    OnRunStateChanged(ctx context.Context, run *Run, prevState RunState) error
+    OnRunCompleted(ctx context.Context, run *Run) error
+    OnRunFailed(ctx context.Context, run *Run, err error) error
+}
+
+// Usage
+client.RegisterRunHook(&MyRunHook{})
 ```
 
-If any hook returns an error, subsequent hooks are still called but the operation may be affected.
+### Proposed Tool Hooks
+
+```go
+// Future API - not yet implemented
+type ToolHook interface {
+    OnBeforeExecute(ctx context.Context, exec *ToolExecution) error
+    OnAfterExecute(ctx context.Context, exec *ToolExecution, output string, err error) error
+    OnToolError(ctx context.Context, exec *ToolExecution, err error) error
+}
+
+// Usage
+client.RegisterToolHook(&MyToolHook{})
+```
+
+### Proposed Message Hooks
+
+```go
+// Future API - not yet implemented
+type MessageHook interface {
+    OnMessageCreated(ctx context.Context, msg *Message) error
+    OnMessageUpdated(ctx context.Context, msg *Message) error
+    OnMessageCompacted(ctx context.Context, archived []*Message) error
+}
+
+// Usage
+client.RegisterMessageHook(&MyMessageHook{})
+```
+
+### Current Workaround
+
+Until lifecycle hooks are implemented, use external LISTEN/NOTIFY consumers:
+
+```go
+// External hook implementation via PostgreSQL events
+listener.Listen("agentpg_run_state")
+listener.Listen("agentpg_run_finalized")
+
+for notif := range listener.Notify {
+    switch notif.Channel {
+    case "agentpg_run_state":
+        // Pseudo OnRunStateChanged
+        handleStateChange(notif.Payload)
+    case "agentpg_run_finalized":
+        // Pseudo OnRunCompleted/OnRunFailed
+        handleRunFinalized(notif.Payload)
+    }
+}
+```
 
 ---
 
 ## Best Practices
 
-### Keep Hooks Fast
+### For Custom Business Logic
+
+Implement the `Tool` interface:
 
 ```go
-// Good: Quick, non-blocking
-agent.OnAfterMessage(func(ctx context.Context, response any) error {
-    go sendToAnalytics(response)  // Async
-    return nil
-})
-
-// Bad: Slow, blocking
-agent.OnAfterMessage(func(ctx context.Context, response any) error {
-    time.Sleep(time.Second)  // Blocks the response
-    return nil
+client.RegisterTool(&MyBusinessLogicTool{
+    db:     database,
+    cache:  redis,
+    logger: logger,
 })
 ```
 
-### Handle Errors Gracefully
+### For Monitoring
+
+Subscribe to PostgreSQL LISTEN/NOTIFY events externally:
 
 ```go
-agent.OnToolCall(func(ctx context.Context, name string, input json.RawMessage, output string, err error) error {
-    // Log but don't fail
-    if logErr := writeToLog(name, input, output, err); logErr != nil {
-        log.Printf("Logging failed: %v", logErr)
-    }
-    return nil  // Don't propagate logging errors
+listener.Listen("agentpg_run_finalized")
+// Send metrics to Prometheus, Datadog, etc.
+```
+
+### For Custom Logging
+
+Implement the `Logger` interface:
+
+```go
+client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
+    Logger: &MyCustomLogger{},
 })
 ```
 
-### Use Context
+### For New Databases
+
+Implement the `Driver` interface (see `driver/pgxv5` for reference).
+
+### For Context Management
+
+Override with `CompactWithConfig()` for custom compaction behavior:
 
 ```go
-agent.OnBeforeMessage(func(ctx context.Context, messages []any) error {
-    // Check for cancellation
-    select {
-    case <-ctx.Done():
-        return ctx.Err()
-    default:
-    }
-
-    // Use context values
-    userID := ctx.Value("user_id")
-    log.Printf("User %s making request", userID)
-
-    return nil
+client.CompactWithConfig(ctx, sessionID, &compaction.Config{
+    Strategy:     compaction.StrategySummarization,
+    TargetTokens: 50000,
 })
 ```
 
----
+### For Application Context
 
-## See Also
+Use metadata fields on sessions, runs, and messages:
 
-- [API Reference](./api-reference.md) - Hook API details
-- [Architecture](./architecture.md) - How hooks fit in the system
-- [Tools](./tools.md) - Tool-related hooks
+```go
+client.NewSession(ctx, "tenant", "user", nil, map[string]any{
+    "correlation_id": requestID,
+    "user_metadata":  userInfo,
+})
+```
+
+### For Retry Logic
+
+Configure `ToolRetryConfig` and `RunRescueConfig`:
+
+```go
+client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
+    ToolRetryConfig: &agentpg.ToolRetryConfig{
+        MaxAttempts: 3,
+        Jitter:      0.1,
+    },
+    RunRescueConfig: &agentpg.RunRescueConfig{
+        RescueTimeout:     10 * time.Minute,
+        MaxRescueAttempts: 5,
+    },
+})
+```

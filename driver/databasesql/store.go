@@ -10,525 +10,1988 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/youssefsiam38/agentpg/driver"
-	"github.com/youssefsiam38/agentpg/storage"
 )
 
-// Store implements storage.Store using the databasesql driver.
+// Store implements driver.Store using database/sql.
 type Store struct {
-	driver *Driver
+	db *sql.DB
 }
 
-// NewStore creates a new databasesql Store.
-func NewStore(d *Driver) *Store {
-	return &Store{driver: d}
+// executor is an interface that both *sql.DB and *sql.Tx implement.
+type executor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// getExecutor returns the executor from context if present, otherwise the default pool executor.
-func (s *Store) getExecutor(ctx context.Context) driver.Executor {
-	if exec := driver.ExecutorFromContext(ctx); exec != nil {
-		return exec
-	}
-	return s.driver.GetExecutor()
+// Session operations
+
+func (s *Store) CreateSession(ctx context.Context, params driver.CreateSessionParams) (*driver.Session, error) {
+	return s.createSession(ctx, s.db, params)
 }
 
-// CreateSession creates a new conversation session.
-func (s *Store) CreateSession(ctx context.Context, tenantID, identifier string, parentSessionID *string, metadata map[string]any) (string, error) {
-	if tenantID == "" {
-		return "", fmt.Errorf("tenant_id is required")
-	}
-	if identifier == "" {
-		return "", fmt.Errorf("identifier is required")
+func (s *Store) CreateSessionTx(ctx context.Context, tx *sql.Tx, params driver.CreateSessionParams) (*driver.Session, error) {
+	return s.createSession(ctx, tx, params)
+}
+
+func (s *Store) createSession(ctx context.Context, e executor, params driver.CreateSessionParams) (*driver.Session, error) {
+	var session driver.Session
+	var depth int
+	if params.ParentSessionID != nil {
+		err := e.QueryRowContext(ctx, "SELECT depth FROM agentpg_sessions WHERE id = $1", params.ParentSessionID).Scan(&depth)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get parent session depth: %w", err)
+		}
+		depth++
 	}
 
-	sessionID := uuid.New().String()
-
-	metadataJSON, err := json.Marshal(metadata)
+	metadata, err := json.Marshal(params.Metadata)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal metadata: %w", err)
+		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 
-	query := `
-		INSERT INTO agentpg_sessions (id, tenant_id, identifier, parent_session_id, metadata, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-	`
-
-	_, err = s.getExecutor(ctx).Exec(ctx, query, sessionID, tenantID, identifier, parentSessionID, metadataJSON)
-	if err != nil {
-		return "", fmt.Errorf("failed to create session: %w", err)
-	}
-
-	return sessionID, nil
-}
-
-// GetSession retrieves a session by ID.
-func (s *Store) GetSession(ctx context.Context, sessionID string) (*storage.Session, error) {
-	query := `
-		SELECT id, tenant_id, identifier, parent_session_id, metadata, compaction_count,
-		       created_at, updated_at
-		FROM agentpg_sessions
-		WHERE id = $1
-	`
-
-	var session storage.Session
-	var metadataJSON []byte
-
-	row := s.getExecutor(ctx).QueryRow(ctx, query, sessionID)
-	err := row.Scan(
-		&session.ID,
-		&session.TenantID,
-		&session.Identifier,
-		&session.ParentSessionID,
-		&metadataJSON,
-		&session.CompactionCount,
-		&session.CreatedAt,
-		&session.UpdatedAt,
+	err = e.QueryRowContext(ctx, `
+		INSERT INTO agentpg_sessions (tenant_id, user_id, parent_session_id, depth, metadata)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, tenant_id, user_id, parent_session_id, depth, metadata, compaction_count, created_at, updated_at
+	`, params.TenantID, params.UserID, params.ParentSessionID, depth, metadata).Scan(
+		&session.ID, &session.TenantID, &session.UserID, &session.ParentSessionID,
+		&session.Depth, &metadata, &session.CompactionCount, &session.CreatedAt, &session.UpdatedAt,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create session: %w", err)
+	}
 
+	_ = json.Unmarshal(metadata, &session.Metadata)
+	return &session, nil
+}
+
+func (s *Store) GetSession(ctx context.Context, id uuid.UUID) (*driver.Session, error) {
+	var session driver.Session
+	var metadata []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, tenant_id, user_id, parent_session_id, depth, metadata, compaction_count, created_at, updated_at
+		FROM agentpg_sessions WHERE id = $1
+	`, id).Scan(
+		&session.ID, &session.TenantID, &session.UserID, &session.ParentSessionID,
+		&session.Depth, &metadata, &session.CompactionCount, &session.CreatedAt, &session.UpdatedAt,
+	)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
+		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
 
-	if err := json.Unmarshal(metadataJSON, &session.Metadata); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
-	}
-
+	_ = json.Unmarshal(metadata, &session.Metadata)
 	return &session, nil
 }
 
-// GetSessionsByTenant retrieves all sessions for a tenant.
-func (s *Store) GetSessionsByTenant(ctx context.Context, tenantID string) ([]*storage.Session, error) {
-	query := `
-		SELECT id, tenant_id, identifier, parent_session_id, metadata, compaction_count,
-		       created_at, updated_at
-		FROM agentpg_sessions
-		WHERE tenant_id = $1
-		ORDER BY updated_at DESC
-	`
+func (s *Store) UpdateSession(ctx context.Context, id uuid.UUID, updates map[string]any) error {
+	sets := []string{"updated_at = NOW()"}
+	args := []any{id}
+	i := 2
 
-	rows, err := s.getExecutor(ctx).Query(ctx, query, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query sessions: %w", err)
+	for k, v := range updates {
+		switch k {
+		case "metadata":
+			data, _ := json.Marshal(v)
+			sets = append(sets, fmt.Sprintf("metadata = $%d", i))
+			args = append(args, data)
+		case "compaction_count":
+			sets = append(sets, fmt.Sprintf("compaction_count = $%d", i))
+			args = append(args, v)
+		default:
+			continue
+		}
+		i++
 	}
-	defer rows.Close()
 
-	var sessions []*storage.Session
+	query := fmt.Sprintf("UPDATE agentpg_sessions SET %s WHERE id = $1", joinStrings(sets, ", ")) //nolint:gosec // SQL injection not possible - sets built from allowed keys
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
+}
+
+func (s *Store) ListSessions(ctx context.Context, params driver.ListSessionsParams) ([]*driver.Session, int, error) {
+	// Build dynamic query with filters
+	baseQuery := `
+		SELECT id, tenant_id, user_id, parent_session_id, depth, metadata, compaction_count, created_at, updated_at
+		FROM agentpg_sessions`
+
+	countQuery := "SELECT COUNT(*) FROM agentpg_sessions"
+
+	var whereClauses []string
+	var args []any
+	argNum := 1
+
+	if params.TenantID != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("tenant_id = $%d", argNum))
+		args = append(args, params.TenantID)
+		argNum++
+	}
+
+	whereClause := ""
+	if len(whereClauses) > 0 {
+		whereClause = " WHERE " + whereClauses[0]
+		for i := 1; i < len(whereClauses); i++ {
+			whereClause += " AND " + whereClauses[i]
+		}
+	}
+
+	// Get total count
+	var total int
+	err := s.db.QueryRowContext(ctx, countQuery+whereClause, args...).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count sessions: %w", err)
+	}
+
+	// Determine order column
+	orderBy := "created_at"
+	switch params.OrderBy {
+	case "updated_at", "user_id", "created_at":
+		orderBy = params.OrderBy
+	}
+	orderDir := "DESC"
+	if params.OrderDir == "asc" {
+		orderDir = "ASC"
+	}
+
+	// Add ordering and pagination
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	baseQuery += whereClause + fmt.Sprintf(" ORDER BY %s %s LIMIT $%d OFFSET $%d", orderBy, orderDir, argNum, argNum+1)
+	args = append(args, limit, offset)
+
+	rows, err := s.db.QueryContext(ctx, baseQuery, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list sessions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var sessions []*driver.Session
 	for rows.Next() {
-		var session storage.Session
-		var metadataJSON []byte
-
-		err := rows.Scan(
-			&session.ID,
-			&session.TenantID,
-			&session.Identifier,
-			&session.ParentSessionID,
-			&metadataJSON,
-			&session.CompactionCount,
-			&session.CreatedAt,
-			&session.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan session: %w", err)
+		var session driver.Session
+		var metadata []byte
+		if err := rows.Scan(
+			&session.ID, &session.TenantID, &session.UserID, &session.ParentSessionID,
+			&session.Depth, &metadata, &session.CompactionCount, &session.CreatedAt, &session.UpdatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("failed to scan session: %w", err)
 		}
-
-		if err := json.Unmarshal(metadataJSON, &session.Metadata); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
-		}
-
+		_ = json.Unmarshal(metadata, &session.Metadata)
 		sessions = append(sessions, &session)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating sessions: %w", err)
+		return nil, 0, fmt.Errorf("failed to iterate sessions: %w", err)
 	}
 
-	return sessions, nil
+	return sessions, total, nil
 }
 
-// GetSessionByTenantAndIdentifier retrieves a session by tenant and identifier.
-func (s *Store) GetSessionByTenantAndIdentifier(ctx context.Context, tenantID, identifier string) (*storage.Session, error) {
-	query := `
-		SELECT id, tenant_id, identifier, parent_session_id, metadata, compaction_count,
-		       created_at, updated_at
+func (s *Store) ListTenants(ctx context.Context) ([]driver.TenantInfo, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT tenant_id, COUNT(*) as session_count
 		FROM agentpg_sessions
-		WHERE tenant_id = $1 AND identifier = $2
-	`
-
-	var session storage.Session
-	var metadataJSON []byte
-
-	row := s.getExecutor(ctx).QueryRow(ctx, query, tenantID, identifier)
-	err := row.Scan(
-		&session.ID,
-		&session.TenantID,
-		&session.Identifier,
-		&session.ParentSessionID,
-		&metadataJSON,
-		&session.CompactionCount,
-		&session.CreatedAt,
-		&session.UpdatedAt,
-	)
-
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("session not found for tenant %s and identifier %s", tenantID, identifier)
-	}
+		GROUP BY tenant_id
+		ORDER BY session_count DESC
+	`)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get session: %w", err)
+		return nil, fmt.Errorf("failed to list tenants: %w", err)
 	}
+	defer func() { _ = rows.Close() }()
 
-	if err := json.Unmarshal(metadataJSON, &session.Metadata); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
-	}
-
-	return &session, nil
-}
-
-// GetSessionTokenCount calculates total tokens for a session from messages.
-func (s *Store) GetSessionTokenCount(ctx context.Context, sessionID string) (int, error) {
-	query := `
-		SELECT COALESCE(
-			SUM(
-				COALESCE((usage->>'input_tokens')::INTEGER, 0) +
-				COALESCE((usage->>'output_tokens')::INTEGER, 0)
-			), 0
-		)
-		FROM agentpg_messages
-		WHERE session_id = $1
-	`
-
-	var totalTokens int
-	err := s.getExecutor(ctx).QueryRow(ctx, query, sessionID).Scan(&totalTokens)
-	if err != nil {
-		return 0, fmt.Errorf("failed to calculate session tokens: %w", err)
-	}
-
-	return totalTokens, nil
-}
-
-// UpdateSessionCompactionCount increments the compaction count.
-func (s *Store) UpdateSessionCompactionCount(ctx context.Context, sessionID string) error {
-	query := `
-		UPDATE agentpg_sessions
-		SET compaction_count = compaction_count + 1, updated_at = NOW()
-		WHERE id = $1
-	`
-
-	_, err := s.getExecutor(ctx).Exec(ctx, query, sessionID)
-	if err != nil {
-		return fmt.Errorf("failed to update compaction count: %w", err)
-	}
-
-	return nil
-}
-
-// SaveMessage saves a single message.
-func (s *Store) SaveMessage(ctx context.Context, msg *storage.Message) error {
-	return s.SaveMessages(ctx, []*storage.Message{msg})
-}
-
-// SaveMessages saves multiple messages.
-func (s *Store) SaveMessages(ctx context.Context, messages []*storage.Message) error {
-	if len(messages) == 0 {
-		return nil
-	}
-
-	query := `
-		INSERT INTO agentpg_messages (id, session_id, role, content, usage, metadata,
-		                     is_preserved, is_summary, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		ON CONFLICT (id) DO UPDATE SET
-			content = EXCLUDED.content,
-			usage = EXCLUDED.usage,
-			metadata = EXCLUDED.metadata,
-			is_preserved = EXCLUDED.is_preserved,
-			is_summary = EXCLUDED.is_summary,
-			updated_at = NOW()
-	`
-
-	exec := s.getExecutor(ctx)
-
-	// Execute messages sequentially (database/sql doesn't have native batching)
-	for _, msg := range messages {
-		contentJSON, err := json.Marshal(msg.Content)
-		if err != nil {
-			return fmt.Errorf("failed to marshal content: %w", err)
-		}
-
-		usageJSON, err := json.Marshal(msg.Usage)
-		if err != nil {
-			return fmt.Errorf("failed to marshal usage: %w", err)
-		}
-
-		metadataJSON, err := json.Marshal(msg.Metadata)
-		if err != nil {
-			return fmt.Errorf("failed to marshal metadata: %w", err)
-		}
-
-		createdAt := msg.CreatedAt
-		if createdAt.IsZero() {
-			createdAt = time.Now()
-		}
-
-		updatedAt := msg.UpdatedAt
-		if updatedAt.IsZero() {
-			updatedAt = time.Now()
-		}
-
-		_, err = exec.Exec(ctx, query,
-			msg.ID,
-			msg.SessionID,
-			msg.Role,
-			contentJSON,
-			usageJSON,
-			metadataJSON,
-			msg.IsPreserved,
-			msg.IsSummary,
-			createdAt,
-			updatedAt,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to save message: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// GetMessages retrieves all messages for a session ordered by creation time.
-func (s *Store) GetMessages(ctx context.Context, sessionID string) ([]*storage.Message, error) {
-	query := `
-		SELECT id, session_id, role, content, usage, metadata,
-		       is_preserved, is_summary, created_at, updated_at
-		FROM agentpg_messages
-		WHERE session_id = $1
-		ORDER BY created_at ASC
-	`
-
-	rows, err := s.getExecutor(ctx).Query(ctx, query, sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query messages: %w", err)
-	}
-	defer rows.Close()
-
-	return s.scanMessages(rows)
-}
-
-// GetMessagesSince retrieves messages created after a specific time.
-func (s *Store) GetMessagesSince(ctx context.Context, sessionID string, since time.Time) ([]*storage.Message, error) {
-	query := `
-		SELECT id, session_id, role, content, usage, metadata,
-		       is_preserved, is_summary, created_at, updated_at
-		FROM agentpg_messages
-		WHERE session_id = $1 AND created_at > $2
-		ORDER BY created_at ASC
-	`
-
-	rows, err := s.getExecutor(ctx).Query(ctx, query, sessionID, since)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query messages: %w", err)
-	}
-	defer rows.Close()
-
-	return s.scanMessages(rows)
-}
-
-// DeleteMessages deletes messages by their IDs.
-func (s *Store) DeleteMessages(ctx context.Context, messageIDs []string) error {
-	if len(messageIDs) == 0 {
-		return nil
-	}
-
-	// Use pq.Array for PostgreSQL array parameter
-	query := `DELETE FROM agentpg_messages WHERE id = ANY($1)`
-
-	_, err := s.getExecutor(ctx).Exec(ctx, query, pq.Array(messageIDs))
-	if err != nil {
-		return fmt.Errorf("failed to delete messages: %w", err)
-	}
-
-	return nil
-}
-
-// scanMessages is a helper to scan message rows.
-func (s *Store) scanMessages(rows driver.Rows) ([]*storage.Message, error) {
-	var messages []*storage.Message
-
+	var tenants []driver.TenantInfo
 	for rows.Next() {
-		var msg storage.Message
-		var contentJSON []byte
-		var usageJSON []byte
-		var metadataJSON []byte
+		var tenant driver.TenantInfo
+		if err := rows.Scan(&tenant.TenantID, &tenant.SessionCount); err != nil {
+			return nil, fmt.Errorf("failed to scan tenant: %w", err)
+		}
+		tenants = append(tenants, tenant)
+	}
 
-		err := rows.Scan(
-			&msg.ID,
-			&msg.SessionID,
-			&msg.Role,
-			&contentJSON,
-			&usageJSON,
-			&metadataJSON,
-			&msg.IsPreserved,
-			&msg.IsSummary,
-			&msg.CreatedAt,
-			&msg.UpdatedAt,
-		)
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate tenants: %w", err)
+	}
+
+	return tenants, nil
+}
+
+// Agent operations
+
+func (s *Store) UpsertAgent(ctx context.Context, agent *driver.AgentDefinition) error {
+	config, _ := json.Marshal(agent.Config)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO agentpg_agents (name, description, model, system_prompt, max_tokens, temperature, top_k, top_p, tool_names, config, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+		ON CONFLICT (name) DO UPDATE SET
+			description = EXCLUDED.description,
+			model = EXCLUDED.model,
+			system_prompt = EXCLUDED.system_prompt,
+			max_tokens = EXCLUDED.max_tokens,
+			temperature = EXCLUDED.temperature,
+			top_k = EXCLUDED.top_k,
+			top_p = EXCLUDED.top_p,
+			tool_names = EXCLUDED.tool_names,
+			config = EXCLUDED.config,
+			updated_at = NOW()
+	`, agent.Name, agent.Description, agent.Model, agent.SystemPrompt,
+		agent.MaxTokens, agent.Temperature, agent.TopK, agent.TopP,
+		pq.Array(agent.ToolNames), config)
+	return err
+}
+
+func (s *Store) GetAgent(ctx context.Context, name string) (*driver.AgentDefinition, error) {
+	var agent driver.AgentDefinition
+	var config []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT name, description, model, system_prompt, max_tokens, temperature, top_k, top_p, tool_names, config, created_at, updated_at
+		FROM agentpg_agents WHERE name = $1
+	`, name).Scan(
+		&agent.Name, &agent.Description, &agent.Model, &agent.SystemPrompt,
+		&agent.MaxTokens, &agent.Temperature, &agent.TopK, &agent.TopP,
+		pq.Array(&agent.ToolNames), &config, &agent.CreatedAt, &agent.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(config, &agent.Config)
+	return &agent, nil
+}
+
+func (s *Store) DeleteAgent(ctx context.Context, name string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM agentpg_agents WHERE name = $1", name)
+	return err
+}
+
+func (s *Store) ListAgents(ctx context.Context) ([]*driver.AgentDefinition, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT name, description, model, system_prompt, max_tokens, temperature, top_k, top_p, tool_names, config, created_at, updated_at
+		FROM agentpg_agents ORDER BY name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var agents []*driver.AgentDefinition
+	for rows.Next() {
+		var agent driver.AgentDefinition
+		var config []byte
+		if err := rows.Scan(
+			&agent.Name, &agent.Description, &agent.Model, &agent.SystemPrompt,
+			&agent.MaxTokens, &agent.Temperature, &agent.TopK, &agent.TopP,
+			pq.Array(&agent.ToolNames), &config, &agent.CreatedAt, &agent.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(config, &agent.Config)
+		agents = append(agents, &agent)
+	}
+	return agents, rows.Err()
+}
+
+// Tool operations
+
+func (s *Store) UpsertTool(ctx context.Context, tool *driver.ToolDefinition) error {
+	inputSchema, _ := json.Marshal(tool.InputSchema)
+	metadata, _ := json.Marshal(tool.Metadata)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO agentpg_tools (name, description, input_schema, is_agent_tool, agent_name, metadata, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		ON CONFLICT (name) DO UPDATE SET
+			description = EXCLUDED.description,
+			input_schema = EXCLUDED.input_schema,
+			is_agent_tool = EXCLUDED.is_agent_tool,
+			agent_name = EXCLUDED.agent_name,
+			metadata = EXCLUDED.metadata,
+			updated_at = NOW()
+	`, tool.Name, tool.Description, inputSchema, tool.IsAgentTool, tool.AgentName, metadata)
+	return err
+}
+
+func (s *Store) GetTool(ctx context.Context, name string) (*driver.ToolDefinition, error) {
+	var tool driver.ToolDefinition
+	var inputSchema, metadata []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT name, description, input_schema, is_agent_tool, agent_name, metadata, created_at, updated_at
+		FROM agentpg_tools WHERE name = $1
+	`, name).Scan(
+		&tool.Name, &tool.Description, &inputSchema, &tool.IsAgentTool,
+		&tool.AgentName, &metadata, &tool.CreatedAt, &tool.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(inputSchema, &tool.InputSchema)
+	_ = json.Unmarshal(metadata, &tool.Metadata)
+	return &tool, nil
+}
+
+func (s *Store) DeleteTool(ctx context.Context, name string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM agentpg_tools WHERE name = $1", name)
+	return err
+}
+
+func (s *Store) ListTools(ctx context.Context) ([]*driver.ToolDefinition, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT name, description, input_schema, is_agent_tool, agent_name, metadata, created_at, updated_at
+		FROM agentpg_tools ORDER BY name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var tools []*driver.ToolDefinition
+	for rows.Next() {
+		var tool driver.ToolDefinition
+		var inputSchema, metadata []byte
+		if err := rows.Scan(
+			&tool.Name, &tool.Description, &inputSchema, &tool.IsAgentTool,
+			&tool.AgentName, &metadata, &tool.CreatedAt, &tool.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(inputSchema, &tool.InputSchema)
+		_ = json.Unmarshal(metadata, &tool.Metadata)
+		tools = append(tools, &tool)
+	}
+	return tools, rows.Err()
+}
+
+// Run operations
+
+func (s *Store) CreateRun(ctx context.Context, params driver.CreateRunParams) (*driver.Run, error) {
+	return s.createRun(ctx, s.db, params)
+}
+
+func (s *Store) CreateRunTx(ctx context.Context, tx *sql.Tx, params driver.CreateRunParams) (*driver.Run, error) {
+	return s.createRun(ctx, tx, params)
+}
+
+func (s *Store) createRun(ctx context.Context, e executor, params driver.CreateRunParams) (*driver.Run, error) {
+	var run driver.Run
+	metadata, _ := json.Marshal(params.Metadata)
+
+	// Default to batch mode if not specified
+	runMode := params.RunMode
+	if runMode == "" {
+		runMode = "batch"
+	}
+
+	err := e.QueryRowContext(ctx, `
+		INSERT INTO agentpg_runs (session_id, agent_name, prompt, run_mode, parent_run_id, parent_tool_execution_id, depth, created_by_instance_id, metadata)
+		VALUES ($1, $2, $3, $4::agentpg_run_mode, $5, $6, $7, $8, $9)
+		RETURNING id, session_id, agent_name, run_mode, parent_run_id, parent_tool_execution_id, depth, state, previous_state,
+			prompt, current_iteration, current_iteration_id, response_text, stop_reason,
+			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+			iteration_count, tool_iterations, error_message, error_type,
+			created_by_instance_id, claimed_by_instance_id, claimed_at, metadata, created_at, started_at, finalized_at,
+			rescue_attempts, last_rescue_at
+	`, params.SessionID, params.AgentName, params.Prompt, runMode, params.ParentRunID,
+		params.ParentToolExecutionID, params.Depth, params.CreatedByInstanceID, metadata).Scan(
+		&run.ID, &run.SessionID, &run.AgentName, &run.RunMode, &run.ParentRunID, &run.ParentToolExecutionID, &run.Depth,
+		&run.State, &run.PreviousState, &run.Prompt, &run.CurrentIteration, &run.CurrentIterationID,
+		&run.ResponseText, &run.StopReason, &run.InputTokens, &run.OutputTokens,
+		&run.CacheCreationInputTokens, &run.CacheReadInputTokens, &run.IterationCount, &run.ToolIterations,
+		&run.ErrorMessage, &run.ErrorType, &run.CreatedByInstanceID, &run.ClaimedByInstanceID, &run.ClaimedAt,
+		&metadata, &run.CreatedAt, &run.StartedAt, &run.FinalizedAt,
+		&run.RescueAttempts, &run.LastRescueAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create run: %w", err)
+	}
+	_ = json.Unmarshal(metadata, &run.Metadata)
+	return &run, nil
+}
+
+func (s *Store) GetRun(ctx context.Context, id uuid.UUID) (*driver.Run, error) {
+	var run driver.Run
+	var metadata []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, session_id, agent_name, run_mode, parent_run_id, parent_tool_execution_id, depth, state, previous_state,
+			prompt, current_iteration, current_iteration_id, response_text, stop_reason,
+			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+			iteration_count, tool_iterations, error_message, error_type,
+			created_by_instance_id, claimed_by_instance_id, claimed_at, metadata, created_at, started_at, finalized_at,
+			rescue_attempts, last_rescue_at
+		FROM agentpg_runs WHERE id = $1
+	`, id).Scan(
+		&run.ID, &run.SessionID, &run.AgentName, &run.RunMode, &run.ParentRunID, &run.ParentToolExecutionID, &run.Depth,
+		&run.State, &run.PreviousState, &run.Prompt, &run.CurrentIteration, &run.CurrentIterationID,
+		&run.ResponseText, &run.StopReason, &run.InputTokens, &run.OutputTokens,
+		&run.CacheCreationInputTokens, &run.CacheReadInputTokens, &run.IterationCount, &run.ToolIterations,
+		&run.ErrorMessage, &run.ErrorType, &run.CreatedByInstanceID, &run.ClaimedByInstanceID, &run.ClaimedAt,
+		&metadata, &run.CreatedAt, &run.StartedAt, &run.FinalizedAt,
+		&run.RescueAttempts, &run.LastRescueAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(metadata, &run.Metadata)
+	return &run, nil
+}
+
+func (s *Store) UpdateRun(ctx context.Context, id uuid.UUID, updates map[string]any) error {
+	return s.updateRun(ctx, id, updates)
+}
+
+func (s *Store) UpdateRunState(ctx context.Context, id uuid.UUID, state driver.RunState, updates map[string]any) error {
+	if updates == nil {
+		updates = make(map[string]any)
+	}
+	updates["state"] = state
+	return s.updateRun(ctx, id, updates)
+}
+
+func (s *Store) updateRun(ctx context.Context, id uuid.UUID, updates map[string]any) error {
+	sets := make([]string, 0, len(updates))
+	args := make([]any, 0, 1+len(updates))
+	args = append(args, id)
+	i := 2
+
+	for k, v := range updates {
+		sets = append(sets, fmt.Sprintf("%s = $%d", k, i))
+		switch val := v.(type) {
+		case map[string]any:
+			data, _ := json.Marshal(val)
+			args = append(args, data)
+		default:
+			args = append(args, v)
+		}
+		i++
+	}
+
+	if len(sets) == 0 {
+		return nil
+	}
+
+	query := fmt.Sprintf("UPDATE agentpg_runs SET %s WHERE id = $1", joinStrings(sets, ", ")) //nolint:gosec // SQL injection not possible - column names from map keys
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
+}
+
+func (s *Store) ClaimRuns(ctx context.Context, instanceID string, maxCount int, runMode string) ([]*driver.Run, error) {
+	var rows *sql.Rows
+	var err error
+	if runMode != "" {
+		rows, err = s.db.QueryContext(ctx, "SELECT * FROM agentpg_claim_runs($1, $2, $3::agentpg_run_mode)", instanceID, maxCount, runMode)
+	} else {
+		rows, err = s.db.QueryContext(ctx, "SELECT * FROM agentpg_claim_runs($1, $2)", instanceID, maxCount)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to claim runs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return collectRuns(rows)
+}
+
+func (s *Store) GetRunsBySession(ctx context.Context, sessionID uuid.UUID, limit int) ([]*driver.Run, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, agent_name, run_mode, parent_run_id, parent_tool_execution_id, depth, state, previous_state,
+			prompt, current_iteration, current_iteration_id, response_text, stop_reason,
+			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+			iteration_count, tool_iterations, error_message, error_type,
+			created_by_instance_id, claimed_by_instance_id, claimed_at, metadata, created_at, started_at, finalized_at,
+			rescue_attempts, last_rescue_at
+		FROM agentpg_runs WHERE session_id = $1 ORDER BY created_at DESC LIMIT $2
+	`, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return collectRuns(rows)
+}
+
+func (s *Store) GetStuckPendingToolsRuns(ctx context.Context, limit int) ([]*driver.Run, error) {
+	// Find runs that are in pending_tools state but have no pending tool executions
+	// This catches runs where all tools completed but the notification was missed
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT r.id, r.session_id, r.agent_name, r.run_mode, r.parent_run_id, r.parent_tool_execution_id, r.depth, r.state, r.previous_state,
+			r.prompt, r.current_iteration, r.current_iteration_id, r.response_text, r.stop_reason,
+			r.input_tokens, r.output_tokens, r.cache_creation_input_tokens, r.cache_read_input_tokens,
+			r.iteration_count, r.tool_iterations, r.error_message, r.error_type,
+			r.created_by_instance_id, r.claimed_by_instance_id, r.claimed_at, r.metadata, r.created_at, r.started_at, r.finalized_at,
+			r.rescue_attempts, r.last_rescue_at
+		FROM agentpg_runs r
+		WHERE r.state = 'pending_tools'
+		  AND r.current_iteration_id IS NOT NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM agentpg_tool_executions te
+			WHERE te.iteration_id = r.current_iteration_id
+			  AND te.state NOT IN ('completed', 'failed', 'skipped')
+		  )
+		ORDER BY r.created_at ASC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return collectRuns(rows)
+}
+
+func (s *Store) ListRuns(ctx context.Context, params driver.ListRunsParams) ([]*driver.Run, int, error) {
+	// Build dynamic query with filters
+	baseQuery := `
+		SELECT r.id, r.session_id, r.agent_name, r.run_mode, r.parent_run_id, r.parent_tool_execution_id, r.depth, r.state, r.previous_state,
+			r.prompt, r.current_iteration, r.current_iteration_id, r.response_text, r.stop_reason,
+			r.input_tokens, r.output_tokens, r.cache_creation_input_tokens, r.cache_read_input_tokens,
+			r.iteration_count, r.tool_iterations, r.error_message, r.error_type,
+			r.created_by_instance_id, r.claimed_by_instance_id, r.claimed_at, r.metadata, r.created_at, r.started_at, r.finalized_at,
+			r.rescue_attempts, r.last_rescue_at
+		FROM agentpg_runs r`
+
+	countQuery := "SELECT COUNT(*) FROM agentpg_runs r"
+
+	var whereClauses []string
+	var args []any
+	argNum := 1
+
+	// Join with sessions for tenant filtering
+	if params.TenantID != "" {
+		baseQuery += " JOIN agentpg_sessions s ON r.session_id = s.id"
+		countQuery += " JOIN agentpg_sessions s ON r.session_id = s.id"
+		whereClauses = append(whereClauses, fmt.Sprintf("s.tenant_id = $%d", argNum))
+		args = append(args, params.TenantID)
+		argNum++
+	}
+
+	if params.SessionID != nil {
+		whereClauses = append(whereClauses, fmt.Sprintf("r.session_id = $%d", argNum))
+		args = append(args, *params.SessionID)
+		argNum++
+	}
+
+	if params.AgentName != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("r.agent_name = $%d", argNum))
+		args = append(args, params.AgentName)
+		argNum++
+	}
+
+	if params.State != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("r.state = $%d", argNum))
+		args = append(args, params.State)
+		argNum++
+	}
+
+	if params.RunMode != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("r.run_mode = $%d", argNum))
+		args = append(args, params.RunMode)
+		argNum++
+	}
+
+	whereClause := ""
+	if len(whereClauses) > 0 {
+		whereClause = " WHERE " + whereClauses[0]
+		for i := 1; i < len(whereClauses); i++ {
+			whereClause += " AND " + whereClauses[i]
+		}
+	}
+
+	// Get total count
+	var total int
+	err := s.db.QueryRowContext(ctx, countQuery+whereClause, args...).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count runs: %w", err)
+	}
+
+	// Add ordering and pagination
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	baseQuery += whereClause + fmt.Sprintf(" ORDER BY r.created_at DESC LIMIT $%d OFFSET $%d", argNum, argNum+1)
+	args = append(args, limit, offset)
+
+	rows, err := s.db.QueryContext(ctx, baseQuery, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list runs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	runs, err := collectRuns(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return runs, total, nil
+}
+
+// Iteration operations
+
+func (s *Store) CreateIteration(ctx context.Context, params driver.CreateIterationParams) (*driver.Iteration, error) {
+	var iter driver.Iteration
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO agentpg_iterations (run_id, iteration_number, trigger_type, is_streaming)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, run_id, iteration_number, is_streaming, batch_id, batch_request_id, batch_status,
+			batch_submitted_at, batch_completed_at, batch_expires_at, batch_poll_count, batch_last_poll_at,
+			streaming_started_at, streaming_completed_at,
+			trigger_type, request_message_ids, stop_reason, response_message_id, has_tool_use, tool_execution_count,
+			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+			error_message, error_type, created_at, started_at, completed_at
+	`, params.RunID, params.IterationNumber, params.TriggerType, params.IsStreaming).Scan(
+		&iter.ID, &iter.RunID, &iter.IterationNumber, &iter.IsStreaming, &iter.BatchID, &iter.BatchRequestID, &iter.BatchStatus,
+		&iter.BatchSubmittedAt, &iter.BatchCompletedAt, &iter.BatchExpiresAt, &iter.BatchPollCount, &iter.BatchLastPollAt,
+		&iter.StreamingStartedAt, &iter.StreamingCompletedAt,
+		&iter.TriggerType, pq.Array(&iter.RequestMessageIDs), &iter.StopReason, &iter.ResponseMessageID, &iter.HasToolUse, &iter.ToolExecutionCount,
+		&iter.InputTokens, &iter.OutputTokens, &iter.CacheCreationInputTokens, &iter.CacheReadInputTokens,
+		&iter.ErrorMessage, &iter.ErrorType, &iter.CreatedAt, &iter.StartedAt, &iter.CompletedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create iteration: %w", err)
+	}
+	return &iter, nil
+}
+
+func (s *Store) GetIteration(ctx context.Context, id uuid.UUID) (*driver.Iteration, error) {
+	var iter driver.Iteration
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, run_id, iteration_number, is_streaming, batch_id, batch_request_id, batch_status,
+			batch_submitted_at, batch_completed_at, batch_expires_at, batch_poll_count, batch_last_poll_at,
+			streaming_started_at, streaming_completed_at,
+			trigger_type, request_message_ids, stop_reason, response_message_id, has_tool_use, tool_execution_count,
+			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+			error_message, error_type, created_at, started_at, completed_at
+		FROM agentpg_iterations WHERE id = $1
+	`, id).Scan(
+		&iter.ID, &iter.RunID, &iter.IterationNumber, &iter.IsStreaming, &iter.BatchID, &iter.BatchRequestID, &iter.BatchStatus,
+		&iter.BatchSubmittedAt, &iter.BatchCompletedAt, &iter.BatchExpiresAt, &iter.BatchPollCount, &iter.BatchLastPollAt,
+		&iter.StreamingStartedAt, &iter.StreamingCompletedAt,
+		&iter.TriggerType, pq.Array(&iter.RequestMessageIDs), &iter.StopReason, &iter.ResponseMessageID, &iter.HasToolUse, &iter.ToolExecutionCount,
+		&iter.InputTokens, &iter.OutputTokens, &iter.CacheCreationInputTokens, &iter.CacheReadInputTokens,
+		&iter.ErrorMessage, &iter.ErrorType, &iter.CreatedAt, &iter.StartedAt, &iter.CompletedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &iter, nil
+}
+
+func (s *Store) UpdateIteration(ctx context.Context, id uuid.UUID, updates map[string]any) error {
+	sets := make([]string, 0, len(updates))
+	args := make([]any, 0, 1+len(updates))
+	args = append(args, id)
+	i := 2
+
+	for k, v := range updates {
+		sets = append(sets, fmt.Sprintf("%s = $%d", k, i))
+		args = append(args, v)
+		i++
+	}
+
+	if len(sets) == 0 {
+		return nil
+	}
+
+	query := fmt.Sprintf("UPDATE agentpg_iterations SET %s WHERE id = $1", joinStrings(sets, ", ")) //nolint:gosec // SQL injection not possible - column names from map keys
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
+}
+
+func (s *Store) GetIterationsForPoll(ctx context.Context, instanceID string, pollInterval time.Duration, maxCount int) ([]*driver.Iteration, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT * FROM agentpg_get_iterations_for_poll($1, $2, $3)",
+		instanceID, pollInterval.String(), maxCount)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return collectIterations(rows)
+}
+
+func (s *Store) GetIterationsByRun(ctx context.Context, runID uuid.UUID) ([]*driver.Iteration, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, run_id, iteration_number, is_streaming, batch_id, batch_request_id, batch_status,
+			batch_submitted_at, batch_completed_at, batch_expires_at, batch_poll_count, batch_last_poll_at,
+			streaming_started_at, streaming_completed_at,
+			trigger_type, request_message_ids, stop_reason, response_message_id, has_tool_use, tool_execution_count,
+			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+			error_message, error_type, created_at, started_at, completed_at
+		FROM agentpg_iterations WHERE run_id = $1 ORDER BY iteration_number
+	`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return collectIterations(rows)
+}
+
+// Tool execution operations
+
+func (s *Store) CreateToolExecution(ctx context.Context, params driver.CreateToolExecutionParams) (*driver.ToolExecution, error) {
+	var exec driver.ToolExecution
+	maxAttempts := params.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 2 // Default: 2 attempts (1 retry) for snappy UX
+	}
+
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO agentpg_tool_executions (run_id, iteration_id, tool_use_id, tool_name, tool_input, is_agent_tool, agent_name, max_attempts)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, run_id, iteration_id, state, tool_use_id, tool_name, tool_input, is_agent_tool, agent_name, child_run_id,
+			tool_output, is_error, error_message, claimed_by_instance_id, claimed_at, attempt_count, max_attempts,
+			scheduled_at, snooze_count, last_error, created_at, started_at, completed_at
+	`, params.RunID, params.IterationID, params.ToolUseID, params.ToolName, params.ToolInput,
+		params.IsAgentTool, params.AgentName, maxAttempts).Scan(
+		&exec.ID, &exec.RunID, &exec.IterationID, &exec.State, &exec.ToolUseID, &exec.ToolName, &exec.ToolInput,
+		&exec.IsAgentTool, &exec.AgentName, &exec.ChildRunID, &exec.ToolOutput, &exec.IsError, &exec.ErrorMessage,
+		&exec.ClaimedByInstanceID, &exec.ClaimedAt, &exec.AttemptCount, &exec.MaxAttempts,
+		&exec.ScheduledAt, &exec.SnoozeCount, &exec.LastError, &exec.CreatedAt, &exec.StartedAt, &exec.CompletedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tool execution: %w", err)
+	}
+	return &exec, nil
+}
+
+func (s *Store) CreateToolExecutions(ctx context.Context, params []driver.CreateToolExecutionParams) ([]*driver.ToolExecution, error) {
+	execs := make([]*driver.ToolExecution, 0, len(params))
+	for _, p := range params {
+		exec, err := s.CreateToolExecution(ctx, p)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan message: %w", err)
+			return nil, err
 		}
+		execs = append(execs, exec)
+	}
+	return execs, nil
+}
 
-		if err := json.Unmarshal(contentJSON, &msg.Content); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal content: %w", err)
+func (s *Store) CreateToolExecutionsAndUpdateRunState(ctx context.Context, params []driver.CreateToolExecutionParams, runID uuid.UUID, state driver.RunState, runUpdates map[string]any) ([]*driver.ToolExecution, error) {
+	// Convert params to JSONB format expected by stored procedure
+	type toolParam struct {
+		RunID       string          `json:"run_id"`
+		IterationID string          `json:"iteration_id"`
+		ToolUseID   string          `json:"tool_use_id"`
+		ToolName    string          `json:"tool_name"`
+		ToolInput   json.RawMessage `json:"tool_input"`
+		IsAgentTool bool            `json:"is_agent_tool"`
+		AgentName   *string         `json:"agent_name"`
+		MaxAttempts int             `json:"max_attempts"`
+	}
+
+	toolParams := make([]toolParam, len(params))
+	for i, p := range params {
+		maxAttempts := p.MaxAttempts
+		if maxAttempts <= 0 {
+			maxAttempts = 2
 		}
-
-		if len(usageJSON) > 0 {
-			msg.Usage = &storage.MessageUsage{}
-			if err := json.Unmarshal(usageJSON, msg.Usage); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal usage: %w", err)
-			}
+		toolParams[i] = toolParam{
+			RunID:       p.RunID.String(),
+			IterationID: p.IterationID.String(),
+			ToolUseID:   p.ToolUseID,
+			ToolName:    p.ToolName,
+			ToolInput:   p.ToolInput,
+			IsAgentTool: p.IsAgentTool,
+			AgentName:   p.AgentName,
+			MaxAttempts: maxAttempts,
 		}
+	}
 
-		if err := json.Unmarshal(metadataJSON, &msg.Metadata); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+	toolParamsJSON, err := json.Marshal(toolParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal tool params: %w", err)
+	}
+
+	runUpdatesJSON, err := json.Marshal(runUpdates)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal run updates: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT * FROM agentpg_create_tool_executions_and_update_run($1, $2, $3::agentpg_run_state, $4)",
+		toolParamsJSON, runID, string(state), runUpdatesJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tool executions and update run: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return collectToolExecutions(rows)
+}
+
+func (s *Store) GetToolExecution(ctx context.Context, id uuid.UUID) (*driver.ToolExecution, error) {
+	var exec driver.ToolExecution
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, run_id, iteration_id, state, tool_use_id, tool_name, tool_input, is_agent_tool, agent_name, child_run_id,
+			tool_output, is_error, error_message, claimed_by_instance_id, claimed_at, attempt_count, max_attempts,
+			scheduled_at, snooze_count, last_error, created_at, started_at, completed_at
+		FROM agentpg_tool_executions WHERE id = $1
+	`, id).Scan(
+		&exec.ID, &exec.RunID, &exec.IterationID, &exec.State, &exec.ToolUseID, &exec.ToolName, &exec.ToolInput,
+		&exec.IsAgentTool, &exec.AgentName, &exec.ChildRunID, &exec.ToolOutput, &exec.IsError, &exec.ErrorMessage,
+		&exec.ClaimedByInstanceID, &exec.ClaimedAt, &exec.AttemptCount, &exec.MaxAttempts,
+		&exec.ScheduledAt, &exec.SnoozeCount, &exec.LastError, &exec.CreatedAt, &exec.StartedAt, &exec.CompletedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &exec, nil
+}
+
+func (s *Store) UpdateToolExecution(ctx context.Context, id uuid.UUID, updates map[string]any) error {
+	sets := make([]string, 0, len(updates))
+	args := make([]any, 0, 1+len(updates))
+	args = append(args, id)
+	i := 2
+
+	for k, v := range updates {
+		sets = append(sets, fmt.Sprintf("%s = $%d", k, i))
+		args = append(args, v)
+		i++
+	}
+
+	if len(sets) == 0 {
+		return nil
+	}
+
+	query := fmt.Sprintf("UPDATE agentpg_tool_executions SET %s WHERE id = $1", joinStrings(sets, ", ")) //nolint:gosec // SQL injection not possible - column names from map keys
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
+}
+
+func (s *Store) ClaimToolExecutions(ctx context.Context, instanceID string, maxCount int) ([]*driver.ToolExecution, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT * FROM agentpg_claim_tool_executions($1, $2)", instanceID, maxCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to claim tool executions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return collectToolExecutions(rows)
+}
+
+func (s *Store) CompleteToolExecution(ctx context.Context, id uuid.UUID, output string, isError bool, errorMsg string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agentpg_tool_executions
+		SET state = CASE WHEN $3 THEN 'failed'::agentpg_tool_execution_state ELSE 'completed'::agentpg_tool_execution_state END,
+			tool_output = $2,
+			is_error = $3,
+			error_message = NULLIF($4, ''),
+			completed_at = NOW()
+		WHERE id = $1
+	`, id, output, isError, errorMsg)
+	return err
+}
+
+func (s *Store) GetToolExecutionsByRun(ctx context.Context, runID uuid.UUID) ([]*driver.ToolExecution, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, run_id, iteration_id, state, tool_use_id, tool_name, tool_input, is_agent_tool, agent_name, child_run_id,
+			tool_output, is_error, error_message, claimed_by_instance_id, claimed_at, attempt_count, max_attempts,
+			scheduled_at, snooze_count, last_error, created_at, started_at, completed_at
+		FROM agentpg_tool_executions WHERE run_id = $1 ORDER BY created_at
+	`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return collectToolExecutions(rows)
+}
+
+func (s *Store) GetToolExecutionsByIteration(ctx context.Context, iterationID uuid.UUID) ([]*driver.ToolExecution, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, run_id, iteration_id, state, tool_use_id, tool_name, tool_input, is_agent_tool, agent_name, child_run_id,
+			tool_output, is_error, error_message, claimed_by_instance_id, claimed_at, attempt_count, max_attempts,
+			scheduled_at, snooze_count, last_error, created_at, started_at, completed_at
+		FROM agentpg_tool_executions WHERE iteration_id = $1 ORDER BY created_at
+	`, iterationID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return collectToolExecutions(rows)
+}
+
+func (s *Store) GetPendingToolExecutionsForRun(ctx context.Context, runID uuid.UUID) ([]*driver.ToolExecution, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, run_id, iteration_id, state, tool_use_id, tool_name, tool_input, is_agent_tool, agent_name, child_run_id,
+			tool_output, is_error, error_message, claimed_by_instance_id, claimed_at, attempt_count, max_attempts,
+			scheduled_at, snooze_count, last_error, created_at, started_at, completed_at
+		FROM agentpg_tool_executions WHERE run_id = $1 AND state NOT IN ('completed', 'failed', 'skipped')
+	`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return collectToolExecutions(rows)
+}
+
+func (s *Store) ListToolExecutions(ctx context.Context, params driver.ListToolExecutionsParams) ([]*driver.ToolExecution, int, error) {
+	// Build dynamic query with filters
+	baseQuery := `
+		SELECT id, run_id, iteration_id, state, tool_use_id, tool_name, tool_input, is_agent_tool, agent_name, child_run_id,
+			tool_output, is_error, error_message, claimed_by_instance_id, claimed_at, attempt_count, max_attempts,
+			scheduled_at, snooze_count, last_error, created_at, started_at, completed_at
+		FROM agentpg_tool_executions`
+
+	countQuery := "SELECT COUNT(*) FROM agentpg_tool_executions"
+
+	var whereClauses []string
+	var args []any
+	argNum := 1
+
+	if params.RunID != nil {
+		whereClauses = append(whereClauses, fmt.Sprintf("run_id = $%d", argNum))
+		args = append(args, *params.RunID)
+		argNum++
+	}
+
+	if params.IterationID != nil {
+		whereClauses = append(whereClauses, fmt.Sprintf("iteration_id = $%d", argNum))
+		args = append(args, *params.IterationID)
+		argNum++
+	}
+
+	if params.ToolName != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("tool_name = $%d", argNum))
+		args = append(args, params.ToolName)
+		argNum++
+	}
+
+	if params.State != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("state = $%d", argNum))
+		args = append(args, params.State)
+		argNum++
+	}
+
+	if params.IsAgentTool != nil {
+		whereClauses = append(whereClauses, fmt.Sprintf("is_agent_tool = $%d", argNum))
+		args = append(args, *params.IsAgentTool)
+		argNum++
+	}
+
+	whereClause := ""
+	if len(whereClauses) > 0 {
+		whereClause = " WHERE " + whereClauses[0]
+		for i := 1; i < len(whereClauses); i++ {
+			whereClause += " AND " + whereClauses[i]
 		}
+	}
 
+	// Get total count
+	var total int
+	err := s.db.QueryRowContext(ctx, countQuery+whereClause, args...).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count tool executions: %w", err)
+	}
+
+	// Add ordering and pagination
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	baseQuery += whereClause + fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", argNum, argNum+1)
+	args = append(args, limit, offset)
+
+	rows, err := s.db.QueryContext(ctx, baseQuery, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list tool executions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	executions, err := collectToolExecutions(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return executions, total, nil
+}
+
+// Message operations (simplified for brevity - follows same pattern as pgxv5)
+
+func (s *Store) CreateMessage(ctx context.Context, params driver.CreateMessageParams) (*driver.Message, error) {
+	var msg driver.Message
+	usage, _ := json.Marshal(params.Usage)
+	metadata, _ := json.Marshal(params.Metadata)
+
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO agentpg_messages (session_id, run_id, role, usage, is_preserved, is_summary, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, session_id, run_id, role, usage, is_preserved, is_summary, metadata, created_at, updated_at
+	`, params.SessionID, params.RunID, params.Role, usage, params.IsPreserved, params.IsSummary, metadata).Scan(
+		&msg.ID, &msg.SessionID, &msg.RunID, &msg.Role, &usage, &msg.IsPreserved, &msg.IsSummary, &metadata, &msg.CreatedAt, &msg.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create message: %w", err)
+	}
+	_ = json.Unmarshal(usage, &msg.Usage)
+	_ = json.Unmarshal(metadata, &msg.Metadata)
+
+	if err := s.CreateContentBlocks(ctx, msg.ID, params.Content); err != nil {
+		return nil, err
+	}
+	msg.Content = params.Content
+
+	return &msg, nil
+}
+
+func (s *Store) GetMessage(ctx context.Context, id uuid.UUID) (*driver.Message, error) {
+	var msg driver.Message
+	var usage, metadata []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, session_id, run_id, role, usage, is_preserved, is_summary, metadata, created_at, updated_at
+		FROM agentpg_messages WHERE id = $1
+	`, id).Scan(
+		&msg.ID, &msg.SessionID, &msg.RunID, &msg.Role, &usage, &msg.IsPreserved, &msg.IsSummary, &metadata, &msg.CreatedAt, &msg.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(usage, &msg.Usage)
+	_ = json.Unmarshal(metadata, &msg.Metadata)
+
+	blocks, err := s.GetContentBlocks(ctx, msg.ID)
+	if err != nil {
+		return nil, err
+	}
+	msg.Content = blocks
+
+	return &msg, nil
+}
+
+func (s *Store) GetMessages(ctx context.Context, sessionID uuid.UUID, limit int) ([]*driver.Message, error) {
+	query := `SELECT id, session_id, run_id, role, usage, is_preserved, is_summary, metadata, created_at, updated_at
+		FROM agentpg_messages WHERE session_id = $1 ORDER BY created_at`
+	var rows *sql.Rows
+	var err error
+	if limit > 0 {
+		rows, err = s.db.QueryContext(ctx, query+" LIMIT $2", sessionID, limit)
+	} else {
+		rows, err = s.db.QueryContext(ctx, query, sessionID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var messages []*driver.Message
+	for rows.Next() {
+		var msg driver.Message
+		var usage, metadata []byte
+		if err := rows.Scan(
+			&msg.ID, &msg.SessionID, &msg.RunID, &msg.Role, &usage, &msg.IsPreserved, &msg.IsSummary, &metadata, &msg.CreatedAt, &msg.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(usage, &msg.Usage)
+		_ = json.Unmarshal(metadata, &msg.Metadata)
+
+		blocks, err := s.GetContentBlocks(ctx, msg.ID)
+		if err != nil {
+			return nil, err
+		}
+		msg.Content = blocks
 		messages = append(messages, &msg)
 	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating messages: %w", err)
-	}
-
-	return messages, nil
+	return messages, rows.Err()
 }
 
-// SaveCompactionEvent saves a compaction event.
-func (s *Store) SaveCompactionEvent(ctx context.Context, event *storage.CompactionEvent) error {
-	if event.ID == "" {
-		event.ID = uuid.New().String()
-	}
-
-	preservedIDsJSON, err := json.Marshal(event.PreservedMessageIDs)
-	if err != nil {
-		return fmt.Errorf("failed to marshal preserved IDs: %w", err)
-	}
-
+func (s *Store) GetMessagesWithRunInfo(ctx context.Context, sessionID uuid.UUID, limit int) ([]*driver.MessageWithRunInfo, error) {
 	query := `
-		INSERT INTO agentpg_compaction_events
-			(id, session_id, strategy, original_tokens, compacted_tokens,
-			 messages_removed, summary_content, preserved_message_ids,
-			 model_used, duration_ms, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
-	`
-
-	_, err = s.getExecutor(ctx).Exec(ctx, query,
-		event.ID,
-		event.SessionID,
-		event.Strategy,
-		event.OriginalTokens,
-		event.CompactedTokens,
-		event.MessagesRemoved,
-		event.SummaryContent,
-		preservedIDsJSON,
-		event.ModelUsed,
-		event.DurationMs,
-	)
+		SELECT m.id, m.session_id, m.run_id, m.role, m.usage, m.is_preserved, m.is_summary, m.metadata, m.created_at, m.updated_at,
+		       r.agent_name, r.depth, r.parent_run_id, r.state
+		FROM agentpg_messages m
+		LEFT JOIN agentpg_runs r ON r.id = m.run_id
+		WHERE m.session_id = $1
+		ORDER BY m.created_at`
+	var rows *sql.Rows
+	var err error
+	if limit > 0 {
+		rows, err = s.db.QueryContext(ctx, query+" LIMIT $2", sessionID, limit)
+	} else {
+		rows, err = s.db.QueryContext(ctx, query, sessionID)
+	}
 	if err != nil {
-		return fmt.Errorf("failed to save compaction event: %w", err)
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var messages []*driver.MessageWithRunInfo
+	for rows.Next() {
+		var msg driver.MessageWithRunInfo
+		var usage, metadata []byte
+		var runState *string
+		if err := rows.Scan(
+			&msg.ID, &msg.SessionID, &msg.RunID, &msg.Role, &usage, &msg.IsPreserved, &msg.IsSummary, &metadata, &msg.CreatedAt, &msg.UpdatedAt,
+			&msg.RunAgentName, &msg.RunDepth, &msg.ParentRunID, &runState,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(usage, &msg.Usage)
+		_ = json.Unmarshal(metadata, &msg.Metadata)
+		msg.RunState = runState
+
+		blocks, err := s.GetContentBlocks(ctx, msg.ID)
+		if err != nil {
+			return nil, err
+		}
+		msg.Content = blocks
+		messages = append(messages, &msg)
+	}
+	return messages, rows.Err()
+}
+
+func (s *Store) GetMessagesByRun(ctx context.Context, runID uuid.UUID) ([]*driver.Message, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, run_id, role, usage, is_preserved, is_summary, metadata, created_at, updated_at
+		FROM agentpg_messages WHERE run_id = $1 ORDER BY created_at
+	`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var messages []*driver.Message
+	for rows.Next() {
+		var msg driver.Message
+		var usage, metadata []byte
+		if err := rows.Scan(
+			&msg.ID, &msg.SessionID, &msg.RunID, &msg.Role, &usage, &msg.IsPreserved, &msg.IsSummary, &metadata, &msg.CreatedAt, &msg.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(usage, &msg.Usage)
+		_ = json.Unmarshal(metadata, &msg.Metadata)
+
+		blocks, err := s.GetContentBlocks(ctx, msg.ID)
+		if err != nil {
+			return nil, err
+		}
+		msg.Content = blocks
+		messages = append(messages, &msg)
+	}
+	return messages, rows.Err()
+}
+
+func (s *Store) GetMessagesForRunContext(ctx context.Context, runID uuid.UUID) ([]*driver.Message, error) {
+	// Get the run to determine session and depth
+	var sessionID uuid.UUID
+	var depth int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT session_id, depth FROM agentpg_runs WHERE id = $1
+	`, runID).Scan(&sessionID, &depth)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get run: %w", err)
 	}
 
+	if depth > 0 {
+		// Nested run: only this run's messages
+		return s.GetMessagesByRun(ctx, runID)
+	}
+
+	// Root run: get messages from all root-level runs in session
+	// This excludes messages from child runs (agent-as-tool invocations)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT m.id, m.session_id, m.run_id, m.role, m.usage,
+		       m.is_preserved, m.is_summary, m.metadata, m.created_at, m.updated_at
+		FROM agentpg_messages m
+		WHERE m.session_id = $1
+		  AND (
+		      m.run_id IS NULL
+		      OR m.run_id IN (
+		          SELECT r.id FROM agentpg_runs r
+		          WHERE r.session_id = $1 AND r.depth = 0
+		      )
+		  )
+		ORDER BY m.created_at
+	`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var messages []*driver.Message
+	for rows.Next() {
+		var msg driver.Message
+		var usage, metadata []byte
+		if err := rows.Scan(
+			&msg.ID, &msg.SessionID, &msg.RunID, &msg.Role, &usage, &msg.IsPreserved, &msg.IsSummary, &metadata, &msg.CreatedAt, &msg.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(usage, &msg.Usage)
+		_ = json.Unmarshal(metadata, &msg.Metadata)
+
+		blocks, err := s.GetContentBlocks(ctx, msg.ID)
+		if err != nil {
+			return nil, err
+		}
+		msg.Content = blocks
+		messages = append(messages, &msg)
+	}
+	return messages, rows.Err()
+}
+
+func (s *Store) UpdateMessage(ctx context.Context, id uuid.UUID, updates map[string]any) error {
+	sets := make([]string, 0, 1+len(updates))
+	sets = append(sets, "updated_at = NOW()")
+	args := make([]any, 0, 1+len(updates))
+	args = append(args, id)
+	i := 2
+
+	for k, v := range updates {
+		sets = append(sets, fmt.Sprintf("%s = $%d", k, i))
+		switch val := v.(type) {
+		case map[string]any:
+			data, _ := json.Marshal(val)
+			args = append(args, data)
+		default:
+			args = append(args, v)
+		}
+		i++
+	}
+
+	query := fmt.Sprintf("UPDATE agentpg_messages SET %s WHERE id = $1", joinStrings(sets, ", ")) //nolint:gosec // SQL injection not possible - column names from map keys
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
+}
+
+func (s *Store) DeleteMessage(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM agentpg_messages WHERE id = $1", id)
+	return err
+}
+
+// Content block operations
+
+func (s *Store) CreateContentBlocks(ctx context.Context, messageID uuid.UUID, blocks []driver.ContentBlock) error {
+	for i, block := range blocks {
+		metadata, _ := json.Marshal(block.Metadata)
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO agentpg_content_blocks (message_id, block_index, type, text, tool_use_id, tool_name, tool_input,
+				tool_result_for_use_id, tool_content, is_error, source, search_results, metadata)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		`, messageID, i, block.Type, nullIfEmpty(block.Text), nullIfEmpty(block.ToolUseID), nullIfEmpty(block.ToolName),
+			nullIfEmptyBytes(block.ToolInput), nullIfEmpty(block.ToolResultForUseID), nullIfEmpty(block.ToolContent),
+			block.IsError, nullIfEmptyBytes(block.Source), nullIfEmptyBytes(block.SearchResults), metadata)
+		if err != nil {
+			return fmt.Errorf("failed to create content block: %w", err)
+		}
+	}
 	return nil
 }
 
-// GetCompactionHistory retrieves compaction history for a session.
-func (s *Store) GetCompactionHistory(ctx context.Context, sessionID string) ([]*storage.CompactionEvent, error) {
-	query := `
-		SELECT id, session_id, strategy, original_tokens, compacted_tokens,
-		       messages_removed, summary_content, preserved_message_ids,
-		       model_used, duration_ms, created_at
-		FROM agentpg_compaction_events
-		WHERE session_id = $1
-		ORDER BY created_at DESC
-	`
-
-	rows, err := s.getExecutor(ctx).Query(ctx, query, sessionID)
+func (s *Store) GetContentBlocks(ctx context.Context, messageID uuid.UUID) ([]driver.ContentBlock, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT type, text, tool_use_id, tool_name, tool_input, tool_result_for_use_id, tool_content, is_error, source, search_results, metadata
+		FROM agentpg_content_blocks WHERE message_id = $1 ORDER BY block_index
+	`, messageID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query compaction history: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
-	var events []*storage.CompactionEvent
+	var blocks []driver.ContentBlock
+	for rows.Next() {
+		var block driver.ContentBlock
+		var text, toolUseID, toolName, toolResultForUseID, toolContent *string
+		var toolInput, source, searchResults, metadata []byte
+		if err := rows.Scan(
+			&block.Type, &text, &toolUseID, &toolName, &toolInput,
+			&toolResultForUseID, &toolContent, &block.IsError, &source, &searchResults, &metadata,
+		); err != nil {
+			return nil, err
+		}
+		if text != nil {
+			block.Text = *text
+		}
+		if toolUseID != nil {
+			block.ToolUseID = *toolUseID
+		}
+		if toolName != nil {
+			block.ToolName = *toolName
+		}
+		block.ToolInput = toolInput
+		if toolResultForUseID != nil {
+			block.ToolResultForUseID = *toolResultForUseID
+		}
+		if toolContent != nil {
+			block.ToolContent = *toolContent
+		}
+		block.Source = source
+		block.SearchResults = searchResults
+		_ = json.Unmarshal(metadata, &block.Metadata)
+		blocks = append(blocks, block)
+	}
+	return blocks, rows.Err()
+}
+
+// Instance operations (simplified - follows same pattern)
+
+func (s *Store) RegisterInstance(ctx context.Context, params driver.RegisterInstanceParams) error {
+	metadata, _ := json.Marshal(params.Metadata)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO agentpg_instances (id, name, hostname, pid, version, max_concurrent_runs, max_concurrent_tools, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (id) DO UPDATE SET
+			name = EXCLUDED.name,
+			hostname = EXCLUDED.hostname,
+			pid = EXCLUDED.pid,
+			version = EXCLUDED.version,
+			max_concurrent_runs = EXCLUDED.max_concurrent_runs,
+			max_concurrent_tools = EXCLUDED.max_concurrent_tools,
+			metadata = EXCLUDED.metadata,
+			last_heartbeat_at = NOW()
+	`, params.ID, params.Name, params.Hostname, params.PID, params.Version,
+		params.MaxConcurrentRuns, params.MaxConcurrentTools, metadata)
+	return err
+}
+
+func (s *Store) UnregisterInstance(ctx context.Context, instanceID string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM agentpg_instances WHERE id = $1", instanceID)
+	return err
+}
+
+func (s *Store) UpdateHeartbeat(ctx context.Context, instanceID string) error {
+	result, err := s.db.ExecContext(ctx, "UPDATE agentpg_instances SET last_heartbeat_at = NOW() WHERE id = $1", instanceID)
+	if err != nil {
+		return err
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("instance not found: %s", instanceID)
+	}
+	return nil
+}
+
+func (s *Store) GetInstance(ctx context.Context, instanceID string) (*driver.Instance, error) {
+	var inst driver.Instance
+	var metadata []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, name, hostname, pid, version, max_concurrent_runs, max_concurrent_tools,
+			metadata, created_at, last_heartbeat_at
+		FROM agentpg_instances WHERE id = $1
+	`, instanceID).Scan(
+		&inst.ID, &inst.Name, &inst.Hostname, &inst.PID, &inst.Version,
+		&inst.MaxConcurrentRuns, &inst.MaxConcurrentTools,
+		&metadata, &inst.CreatedAt, &inst.LastHeartbeatAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(metadata, &inst.Metadata)
+	// ActiveRunCount and ActiveToolCount are calculated on-the-fly via GetInstanceActiveCounts
+	return &inst, nil
+}
+
+func (s *Store) ListInstances(ctx context.Context) ([]*driver.Instance, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, hostname, pid, version, max_concurrent_runs, max_concurrent_tools,
+			metadata, created_at, last_heartbeat_at
+		FROM agentpg_instances ORDER BY created_at
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var instances []*driver.Instance
+	for rows.Next() {
+		var inst driver.Instance
+		var metadata []byte
+		if err := rows.Scan(
+			&inst.ID, &inst.Name, &inst.Hostname, &inst.PID, &inst.Version,
+			&inst.MaxConcurrentRuns, &inst.MaxConcurrentTools,
+			&metadata, &inst.CreatedAt, &inst.LastHeartbeatAt,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(metadata, &inst.Metadata)
+		// ActiveRunCount and ActiveToolCount are calculated on-the-fly via GetAllInstanceActiveCounts
+		instances = append(instances, &inst)
+	}
+	return instances, rows.Err()
+}
+
+func (s *Store) GetStaleInstances(ctx context.Context, ttl time.Duration) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id FROM agentpg_instances WHERE last_heartbeat_at < NOW() - $1::interval
+	`, ttl.String())
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *Store) DeleteStaleInstances(ctx context.Context, ttl time.Duration) (int, error) {
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM agentpg_instances WHERE last_heartbeat_at < NOW() - $1::interval
+	`, ttl.String())
+	if err != nil {
+		return 0, err
+	}
+	affected, _ := result.RowsAffected()
+	return int(affected), nil
+}
+
+// GetInstanceActiveCounts returns the active run and tool counts for an instance.
+// Counts are calculated on-the-fly by querying runs and tool_executions tables.
+func (s *Store) GetInstanceActiveCounts(ctx context.Context, instanceID string) (activeRuns, activeTools int, err error) {
+	// Count active runs claimed by this instance
+	err = s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM agentpg_runs
+		WHERE claimed_by_instance_id = $1
+		  AND state NOT IN ('completed', 'cancelled', 'failed')
+	`, instanceID).Scan(&activeRuns)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	// Count active tool executions claimed by this instance
+	err = s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM agentpg_tool_executions
+		WHERE claimed_by_instance_id = $1
+		  AND state = 'running'
+	`, instanceID).Scan(&activeTools)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return activeRuns, activeTools, nil
+}
+
+// GetAllInstanceActiveCounts returns the active run and tool counts for all instances.
+// Returns a map of instance ID to [activeRuns, activeTools].
+func (s *Store) GetAllInstanceActiveCounts(ctx context.Context) (map[string][2]int, error) {
+	result := make(map[string][2]int)
+
+	// Get active run counts by instance
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT claimed_by_instance_id, COUNT(*)
+		FROM agentpg_runs
+		WHERE claimed_by_instance_id IS NOT NULL
+		  AND state NOT IN ('completed', 'cancelled', 'failed')
+		GROUP BY claimed_by_instance_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
-		var event storage.CompactionEvent
-		var preservedIDsJSON []byte
-		var summaryContent *string
-		var modelUsed *string
-
-		err := rows.Scan(
-			&event.ID,
-			&event.SessionID,
-			&event.Strategy,
-			&event.OriginalTokens,
-			&event.CompactedTokens,
-			&event.MessagesRemoved,
-			&summaryContent,
-			&preservedIDsJSON,
-			&modelUsed,
-			&event.DurationMs,
-			&event.CreatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan compaction event: %w", err)
+		var instanceID string
+		var count int
+		if scanErr := rows.Scan(&instanceID, &count); scanErr != nil {
+			return nil, scanErr
 		}
-
-		if summaryContent != nil {
-			event.SummaryContent = *summaryContent
-		}
-
-		if modelUsed != nil {
-			event.ModelUsed = *modelUsed
-		}
-
-		if err := json.Unmarshal(preservedIDsJSON, &event.PreservedMessageIDs); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal preserved IDs: %w", err)
-		}
-
-		events = append(events, &event)
+		counts := result[instanceID]
+		counts[0] = count
+		result[instanceID] = counts
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
 	}
 
+	// Get active tool counts by instance
+	rows, err = s.db.QueryContext(ctx, `
+		SELECT claimed_by_instance_id, COUNT(*)
+		FROM agentpg_tool_executions
+		WHERE claimed_by_instance_id IS NOT NULL
+		  AND state = 'running'
+		GROUP BY claimed_by_instance_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var instanceID string
+		var count int
+		if err := rows.Scan(&instanceID, &count); err != nil {
+			return nil, err
+		}
+		counts := result[instanceID]
+		counts[1] = count
+		result[instanceID] = counts
+	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating compaction events: %w", err)
+		return nil, err
 	}
 
-	return events, nil
+	return result, nil
 }
 
-// ArchiveMessages archives messages that were removed during compaction.
-func (s *Store) ArchiveMessages(ctx context.Context, compactionEventID string, messages []*storage.Message) error {
-	if len(messages) == 0 {
-		return nil
+func (s *Store) RegisterInstanceAgent(ctx context.Context, instanceID, agentName string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO agentpg_instance_agents (instance_id, agent_name)
+		VALUES ($1, $2)
+		ON CONFLICT (instance_id, agent_name) DO NOTHING
+	`, instanceID, agentName)
+	return err
+}
+
+func (s *Store) RegisterInstanceTool(ctx context.Context, instanceID, toolName string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO agentpg_instance_tools (instance_id, tool_name)
+		VALUES ($1, $2)
+		ON CONFLICT (instance_id, tool_name) DO NOTHING
+	`, instanceID, toolName)
+	return err
+}
+
+func (s *Store) UnregisterInstanceAgent(ctx context.Context, instanceID, agentName string) error {
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM agentpg_instance_agents WHERE instance_id = $1 AND agent_name = $2
+	`, instanceID, agentName)
+	return err
+}
+
+func (s *Store) UnregisterInstanceTool(ctx context.Context, instanceID, toolName string) error {
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM agentpg_instance_tools WHERE instance_id = $1 AND tool_name = $2
+	`, instanceID, toolName)
+	return err
+}
+
+func (s *Store) GetInstanceAgents(ctx context.Context, instanceID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT agent_name FROM agentpg_instance_agents WHERE instance_id = $1
+	`, instanceID)
+	if err != nil {
+		return nil, err
 	}
+	defer func() { _ = rows.Close() }()
 
-	query := `
-		INSERT INTO agentpg_message_archive (id, compaction_event_id, session_id, original_message, archived_at)
-		VALUES ($1, $2, $3, $4, NOW())
-	`
-
-	exec := s.getExecutor(ctx)
-
-	// Execute sequentially (database/sql doesn't have native batching)
-	for _, msg := range messages {
-		msgJSON, err := json.Marshal(msg)
-		if err != nil {
-			return fmt.Errorf("failed to marshal message: %w", err)
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
 		}
-
-		_, err = exec.Exec(ctx, query, msg.ID, compactionEventID, msg.SessionID, msgJSON)
-		if err != nil {
-			return fmt.Errorf("failed to archive message: %w", err)
-		}
+		names = append(names, name)
 	}
+	return names, rows.Err()
+}
 
+func (s *Store) GetInstanceTools(ctx context.Context, instanceID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT tool_name FROM agentpg_instance_tools WHERE instance_id = $1
+	`, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
+// Leader election
+
+func (s *Store) TryAcquireLeader(ctx context.Context, instanceID string, ttl time.Duration) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO agentpg_leader (leader_id, elected_at, expires_at)
+		VALUES ($1, NOW(), NOW() + $2::interval)
+		ON CONFLICT (name) DO UPDATE SET
+			leader_id = $1,
+			elected_at = NOW(),
+			expires_at = NOW() + $2::interval
+		WHERE agentpg_leader.expires_at < NOW()
+	`, instanceID, ttl.String())
+	if err != nil {
+		return false, err
+	}
+	affected, _ := result.RowsAffected()
+	return affected > 0, nil
+}
+
+func (s *Store) RefreshLeader(ctx context.Context, instanceID string, ttl time.Duration) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE agentpg_leader SET expires_at = NOW() + $2::interval WHERE leader_id = $1
+	`, instanceID, ttl.String())
+	if err != nil {
+		return err
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("not the leader")
+	}
 	return nil
 }
+
+func (s *Store) GetLeader(ctx context.Context) (string, error) {
+	var leaderID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT leader_id FROM agentpg_leader WHERE expires_at > NOW()
+	`).Scan(&leaderID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return leaderID, err
+}
+
+func (s *Store) IsLeader(ctx context.Context, instanceID string) (bool, error) {
+	leader, err := s.GetLeader(ctx)
+	if err != nil {
+		return false, err
+	}
+	return leader == instanceID, nil
+}
+
+func (s *Store) ReleaseLeader(ctx context.Context, instanceID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM agentpg_leader WHERE leader_id = $1`, instanceID)
+	return err
+}
+
+// Compaction operations
+
+func (s *Store) CreateCompactionEvent(ctx context.Context, params driver.CreateCompactionEventParams) (*driver.CompactionEvent, error) {
+	var event driver.CompactionEvent
+	preservedIDs, _ := json.Marshal(params.PreservedMessageIDs)
+
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO agentpg_compaction_events (session_id, strategy, original_tokens, compacted_tokens, messages_removed, summary_content, preserved_message_ids, model_used, duration_ms)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id, session_id, strategy, original_tokens, compacted_tokens, messages_removed, summary_content, preserved_message_ids, model_used, duration_ms, created_at
+	`, params.SessionID, params.Strategy, params.OriginalTokens, params.CompactedTokens,
+		params.MessagesRemoved, params.SummaryContent, preservedIDs, params.ModelUsed, params.DurationMS).Scan(
+		&event.ID, &event.SessionID, &event.Strategy, &event.OriginalTokens, &event.CompactedTokens,
+		&event.MessagesRemoved, &event.SummaryContent, &preservedIDs, &event.ModelUsed, &event.DurationMS, &event.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create compaction event: %w", err)
+	}
+	_ = json.Unmarshal(preservedIDs, &event.PreservedMessageIDs)
+	return &event, nil
+}
+
+func (s *Store) ArchiveMessage(ctx context.Context, compactionEventID, messageID, sessionID uuid.UUID, originalMessage map[string]any) error {
+	data, _ := json.Marshal(originalMessage)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO agentpg_message_archive (id, compaction_event_id, session_id, original_message)
+		VALUES ($1, $2, $3, $4)
+	`, messageID, compactionEventID, sessionID, data)
+	return err
+}
+
+func (s *Store) GetCompactionEvents(ctx context.Context, sessionID uuid.UUID, limit int) ([]*driver.CompactionEvent, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, strategy, original_tokens, compacted_tokens, messages_removed, summary_content, preserved_message_ids, model_used, duration_ms, created_at
+		FROM agentpg_compaction_events WHERE session_id = $1 ORDER BY created_at DESC LIMIT $2
+	`, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var events []*driver.CompactionEvent
+	for rows.Next() {
+		var event driver.CompactionEvent
+		var preservedIDs []byte
+		if err := rows.Scan(
+			&event.ID, &event.SessionID, &event.Strategy, &event.OriginalTokens, &event.CompactedTokens,
+			&event.MessagesRemoved, &event.SummaryContent, &preservedIDs, &event.ModelUsed, &event.DurationMS, &event.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(preservedIDs, &event.PreservedMessageIDs)
+		events = append(events, &event)
+	}
+	return events, rows.Err()
+}
+
+func (s *Store) GetCompactionStats(ctx context.Context) (*driver.CompactionStats, error) {
+	var stats driver.CompactionStats
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(original_tokens - compacted_tokens), 0),
+			COALESCE(SUM(messages_removed), 0),
+			COALESCE(AVG(1.0 - (compacted_tokens::float / NULLIF(original_tokens, 0))), 0)
+		FROM agentpg_compaction_events
+	`).Scan(&stats.TotalCompactions, &stats.TotalTokensSaved, &stats.TotalMessagesArchived, &stats.AvgReductionPercent)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get compaction stats: %w", err)
+	}
+
+	return &stats, nil
+}
+
+// Helper functions
+
+func joinStrings(strs []string, sep string) string {
+	if len(strs) == 0 {
+		return ""
+	}
+	result := strs[0]
+	for _, s := range strs[1:] {
+		result += sep + s
+	}
+	return result
+}
+
+func nullIfEmpty[T comparable](v T) any {
+	var zero T
+	if v == zero {
+		return nil
+	}
+	return v
+}
+
+func nullIfEmptyBytes(v []byte) any {
+	if len(v) == 0 {
+		return nil
+	}
+	return v
+}
+
+func collectRuns(rows *sql.Rows) ([]*driver.Run, error) {
+	var runs []*driver.Run
+	for rows.Next() {
+		var run driver.Run
+		var metadata []byte
+		if err := rows.Scan(
+			&run.ID, &run.SessionID, &run.AgentName, &run.RunMode, &run.ParentRunID, &run.ParentToolExecutionID, &run.Depth,
+			&run.State, &run.PreviousState, &run.Prompt, &run.CurrentIteration, &run.CurrentIterationID,
+			&run.ResponseText, &run.StopReason, &run.InputTokens, &run.OutputTokens,
+			&run.CacheCreationInputTokens, &run.CacheReadInputTokens, &run.IterationCount, &run.ToolIterations,
+			&run.ErrorMessage, &run.ErrorType, &run.CreatedByInstanceID, &run.ClaimedByInstanceID, &run.ClaimedAt,
+			&metadata, &run.CreatedAt, &run.StartedAt, &run.FinalizedAt,
+			&run.RescueAttempts, &run.LastRescueAt,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(metadata, &run.Metadata)
+		runs = append(runs, &run)
+	}
+	return runs, rows.Err()
+}
+
+func collectIterations(rows *sql.Rows) ([]*driver.Iteration, error) {
+	var iterations []*driver.Iteration
+	for rows.Next() {
+		var iter driver.Iteration
+		if err := rows.Scan(
+			&iter.ID, &iter.RunID, &iter.IterationNumber, &iter.IsStreaming, &iter.BatchID, &iter.BatchRequestID, &iter.BatchStatus,
+			&iter.BatchSubmittedAt, &iter.BatchCompletedAt, &iter.BatchExpiresAt, &iter.BatchPollCount, &iter.BatchLastPollAt,
+			&iter.StreamingStartedAt, &iter.StreamingCompletedAt,
+			&iter.TriggerType, pq.Array(&iter.RequestMessageIDs), &iter.StopReason, &iter.ResponseMessageID, &iter.HasToolUse, &iter.ToolExecutionCount,
+			&iter.InputTokens, &iter.OutputTokens, &iter.CacheCreationInputTokens, &iter.CacheReadInputTokens,
+			&iter.ErrorMessage, &iter.ErrorType, &iter.CreatedAt, &iter.StartedAt, &iter.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		iterations = append(iterations, &iter)
+	}
+	return iterations, rows.Err()
+}
+
+func collectToolExecutions(rows *sql.Rows) ([]*driver.ToolExecution, error) {
+	var executions []*driver.ToolExecution
+	for rows.Next() {
+		var exec driver.ToolExecution
+		if err := rows.Scan(
+			&exec.ID, &exec.RunID, &exec.IterationID, &exec.State, &exec.ToolUseID, &exec.ToolName, &exec.ToolInput,
+			&exec.IsAgentTool, &exec.AgentName, &exec.ChildRunID, &exec.ToolOutput, &exec.IsError, &exec.ErrorMessage,
+			&exec.ClaimedByInstanceID, &exec.ClaimedAt, &exec.AttemptCount, &exec.MaxAttempts,
+			&exec.ScheduledAt, &exec.SnoozeCount, &exec.LastError, &exec.CreatedAt, &exec.StartedAt, &exec.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		executions = append(executions, &exec)
+	}
+	return executions, rows.Err()
+}
+
+// Tool execution retry operations
+
+func (s *Store) RetryToolExecution(ctx context.Context, id uuid.UUID, scheduledAt time.Time, lastError string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agentpg_tool_executions
+		SET state = 'pending'::agentpg_tool_execution_state,
+			claimed_by_instance_id = NULL,
+			claimed_at = NULL,
+			started_at = NULL,
+			scheduled_at = $2,
+			last_error = $3
+		WHERE id = $1
+	`, id, scheduledAt, lastError)
+	return err
+}
+
+func (s *Store) SnoozeToolExecution(ctx context.Context, id uuid.UUID, scheduledAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agentpg_tool_executions
+		SET state = 'pending'::agentpg_tool_execution_state,
+			claimed_by_instance_id = NULL,
+			claimed_at = NULL,
+			started_at = NULL,
+			scheduled_at = $2,
+			attempt_count = GREATEST(0, attempt_count - 1),
+			snooze_count = snooze_count + 1
+		WHERE id = $1
+	`, id, scheduledAt)
+	return err
+}
+
+func (s *Store) DiscardToolExecution(ctx context.Context, id uuid.UUID, errorMsg string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agentpg_tool_executions
+		SET state = 'failed'::agentpg_tool_execution_state,
+			is_error = TRUE,
+			error_message = $2,
+			completed_at = NOW()
+		WHERE id = $1
+	`, id, errorMsg)
+	return err
+}
+
+func (s *Store) CompleteToolsAndContinueRun(ctx context.Context, sessionID, runID uuid.UUID, contentBlocks []driver.ContentBlock) (*driver.Message, error) {
+	// Convert content blocks to JSONB format expected by stored procedure
+	type contentBlock struct {
+		Type               string `json:"type"`
+		ToolResultForUseID string `json:"tool_result_for_use_id"`
+		ToolContent        string `json:"tool_content"`
+		IsError            bool   `json:"is_error"`
+	}
+
+	blocks := make([]contentBlock, len(contentBlocks))
+	for i, b := range contentBlocks {
+		blocks[i] = contentBlock{
+			Type:               b.Type,
+			ToolResultForUseID: b.ToolResultForUseID,
+			ToolContent:        b.ToolContent,
+			IsError:            b.IsError,
+		}
+	}
+
+	blocksJSON, err := json.Marshal(blocks)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal content blocks: %w", err)
+	}
+
+	var msg driver.Message
+	var usage, metadata []byte
+
+	// The stored procedure returns NULL if the run is not in pending_tools state
+	// (e.g., already processed by another instance in a distributed setup)
+	var msgID *uuid.UUID
+	var msgSessionID *uuid.UUID
+	var msgRunID *uuid.UUID
+	var msgRole *string
+	var isPreserved, isSummary *bool
+	var createdAt, updatedAt *time.Time
+
+	err = s.db.QueryRowContext(ctx,
+		"SELECT * FROM agentpg_complete_tools_and_continue_run($1, $2, $3)",
+		sessionID, runID, blocksJSON,
+	).Scan(
+		&msgID, &msgSessionID, &msgRunID, &msgRole,
+		&usage, &isPreserved, &isSummary, &metadata,
+		&createdAt, &updatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to complete tools and continue run: %w", err)
+	}
+
+	// If msgID is nil, the function returned NULL because the run was not in pending_tools state
+	if msgID == nil {
+		return nil, nil
+	}
+
+	msg.ID = *msgID
+	msg.SessionID = *msgSessionID
+	msg.RunID = msgRunID
+	msg.Role = *msgRole
+	msg.IsPreserved = *isPreserved
+	msg.IsSummary = *isSummary
+	msg.CreatedAt = *createdAt
+	msg.UpdatedAt = *updatedAt
+	_ = json.Unmarshal(usage, &msg.Usage)
+	_ = json.Unmarshal(metadata, &msg.Metadata)
+	msg.Content = contentBlocks
+
+	return &msg, nil
+}
+
+// Run rescue operations
+
+func (s *Store) GetStuckRuns(ctx context.Context, timeout time.Duration, maxRescueAttempts, limit int) ([]*driver.Run, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT * FROM agentpg_get_stuck_runs($1, $2, $3)", timeout, maxRescueAttempts, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stuck runs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return collectRuns(rows)
+}
+
+func (s *Store) RescueRun(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agentpg_runs
+		SET state = 'pending'::agentpg_run_state,
+			claimed_by_instance_id = NULL,
+			claimed_at = NULL,
+			started_at = NULL,
+			rescue_attempts = rescue_attempts + 1,
+			last_rescue_at = NOW()
+		WHERE id = $1
+	`, id)
+	return err
+}
+
+// Compile-time check
+var _ driver.Store[*sql.Tx] = (*Store)(nil)

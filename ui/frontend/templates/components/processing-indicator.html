@@ -1,0 +1,17 @@
+{{define "processing-indicator"}}
+{{/*
+  Processing indicator with spinner and status text.
+
+  Parameters (via dict):
+    Text      - string: Status text (default: "Processing...")
+    State     - string: Optional state badge text (uses stateBgColor)
+    SpinnerColor - string: Spinner color (default: "text-cyan-400")
+*/}}
+<div class="flex items-center space-x-2">
+    {{template "spinner" (dict "Color" (default .SpinnerColor "text-cyan-400"))}}
+    <span class="text-sm text-gray-400">{{default .Text "Processing..."}}</span>
+    {{if .State}}
+    <span class="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium {{stateBgColor .State}}">{{.State}}</span>
+    {{end}}
+</div>
+{{end}}
