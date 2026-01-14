@@ -149,12 +149,12 @@ func (p *batchPoller[TTx]) handleBatchComplete(ctx context.Context, iter *driver
 	result, err := p.fetchBatchResult(ctx, batch.ID, iter.ID.String())
 	if err != nil {
 		// Mark run as failed
-		if err := store.UpdateRunState(ctx, iter.RunID, driver.RunState(RunStateFailed), map[string]any{
+		if updateErr := store.UpdateRunState(ctx, iter.RunID, driver.RunState(RunStateFailed), map[string]any{
 			"error_type":    "batch_error",
 			"error_message": err.Error(),
 			"finalized_at":  now,
-		}); err != nil {
-			log.Error("failed to mark run as failed", "error", err)
+		}); updateErr != nil {
+			log.Error("failed to mark run as failed", "error", updateErr)
 		}
 		return fmt.Errorf("failed to fetch batch result: %w", err)
 	}
@@ -220,7 +220,7 @@ func (p *batchPoller[TTx]) fetchBatchResult(ctx context.Context, batchID, reques
 	// Use the streaming results endpoint
 	url := fmt.Sprintf("https://api.anthropic.com/v1/messages/batches/%s/results", batchID)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +233,7 @@ func (p *batchPoller[TTx]) fetchBatchResult(ctx context.Context, batchID, reques
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

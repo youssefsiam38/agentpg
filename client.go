@@ -313,7 +313,7 @@ func (c *Client[TTx]) Stop(ctx context.Context) error {
 
 	// Close driver listener
 	if listener := c.driver.Listener(); listener != nil {
-		listener.Close()
+		_ = listener.Close()
 	}
 
 	c.log().Info("client stopped", "instance_id", c.instanceID)

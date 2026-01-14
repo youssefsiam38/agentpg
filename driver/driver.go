@@ -545,9 +545,9 @@ type (
 		CreatedAt   time.Time
 		UpdatedAt   time.Time
 		// Run information (from LEFT JOIN with runs table)
-		RunAgentName  *string    // Agent name from the run
-		RunDepth      *int       // Depth level of the run (0=root, 1+=child)
-		ParentRunID   *uuid.UUID // Parent run ID for child runs
-		RunState      *string    // Current state of the run
+		RunAgentName *string    // Agent name from the run
+		RunDepth     *int       // Depth level of the run (0=root, 1+=child)
+		ParentRunID  *uuid.UUID // Parent run ID for child runs
+		RunState     *string    // Current state of the run
 	}
 )

@@ -247,7 +247,7 @@ func (w *runWorker[TTx]) buildMessages(ctx context.Context, run *driver.Run) ([]
 			case ContentTypeToolUse:
 				var input any
 				if len(block.ToolInput) > 0 {
-					json.Unmarshal(block.ToolInput, &input)
+					_ = json.Unmarshal(block.ToolInput, &input)
 				}
 				content = append(content, anthropic.NewToolUseBlock(block.ToolUseID, input, block.ToolName))
 			case ContentTypeToolResult:

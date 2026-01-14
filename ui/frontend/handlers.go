@@ -599,8 +599,8 @@ func (rt *router[TTx]) handleChatSend(w http.ResponseWriter, r *http.Request) {
 
 		// For existing sessions, get agent from the session's first run if not provided
 		if agentName == "" {
-			conversation, err := rt.svc.GetConversation(r.Context(), sessionID, 1)
-			if err != nil {
+			conversation, convErr := rt.svc.GetConversation(r.Context(), sessionID, 1)
+			if convErr != nil {
 				http.Error(w, "Failed to get session agent", http.StatusInternalServerError)
 				return
 			}
@@ -697,18 +697,16 @@ func (rt *router[TTx]) handleChatPoll(w http.ResponseWriter, r *http.Request) {
 				data["TotalTokens"] = hierarchicalConv.TotalTokens
 				data["IncludeMessagesOOB"] = true
 			}
-		} else {
+		} else if run.State == "pending_tools" {
 			// For top-level view, also include messages OOB when state is pending_tools
 			// so tool results appear in real-time as tools complete
-			if run.State == "pending_tools" {
-				conv, convErr := rt.svc.GetConversation(r.Context(), run.SessionID, 100)
-				if convErr == nil {
-					data["Messages"] = conv.Messages
-					data["ToolResults"] = conv.ToolResults
-					data["MessageCount"] = conv.MessageCount
-					data["TotalTokens"] = conv.TotalTokens
-					data["IncludeMessagesOOB"] = true
-				}
+			conv, convErr := rt.svc.GetConversation(r.Context(), run.SessionID, 100)
+			if convErr == nil {
+				data["Messages"] = conv.Messages
+				data["ToolResults"] = conv.ToolResults
+				data["MessageCount"] = conv.MessageCount
+				data["TotalTokens"] = conv.TotalTokens
+				data["IncludeMessagesOOB"] = true
 			}
 		}
 	}

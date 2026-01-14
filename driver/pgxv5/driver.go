@@ -57,7 +57,9 @@ func (d *Driver) RollbackTx(ctx context.Context, tx pgx.Tx) error {
 // Close closes the driver and releases resources.
 func (d *Driver) Close() error {
 	if d.listener != nil {
-		d.listener.Close()
+		if err := d.listener.Close(); err != nil {
+			return err
+		}
 	}
 	// Note: We don't close the pool as it was provided externally
 	return nil

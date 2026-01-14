@@ -368,11 +368,11 @@ type ConversationView struct {
 // Used for hierarchical conversation views where nested agent messages
 // are displayed in a tree structure. Supports any depth of nesting.
 type RunMessageGroup struct {
-	Run            *RunSummary              `json:"run"`
-	Messages       []*MessageWithBlocks     `json:"messages"`
-	ChildGroups    []*RunMessageGroup       `json:"child_groups,omitempty"`
-	Depth          int                      `json:"depth"`
-	ToolExecutions []*ToolExecutionSummary  `json:"tool_executions,omitempty"`
+	Run            *RunSummary             `json:"run"`
+	Messages       []*MessageWithBlocks    `json:"messages"`
+	ChildGroups    []*RunMessageGroup      `json:"child_groups,omitempty"`
+	Depth          int                     `json:"depth"`
+	ToolExecutions []*ToolExecutionSummary `json:"tool_executions,omitempty"`
 }
 
 // HierarchicalConversationView contains a conversation grouped by run hierarchy.
