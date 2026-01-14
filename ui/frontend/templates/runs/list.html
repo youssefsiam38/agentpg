@@ -1,0 +1,127 @@
+{{define "content"}}
+<div class="space-y-6">
+    <div class="sm:flex sm:items-center sm:justify-between">
+        <h1 class="text-2xl font-semibold text-gray-100">Runs</h1>
+        <div class="mt-4 sm:mt-0">
+            <span class="text-sm text-gray-400">{{.Data.TotalCount}} total runs</span>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="bg-gray-800 shadow-lg shadow-gray-900/50 border border-gray-700 rounded-lg p-4">
+        <form method="get" class="flex flex-wrap gap-4 items-end">
+            <div class="flex-1 min-w-[150px]">
+                <label for="agent_name" class="block text-sm font-medium text-gray-300">Agent</label>
+                <select id="agent_name" name="agent_name" class="mt-1 block w-full rounded-md border border-gray-600 bg-gray-900 text-gray-100 py-2 px-3 shadow-sm focus:border-cyan-500 focus:ring-cyan-500 sm:text-sm">
+                    <option value="">All Agents</option>
+                    {{range .Data.Agents}}
+                    <option value="{{.Agent.Name}}" {{if eq .Agent.Name $.Data.CurrentAgent}}selected{{end}}>{{.Agent.Name}}</option>
+                    {{end}}
+                </select>
+            </div>
+            <div class="flex-1 min-w-[150px]">
+                <label for="state" class="block text-sm font-medium text-gray-300">State</label>
+                <select id="state" name="state" class="mt-1 block w-full rounded-md border border-gray-600 bg-gray-900 text-gray-100 py-2 px-3 shadow-sm focus:border-cyan-500 focus:ring-cyan-500 sm:text-sm">
+                    <option value="">All States</option>
+                    {{range .Data.States}}
+                    <option value="{{.}}" {{if eq . $.Data.CurrentState}}selected{{end}}>{{.}}</option>
+                    {{end}}
+                </select>
+            </div>
+            <div class="flex-1 min-w-[150px]">
+                <label for="run_mode" class="block text-sm font-medium text-gray-300">Mode</label>
+                <select id="run_mode" name="run_mode" class="mt-1 block w-full rounded-md border border-gray-600 bg-gray-900 text-gray-100 py-2 px-3 shadow-sm focus:border-cyan-500 focus:ring-cyan-500 sm:text-sm">
+                    <option value="">All Modes</option>
+                    <option value="batch" {{if eq "batch" $.Data.CurrentMode}}selected{{end}}>Batch</option>
+                    <option value="streaming" {{if eq "streaming" $.Data.CurrentMode}}selected{{end}}>Streaming</option>
+                </select>
+            </div>
+            <div>
+                <button type="submit" class="inline-flex items-center rounded-md bg-cyan-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-cyan-500">
+                    Filter
+                </button>
+                <a href="{{$.BasePath}}/runs" class="ml-2 inline-flex items-center rounded-md bg-gray-700 px-3 py-2 text-sm font-semibold text-gray-200 shadow-sm ring-1 ring-inset ring-gray-600 hover:bg-gray-600">
+                    Clear
+                </a>
+            </div>
+        </form>
+    </div>
+
+    <!-- Runs Table -->
+    <div class="bg-gray-800 shadow-lg shadow-gray-900/50 border border-gray-700 rounded-lg overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-700">
+            <thead class="bg-gray-800/50">
+                <tr>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Run</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Agent</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">State</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Mode</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Iterations</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Tokens</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Duration</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Created</th>
+                    <th scope="col" class="relative px-6 py-3"><span class="sr-only">View</span></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-700">
+                {{range .Data.Runs}}
+                <tr class="hover:bg-gray-700/50">
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="flex items-center">
+                            {{if .HasParent}}
+                            <span class="text-gray-500 mr-2">{{range seq 1 .Depth}}└{{end}}</span>
+                            {{end}}
+                            <a href="{{$.BasePath}}/runs/{{.ID}}" class="text-cyan-400 hover:text-cyan-300 font-mono text-sm">{{.ID}}</a>
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-200">{{.AgentName}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium {{stateBgColor .State}}">
+                            {{.State}}
+                        </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">
+                        {{if eq .RunMode "streaming"}}
+                        <span class="inline-flex items-center text-blue-400">
+                            <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                            </svg>
+                            streaming
+                        </span>
+                        {{else}}
+                        <span class="text-gray-500">batch</span>
+                        {{end}}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">
+                        {{.IterationCount}}
+                        {{if gt .ToolIterations 0}}
+                        <span class="text-purple-400">({{.ToolIterations}} tools)</span>
+                        {{end}}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">{{formatTokens .TotalTokens}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">{{formatDuration .Duration}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">{{formatTimeAgo .CreatedAt}}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <a href="{{$.BasePath}}/runs/{{.ID}}" class="text-cyan-400 hover:text-cyan-300">View</a>
+                    </td>
+                </tr>
+                {{else}}
+                {{template "empty-state" (dict "ColSpan" 9 "Title" "No runs found")}}
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    {{template "pagination" (dict
+        "Offset" .Data.Offset
+        "Limit" .Data.Limit
+        "TotalCount" .Data.TotalCount
+        "CurrentPage" .Data.CurrentPage
+        "TotalPages" .Data.TotalPages
+        "HasMore" .Data.HasMore
+        "ItemCount" (len .Data.Runs)
+        "QueryParams" (printf "agent_name=%s&state=%s&run_mode=%s" .Data.CurrentAgent .Data.CurrentState .Data.CurrentMode)
+    )}}
+</div>
+{{end}}

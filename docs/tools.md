@@ -1,75 +1,28 @@
 # Tools Guide
 
-This guide covers building, registering, and managing tools in AgentPG.
+Tools allow agents to perform actions, access external services, and interact with your application. This guide covers everything you need to build custom tools for AgentPG.
 
-## Overview
+## Table of Contents
 
-Tools extend your agent's capabilities by allowing it to:
-- Access external APIs and data sources
-- Perform calculations and data processing
-- Interact with databases and file systems
-- Execute code and run commands
-- Delegate to other agents
-
-## Quick Start
-
-### Creating a Simple Tool
-
-```go
-import (
-    "context"
-    "encoding/json"
-    "github.com/youssefsiam38/agentpg/tool"
-)
-
-// Create a tool that gets the current time
-timeTool := tool.NewFuncTool(
-    "get_current_time",
-    "Get the current date and time",
-    tool.ToolSchema{
-        Type: "object",
-        Properties: map[string]tool.PropertyDef{
-            "timezone": {
-                Type:        "string",
-                Description: "Timezone (e.g., 'America/New_York')",
-            },
-        },
-    },
-    func(ctx context.Context, input json.RawMessage) (string, error) {
-        var params struct {
-            Timezone string `json:"timezone"`
-        }
-        json.Unmarshal(input, &params)
-
-        loc := time.UTC
-        if params.Timezone != "" {
-            loc, _ = time.LoadLocation(params.Timezone)
-        }
-
-        return time.Now().In(loc).Format(time.RFC3339), nil
-    },
-)
-```
-
-### Registering Tools
-
-```go
-// At agent creation
-agent, _ := agentpg.New(cfg,
-    agentpg.WithTools(timeTool, searchTool, calculatorTool),
-)
-
-// Or at runtime
-agent.RegisterTool(newTool)
-```
+1. [Tool Interface](#tool-interface)
+2. [Quick Start with FuncTool](#quick-start-with-functool)
+3. [Struct-Based Tools](#struct-based-tools)
+4. [Schema Design](#schema-design)
+5. [Error Handling](#error-handling)
+6. [Retry Configuration](#retry-configuration)
+7. [Database-Aware Tools](#database-aware-tools)
+8. [Best Practices](#best-practices)
+9. [Examples](#examples)
 
 ---
 
 ## Tool Interface
 
-All tools implement the `Tool` interface:
+Every tool must implement the `Tool` interface from the `tool` package:
 
 ```go
+import "github.com/youssefsiam38/agentpg/tool"
+
 type Tool interface {
     Name() string
     Description() string
@@ -78,710 +31,465 @@ type Tool interface {
 }
 ```
 
-### Name
+| Method | Purpose |
+|--------|---------|
+| `Name()` | Unique identifier used by agents to call the tool |
+| `Description()` | Explains what the tool does (shown to Claude) |
+| `InputSchema()` | JSON Schema defining the parameters |
+| `Execute()` | Implementation that receives JSON input and returns a string result |
 
-Unique identifier for the tool. Must be:
-- Alphanumeric with underscores
-- Descriptive but concise
-- Unique within the agent
+---
+
+## Quick Start with FuncTool
+
+For simple, stateless tools, use `tool.NewFuncTool()` to avoid boilerplate:
 
 ```go
-func (t *MyTool) Name() string {
-    return "web_search"
+import "github.com/youssefsiam38/agentpg/tool"
+
+func createTimeTool() tool.Tool {
+    return tool.NewFuncTool(
+        "get_time",                                    // name
+        "Get the current time in a specified timezone", // description
+        tool.ToolSchema{                               // schema
+            Type: "object",
+            Properties: map[string]tool.PropertyDef{
+                "timezone": {
+                    Type:        "string",
+                    Description: "Timezone name (e.g., 'America/New_York', 'UTC')",
+                },
+            },
+            Required: []string{"timezone"},
+        },
+        func(ctx context.Context, input json.RawMessage) (string, error) {
+            var params struct {
+                Timezone string `json:"timezone"`
+            }
+            if err := json.Unmarshal(input, &params); err != nil {
+                return "", err
+            }
+
+            loc, err := time.LoadLocation(params.Timezone)
+            if err != nil {
+                return "", fmt.Errorf("invalid timezone: %w", err)
+            }
+
+            return time.Now().In(loc).Format(time.RFC3339), nil
+        },
+    )
 }
+
+// Register it
+client.RegisterTool(createTimeTool())
 ```
 
-### Description
+---
 
-Human-readable description that Claude uses to decide when to use the tool:
+## Struct-Based Tools
+
+For tools that need state, configuration, or shared resources, use a struct:
 
 ```go
-func (t *MyTool) Description() string {
-    return "Search the web for current information. Use this when you need up-to-date information that may not be in your training data."
+type WeatherTool struct {
+    apiKey      string
+    defaultUnit string
+    cache       map[string]weatherData
 }
-```
 
-**Tips for Good Descriptions:**
-- Explain what the tool does
-- Explain when to use it
-- Mention any limitations
+func NewWeatherTool(apiKey string) *WeatherTool {
+    return &WeatherTool{
+        apiKey:      apiKey,
+        defaultUnit: "celsius",
+        cache:       make(map[string]weatherData),
+    }
+}
 
-### InputSchema
+func (w *WeatherTool) Name() string {
+    return "get_weather"
+}
 
-JSON Schema defining the tool's parameters:
+func (w *WeatherTool) Description() string {
+    return "Get current weather conditions for a location"
+}
 
-```go
-func (t *MyTool) InputSchema() tool.ToolSchema {
+func (w *WeatherTool) InputSchema() tool.ToolSchema {
     return tool.ToolSchema{
         Type: "object",
         Properties: map[string]tool.PropertyDef{
-            "query": {
+            "location": {
                 Type:        "string",
-                Description: "The search query",
+                Description: "City name or coordinates",
             },
-            "max_results": {
-                Type:        "integer",
-                Description: "Maximum results (1-10)",
-                Minimum:     ptr(1.0),
-                Maximum:     ptr(10.0),
+            "unit": {
+                Type:        "string",
+                Description: "Temperature unit",
+                Enum:        []string{"celsius", "fahrenheit"},
             },
         },
-        Required: []string{"query"},
+        Required: []string{"location"},
     }
 }
-```
 
-### Execute
-
-The function that performs the tool's action:
-
-```go
-func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
-    // Parse input
+func (w *WeatherTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
     var params struct {
-        Query      string `json:"query"`
-        MaxResults int    `json:"max_results"`
+        Location string `json:"location"`
+        Unit     string `json:"unit"`
     }
     if err := json.Unmarshal(input, &params); err != nil {
         return "", fmt.Errorf("invalid input: %w", err)
     }
 
-    // Perform action
-    results, err := t.client.Search(ctx, params.Query, params.MaxResults)
+    if params.Unit == "" {
+        params.Unit = w.defaultUnit
+    }
+
+    // Check cache first
+    if cached, ok := w.cache[params.Location]; ok {
+        return formatWeather(cached, params.Unit), nil
+    }
+
+    // Fetch from API using w.apiKey
+    data, err := w.fetchWeather(ctx, params.Location)
     if err != nil {
         return "", err
     }
 
-    // Return string result
-    return formatResults(results), nil
+    w.cache[params.Location] = data
+    return formatWeather(data, params.Unit), nil
 }
+```
+
+Register the tool:
+
+```go
+client.RegisterTool(NewWeatherTool(os.Getenv("WEATHER_API_KEY")))
 ```
 
 ---
 
-## Schema Definition
+## Schema Design
 
-### Property Types
+The `ToolSchema` defines what parameters your tool accepts. Claude uses this to understand how to call your tool.
 
-| Type | Go Type | Description |
-|------|---------|-------------|
-| `string` | `string` | Text values |
-| `number` | `float64` | Floating point numbers |
-| `integer` | `int` | Whole numbers |
-| `boolean` | `bool` | True/false values |
-| `array` | `[]T` | Lists of items |
-| `object` | `struct` | Nested objects |
+### Basic Schema Structure
 
-### PropertyDef
+```go
+type ToolSchema struct {
+    Type        string                  // Must be "object"
+    Properties  map[string]PropertyDef  // Parameter definitions
+    Required    []string                // Required parameter names
+    Description string                  // Additional context
+}
+```
+
+### PropertyDef Options
 
 ```go
 type PropertyDef struct {
-    Type        string                 // Required: "string", "number", etc.
-    Description string                 // Strongly recommended
-    Enum        []string               // Allowed values (strings only)
-    Minimum     *float64               // Min value (numbers)
-    Maximum     *float64               // Max value (numbers)
-    MinLength   *int                   // Min length (strings)
-    MaxLength   *int                   // Max length (strings)
-    Items       *PropertyDef           // Item schema (arrays)
-    Properties  map[string]PropertyDef // Nested props (objects)
+    Type        string                  // "string", "number", "integer", "boolean", "array", "object"
+    Description string                  // Explain the property
+
+    // String constraints
+    Enum        []string                // Allowed values
+    MinLength   *int                    // Minimum length
+    MaxLength   *int                    // Maximum length
+    Pattern     string                  // Regex pattern
+
+    // Numeric constraints
+    Minimum     *float64                // Minimum value
+    Maximum     *float64                // Maximum value
+
+    // Array constraints
+    Items       *PropertyDef            // Item type for arrays
+    MinItems    *int
+    MaxItems    *int
+
+    // Nested object constraints
+    Properties  map[string]PropertyDef
+    Required    []string
+
+    // Default value
+    Default     any
 }
 ```
 
-### Examples
+### Complete Schema Example
 
-**String with Enum:**
 ```go
-"status": {
-    Type:        "string",
-    Description: "Order status",
-    Enum:        []string{"pending", "processing", "shipped", "delivered"},
+func (t *TaskTool) InputSchema() tool.ToolSchema {
+    minTitleLen := 3
+    maxTitleLen := 100
+    minScore := 0.0
+    maxScore := 100.0
+    maxTags := 5
+
+    return tool.ToolSchema{
+        Type: "object",
+        Properties: map[string]tool.PropertyDef{
+            // String with length constraints
+            "title": {
+                Type:        "string",
+                Description: "Task title",
+                MinLength:   &minTitleLen,
+                MaxLength:   &maxTitleLen,
+            },
+            // Enum constraint
+            "priority": {
+                Type:        "string",
+                Description: "Task priority level",
+                Enum:        []string{"low", "medium", "high", "critical"},
+            },
+            // Numeric range
+            "score": {
+                Type:        "number",
+                Description: "Confidence score (0-100)",
+                Minimum:     &minScore,
+                Maximum:     &maxScore,
+            },
+            // Array of strings
+            "tags": {
+                Type:        "array",
+                Description: "Labels for the task",
+                Items:       &tool.PropertyDef{Type: "string"},
+                MaxItems:    &maxTags,
+            },
+            // Nested object
+            "assignee": {
+                Type:        "object",
+                Description: "Person assigned to the task",
+                Properties: map[string]tool.PropertyDef{
+                    "name":  {Type: "string", Description: "Full name"},
+                    "email": {Type: "string", Description: "Email address"},
+                },
+                Required: []string{"name"},
+            },
+        },
+        Required: []string{"title", "priority"},
+    }
 }
 ```
 
-**Number with Range:**
+---
+
+## Error Handling
+
+Tools can return three special error types to control retry behavior:
+
+### ToolCancel - Unrecoverable Error
+
+Use when the error cannot be fixed by retrying (authentication failures, permission denied):
+
 ```go
-"temperature": {
-    Type:        "number",
-    Description: "Temperature in Celsius",
-    Minimum:     ptr(-40.0),
-    Maximum:     ptr(100.0),
+import "github.com/youssefsiam38/agentpg/tool"
+
+func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    if !isAuthenticated(ctx) {
+        return "", tool.ToolCancel(errors.New("authentication failed"))
+    }
+    // ...
 }
 ```
 
-**Array of Strings:**
+### ToolDiscard - Invalid Input
+
+Use when the input is fundamentally invalid:
+
 ```go
-"tags": {
-    Type:        "array",
-    Description: "List of tags",
-    Items:       &tool.PropertyDef{Type: "string"},
+func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    var params struct {
+        UserID string `json:"user_id"`
+    }
+    if err := json.Unmarshal(input, &params); err != nil {
+        return "", tool.ToolDiscard(fmt.Errorf("invalid JSON: %w", err))
+    }
+    // ...
 }
 ```
 
-**Nested Object:**
+### ToolSnooze - Temporary Delay
+
+Use for transient failures like rate limits. Does NOT consume a retry attempt:
+
 ```go
-"address": {
-    Type:        "object",
-    Description: "Shipping address",
-    Properties: map[string]tool.PropertyDef{
-        "street": {Type: "string"},
-        "city":   {Type: "string"},
-        "zip":    {Type: "string"},
+func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    result, err := callExternalAPI(ctx)
+    if isRateLimited(err) {
+        return "", tool.ToolSnooze(30*time.Second, err)
+    }
+    if err != nil {
+        return "", err // Regular error - will retry
+    }
+    return result, nil
+}
+```
+
+### Error Behavior Summary
+
+| Error Type | Retries | Use Case |
+|------------|---------|----------|
+| Regular `error` | Yes (up to MaxAttempts) | Transient failures |
+| `ToolCancel` | No | Unrecoverable errors |
+| `ToolDiscard` | No | Invalid input |
+| `ToolSnooze` | Yes (unlimited) | Rate limits, temporary unavailability |
+
+---
+
+## Retry Configuration
+
+By default, tools retry instantly with 2 attempts (1 retry on failure):
+
+```go
+// Default configuration
+ToolRetryConfig: &agentpg.ToolRetryConfig{
+    MaxAttempts: 2,    // 1 retry
+    Jitter:      0.0,  // Instant retry
+}
+```
+
+For unreliable external services, configure exponential backoff:
+
+```go
+client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
+    APIKey: apiKey,
+    ToolRetryConfig: &agentpg.ToolRetryConfig{
+        MaxAttempts: 5,    // More attempts
+        Jitter:      0.1,  // 10% jitter to prevent thundering herd
     },
-}
+})
 ```
+
+**Backoff delays** (when Jitter > 0):
+
+| Attempt | Delay |
+|---------|-------|
+| 1 | 1 second |
+| 2 | 16 seconds |
+| 3 | 81 seconds |
+| 4 | 256 seconds |
+| 5 | 625 seconds |
 
 ---
 
-## Input Validation
+## Database-Aware Tools
 
-The tool executor validates inputs against schemas before execution:
-
-```go
-executor := tool.NewExecutor(registry)
-
-// This happens automatically during Execute
-err := executor.ValidateInput("my_tool", inputJSON)
-if err != nil {
-    // Validation failed:
-    // - Missing required fields
-    // - Wrong types
-    // - Out of range values
-    // - Invalid enum values
-}
-```
-
-### Validation Errors
-
-| Error | Cause |
-|-------|-------|
-| `missing required field` | Required field not provided |
-| `expected string, got number` | Type mismatch |
-| `value not in enum` | Invalid enum value |
-| `value below minimum` | Number too small |
-| `value above maximum` | Number too large |
-| `string too short` | Below minLength |
-| `string too long` | Above maxLength |
-| `value must be an integer` | Float for integer type |
-
----
-
-## Tool Execution
-
-### Single Execution
+Tools can access databases and external services via struct fields:
 
 ```go
-result := executor.Execute(ctx, "tool_name", inputJSON)
-// result.Output - Tool output string
-// result.Error  - Any error that occurred
-// result.Duration - Execution time
-```
-
-### Parallel Execution
-
-```go
-calls := []tool.ToolCallRequest{
-    {ID: "1", ToolName: "search", Input: json.RawMessage(`{"query": "weather"}`)},
-    {ID: "2", ToolName: "search", Input: json.RawMessage(`{"query": "news"}`)},
+type UserLookupTool struct {
+    db *pgxpool.Pool
 }
 
-// Execute in parallel
-results := executor.ExecuteParallel(ctx, calls)
-```
+func NewUserLookupTool(db *pgxpool.Pool) *UserLookupTool {
+    return &UserLookupTool{db: db}
+}
 
-### Timeout Configuration
+func (t *UserLookupTool) Name() string        { return "lookup_user" }
+func (t *UserLookupTool) Description() string { return "Look up user information by ID" }
 
-```go
-executor := tool.NewExecutor(registry)
-executor.SetDefaultTimeout(30 * time.Second)
-```
+func (t *UserLookupTool) InputSchema() tool.ToolSchema {
+    return tool.ToolSchema{
+        Type: "object",
+        Properties: map[string]tool.PropertyDef{
+            "user_id": {Type: "string", Description: "The user's ID"},
+        },
+        Required: []string{"user_id"},
+    }
+}
 
-### Execution Flow
+func (t *UserLookupTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    var params struct {
+        UserID string `json:"user_id"`
+    }
+    if err := json.Unmarshal(input, &params); err != nil {
+        return "", tool.ToolDiscard(err)
+    }
 
-```
-1. Agent receives tool_use block from Claude
-2. Executor validates input against schema
-3. Tool.Execute() is called with context and input
-4. Result (or error) returned to Claude as tool_result
-5. Loop continues until no more tool calls
+    var name, email string
+    err := t.db.QueryRow(ctx,
+        "SELECT name, email FROM users WHERE id = $1",
+        params.UserID,
+    ).Scan(&name, &email)
+
+    if errors.Is(err, pgx.ErrNoRows) {
+        return "User not found", nil
+    }
+    if err != nil {
+        return "", err // Will retry
+    }
+
+    return fmt.Sprintf("User: %s <%s>", name, email), nil
+}
+
+// Register with database connection
+client.RegisterTool(NewUserLookupTool(pool))
 ```
 
 ---
 
 ## Best Practices
 
+### Schema Design
+
+1. **Be explicit about required fields** - List all mandatory parameters
+2. **Use Enum for constrained choices** - Helps Claude make valid selections
+3. **Provide clear descriptions** - Claude uses these to decide when to use the tool
+4. **Use typed constraints** - Min/Max, Length limits improve reliability
+
 ### Error Handling
 
-```go
-func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
-    // Parse input with validation
-    var params struct {
-        URL string `json:"url"`
-    }
-    if err := json.Unmarshal(input, &params); err != nil {
-        return "", fmt.Errorf("invalid input: %w", err)
-    }
+1. **Use ToolCancel for auth failures** - Don't waste retries on permission errors
+2. **Use ToolDiscard for bad input** - Fail fast on invalid data
+3. **Use ToolSnooze for rate limits** - Preserves retry attempts
+4. **Return useful error messages** - They're shown to Claude
 
-    // Validate business logic
-    if !strings.HasPrefix(params.URL, "https://") {
-        return "", fmt.Errorf("URL must use HTTPS")
-    }
+### Performance
 
-    // Handle external errors gracefully
-    result, err := t.fetch(ctx, params.URL)
-    if err != nil {
-        // Return user-friendly error message
-        return "", fmt.Errorf("failed to fetch URL: %w", err)
-    }
+1. **Keep tools fast** - They block during tool iterations
+2. **Implement caching** - For expensive external calls
+3. **Respect context cancellation** - Check `ctx.Done()` in long operations
+4. **Use appropriate timeouts** - Tool execution has a 5-minute timeout
 
-    return result, nil
-}
-```
+### Registration
 
-### Context Handling
+1. **Register tools before `Start()`** - Tools can't be added after starting
+2. **Assign tools explicitly** - Use the `Tools` field in AgentDefinition
+3. **Share tools across agents** - Register once, reference in multiple agents
 
-```go
-func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
-    // Respect context cancellation
-    select {
-    case <-ctx.Done():
-        return "", ctx.Err()
-    default:
-    }
+---
 
-    // Pass context to downstream calls
-    result, err := t.api.Call(ctx, params)
+## Examples
 
-    // Handle timeout gracefully
-    if errors.Is(err, context.DeadlineExceeded) {
-        return "", fmt.Errorf("operation timed out")
-    }
+The `/examples/custom_tools/` directory contains complete working examples:
 
-    return result, err
-}
-```
+| Example | Description |
+|---------|-------------|
+| `01_struct_tool/` | Struct-based tool with state and configuration |
+| `02_func_tool/` | Quick tool creation with `NewFuncTool()` |
+| `03_schema_validation/` | Advanced schema with all constraint types |
+| `04_parallel_execution/` | Multiple tools executing concurrently |
 
-### Output Formatting
+The `/examples/retry_rescue/` directory covers error handling:
 
-```go
-func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
-    results := fetchResults()
+| Example | Description |
+|---------|-------------|
+| `01_instant_retry/` | Default instant retry behavior |
+| `02_error_types/` | Using ToolCancel, ToolDiscard, ToolSnooze |
+| `03_exponential_backoff/` | Configuring backoff for external APIs |
 
-    // Format for readability
-    var sb strings.Builder
-    sb.WriteString("Search Results:\n\n")
-    for i, r := range results {
-        sb.WriteString(fmt.Sprintf("%d. %s\n   %s\n\n", i+1, r.Title, r.URL))
-    }
+### Running Examples
 
-    return sb.String(), nil
-}
+```bash
+export ANTHROPIC_API_KEY="your-api-key"
+export DATABASE_URL="postgresql://user:password@localhost:5432/agentpg"
+
+# Run any example
+go run examples/custom_tools/01_struct_tool/main.go
 ```
 
 ---
 
-## Common Tool Patterns
-
-### HTTP API Tool
-
-```go
-type APITool struct {
-    client  *http.Client
-    baseURL string
-}
-
-func (t *APITool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
-    var params struct {
-        Endpoint string `json:"endpoint"`
-        Method   string `json:"method"`
-    }
-    json.Unmarshal(input, &params)
-
-    req, _ := http.NewRequestWithContext(ctx, params.Method, t.baseURL+params.Endpoint, nil)
-    resp, err := t.client.Do(req)
-    if err != nil {
-        return "", err
-    }
-    defer resp.Body.Close()
-
-    body, _ := io.ReadAll(resp.Body)
-    return string(body), nil
-}
-```
-
-### Database Query Tool
-
-```go
-type QueryTool struct {
-    db *sql.DB
-}
-
-func (t *QueryTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
-    var params struct {
-        Query  string        `json:"query"`
-        Params []interface{} `json:"params"`
-    }
-    json.Unmarshal(input, &params)
-
-    // Only allow SELECT queries
-    if !strings.HasPrefix(strings.ToUpper(params.Query), "SELECT") {
-        return "", fmt.Errorf("only SELECT queries are allowed")
-    }
-
-    rows, err := t.db.QueryContext(ctx, params.Query, params.Params...)
-    if err != nil {
-        return "", err
-    }
-    defer rows.Close()
-
-    return formatRows(rows), nil
-}
-```
-
-### Calculator Tool
-
-```go
-calculatorTool := tool.NewFuncTool(
-    "calculator",
-    "Perform mathematical calculations",
-    tool.ToolSchema{
-        Type: "object",
-        Properties: map[string]tool.PropertyDef{
-            "expression": {
-                Type:        "string",
-                Description: "Mathematical expression (e.g., '2 + 2', 'sqrt(16)')",
-            },
-        },
-        Required: []string{"expression"},
-    },
-    func(ctx context.Context, input json.RawMessage) (string, error) {
-        var params struct {
-            Expression string `json:"expression"`
-        }
-        json.Unmarshal(input, &params)
-
-        result, err := evaluate(params.Expression)
-        if err != nil {
-            return "", err
-        }
-
-        return fmt.Sprintf("%v", result), nil
-    },
-)
-```
-
----
-
-## Transaction Access in Tools
-
-When agents run via `RunTx`, tools can access the native database transaction to perform their own database operations atomically with the agent's operations.
-
-### TxFromContext
-
-```go
-import (
-    "github.com/jackc/pgx/v5"
-    "github.com/youssefsiam38/agentpg"
-)
-
-// Get the native transaction - panics if not available
-tx := agentpg.TxFromContext[pgx.Tx](ctx)
-
-// Safely get the transaction - returns error if not available
-tx, err := agentpg.TxFromContextSafely[pgx.Tx](ctx)
-if err != nil {
-    // Handle case where agent was called via Run() instead of RunTx()
-}
-```
-
-### When is a Transaction Available?
-
-| Method | Transaction in Context |
-|--------|----------------------|
-| `agent.Run(ctx, prompt)` | Yes (auto-managed) |
-| `agent.RunTx(ctx, tx, prompt)` | Yes (user-provided) |
-
-Both `Run()` and `RunTx()` provide transaction access to tools. The difference is:
-- **`Run()`** - Agent manages the transaction lifecycle (begin/commit/rollback)
-- **`RunTx()`** - You control the transaction, allowing you to combine agent operations with your own database work atomically
-
-### Example: Database Tool with Transaction
-
-```go
-type AuditLogTool struct {
-    pool *pgxpool.Pool // Fallback for non-transactional use
-}
-
-func (t *AuditLogTool) Name() string        { return "audit_log" }
-func (t *AuditLogTool) Description() string { return "Log an action to the audit trail" }
-func (t *AuditLogTool) InputSchema() tool.ToolSchema {
-    return tool.ToolSchema{
-        Type: "object",
-        Properties: map[string]tool.PropertyDef{
-            "action":  {Type: "string", Description: "Action performed"},
-            "details": {Type: "string", Description: "Action details"},
-        },
-        Required: []string{"action"},
-    }
-}
-
-func (t *AuditLogTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
-    var params struct {
-        Action  string `json:"action"`
-        Details string `json:"details"`
-    }
-    json.Unmarshal(input, &params)
-
-    // Try to get transaction, fall back to pool
-    tx, err := agentpg.TxFromContextSafely[pgx.Tx](ctx)
-    if err != nil {
-        // No transaction - use pool directly (auto-commit)
-        _, err = t.pool.Exec(ctx,
-            "INSERT INTO audit_log (action, details) VALUES ($1, $2)",
-            params.Action, params.Details)
-    } else {
-        // Has transaction - use it (will commit/rollback with agent)
-        _, err = tx.Exec(ctx,
-            "INSERT INTO audit_log (action, details) VALUES ($1, $2)",
-            params.Action, params.Details)
-    }
-
-    if err != nil {
-        return "", fmt.Errorf("failed to log: %w", err)
-    }
-    return "Logged successfully", nil
-}
-```
-
-### Example: Tool Requiring Transaction
-
-```go
-type TransferFundsTool struct{}
-
-func (t *TransferFundsTool) Name() string        { return "transfer_funds" }
-func (t *TransferFundsTool) Description() string { return "Transfer funds between accounts" }
-func (t *TransferFundsTool) InputSchema() tool.ToolSchema {
-    return tool.ToolSchema{
-        Type: "object",
-        Properties: map[string]tool.PropertyDef{
-            "from_account": {Type: "string", Description: "Source account ID"},
-            "to_account":   {Type: "string", Description: "Destination account ID"},
-            "amount":       {Type: "number", Description: "Amount to transfer"},
-        },
-        Required: []string{"from_account", "to_account", "amount"},
-    }
-}
-
-func (t *TransferFundsTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
-    var params struct {
-        FromAccount string  `json:"from_account"`
-        ToAccount   string  `json:"to_account"`
-        Amount      float64 `json:"amount"`
-    }
-    json.Unmarshal(input, &params)
-
-    // This tool REQUIRES a transaction - use the panicking version
-    tx := agentpg.TxFromContext[pgx.Tx](ctx)
-
-    // Debit source account
-    _, err := tx.Exec(ctx,
-        "UPDATE accounts SET balance = balance - $1 WHERE id = $2",
-        params.Amount, params.FromAccount)
-    if err != nil {
-        return "", err
-    }
-
-    // Credit destination account
-    _, err = tx.Exec(ctx,
-        "UPDATE accounts SET balance = balance + $1 WHERE id = $2",
-        params.Amount, params.ToAccount)
-    if err != nil {
-        return "", err
-    }
-
-    return fmt.Sprintf("Transferred $%.2f from %s to %s",
-        params.Amount, params.FromAccount, params.ToAccount), nil
-}
-```
-
-**Note**: If `TransferFundsTool` is called via `Run()` instead of `RunTx()`, it will panic. This is intentional - financial operations should always be transactional.
-
-### Using with database/sql Driver
-
-For the database/sql driver, use `*sql.Tx`:
-
-```go
-import "database/sql"
-
-func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
-    tx := agentpg.TxFromContext[*sql.Tx](ctx)
-
-    result, err := tx.ExecContext(ctx, "INSERT INTO ...")
-    // ...
-}
-```
-
-### Testing Tools with Transactions
-
-When testing tools that use `TxFromContext`, you need to provide a context with a transaction:
-
-```go
-func TestOrderTool(t *testing.T) {
-    ctx := context.Background()
-    pool, _ := pgxpool.New(ctx, databaseURL)
-
-    tx, _ := pool.Begin(ctx)
-    defer tx.Rollback(ctx)
-
-    // Create context with transaction using the test helper
-    ctx = agentpg.WithTestTx(ctx, tx)
-
-    tool := &OrderTool{}
-    result, err := tool.Execute(ctx, json.RawMessage(`{"product_id": "123", "quantity": 5}`))
-
-    // Assert results...
-    // tx.Rollback() cleans up test data
-}
-```
-
-### API Reference
-
-```go
-// ErrNoTransaction is returned when TxFromContextSafely is called
-// but no transaction exists in context.
-var ErrNoTransaction = errors.New("agentpg: no transaction in context, only available within agent execution")
-
-// TxFromContext returns the native database transaction from context.
-// Panics if no transaction is available.
-// TTx must match your driver: pgx.Tx for pgxv5, *sql.Tx for databasesql.
-func TxFromContext[TTx any](ctx context.Context) TTx
-
-// TxFromContextSafely returns the native transaction, or error if not available.
-// Use this for tools that should work both with and without transactions.
-func TxFromContextSafely[TTx any](ctx context.Context) (TTx, error)
-
-// WithTestTx creates a context with a native transaction for testing tools.
-func WithTestTx[TTx any](ctx context.Context, tx TTx) context.Context
-```
-
----
-
-## Nested Agents as Tools
-
-You can use one agent as a tool for another:
-
-```go
-// Create a specialized research agent
-researchAgent, _ := agentpg.New(agentpg.Config{
-    SystemPrompt: "You are a research specialist. Provide detailed, well-sourced answers.",
-    // ...
-})
-
-// Register as a tool for the main agent
-err := researchAgent.AsToolFor(mainAgent)
-
-// Now the main agent can delegate research tasks
-response, _ := mainAgent.Run(ctx, "I need detailed research on quantum computing")
-// Main agent may call the research agent internally
-```
-
-### Custom Agent Tool
-
-```go
-type ResearchAgentTool struct {
-    agent *agentpg.Agent
-}
-
-func (t *ResearchAgentTool) Name() string {
-    return "research_agent"
-}
-
-func (t *ResearchAgentTool) Description() string {
-    return "Delegate complex research tasks to a specialized research agent"
-}
-
-func (t *ResearchAgentTool) InputSchema() tool.ToolSchema {
-    return tool.ToolSchema{
-        Type: "object",
-        Properties: map[string]tool.PropertyDef{
-            "topic": {
-                Type:        "string",
-                Description: "Research topic",
-            },
-            "depth": {
-                Type:        "string",
-                Description: "Research depth",
-                Enum:        []string{"brief", "detailed", "comprehensive"},
-            },
-        },
-        Required: []string{"topic"},
-    }
-}
-
-func (t *ResearchAgentTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
-    var params struct {
-        Topic string `json:"topic"`
-        Depth string `json:"depth"`
-    }
-    json.Unmarshal(input, &params)
-
-    prompt := fmt.Sprintf("Research: %s\nDepth: %s", params.Topic, params.Depth)
-    response, err := t.agent.Run(ctx, prompt)
-    if err != nil {
-        return "", err
-    }
-
-    // Extract text from response
-    return extractText(response.Message.Content), nil
-}
-```
-
----
-
-## Registry Management
-
-### Tool Registry
-
-```go
-registry := tool.NewRegistry()
-
-// Register individual tools
-registry.Register(tool1)
-registry.Register(tool2)
-
-// Register multiple at once
-registry.RegisterAll([]tool.Tool{tool3, tool4, tool5})
-
-// Check if tool exists
-if registry.Has("my_tool") {
-    // ...
-}
-
-// Get a tool
-myTool, ok := registry.Get("my_tool")
-
-// List all tools
-names := registry.List()
-count := registry.Count()
-```
-
-### Tool Lifecycle
-
-```go
-// Tools registered at agent creation
-agent, _ := agentpg.New(cfg, agentpg.WithTools(initialTools...))
-
-// Add tools later
-agent.RegisterTool(newTool)
-
-// List current tools
-tools := agent.GetTools()
-```
-
----
-
-## See Also
-
-- [API Reference](./api-reference.md) - Complete tool API
-- [Architecture](./architecture.md) - Tool system design
-- [Hooks](./hooks.md) - Tool call hooks
+## Next Steps
+
+- [Configuration](./configuration.md) - Tune retry settings and concurrency
+- [Architecture](./architecture.md) - Understand the tool execution flow
+- [Distributed Workers](./distributed.md) - Scale tool execution across instances

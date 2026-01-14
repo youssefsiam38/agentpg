@@ -1,3 +1,9 @@
+// Package main demonstrates the Client API with function-based tools.
+//
+// This example shows:
+// - Quick tool creation with tool.NewFuncTool
+// - No need for a struct - just a function
+// - Per-client tool registration
 package main
 
 import (
@@ -6,10 +12,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
@@ -45,50 +51,9 @@ var timezoneOffsets = map[string]int{
 	"NZST":      12,
 }
 
-func main() {
-	ctx := context.Background()
-
-	// Get environment variables
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		log.Fatal("ANTHROPIC_API_KEY environment variable is required")
-	}
-
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		log.Fatal("DATABASE_URL environment variable is required")
-	}
-
-	// Create PostgreSQL connection pool
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
-	}
-	defer pool.Close()
-
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-
-	// Create driver
-	drv := pgxv5.New(pool)
-
-	// Create agent
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a helpful time assistant. Use the available tools to provide time information.",
-		},
-		agentpg.WithMaxTokens(1024),
-	)
-	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
-	}
-
-	// Create a time tool using NewFuncTool
-	// This approach is simpler than implementing the full interface
-	timeTool := tool.NewFuncTool(
+// createTimeTool creates a tool for getting time in different timezones.
+func createTimeTool() tool.Tool {
+	return tool.NewFuncTool(
 		"get_time",
 		"Get the current time in a specified timezone. Returns formatted time and date.",
 		tool.ToolSchema{
@@ -139,9 +104,11 @@ func main() {
 				params.Timezone, timeStr, dateStr, offset), nil
 		},
 	)
+}
 
-	// Create a date difference calculator tool
-	dateDiffTool := tool.NewFuncTool(
+// createDateDiffTool creates a tool for calculating date differences.
+func createDateDiffTool() tool.Tool {
+	return tool.NewFuncTool(
 		"calculate_date_diff",
 		"Calculate the difference between two dates in days, weeks, or months.",
 		tool.ToolSchema{
@@ -213,17 +180,77 @@ func main() {
 				params.StartDate, params.EndDate, result), nil
 		},
 	)
+}
 
-	// Register tools
-	if err := agent.RegisterTool(timeTool); err != nil {
+func main() {
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// Get environment variables
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		log.Fatal("ANTHROPIC_API_KEY environment variable is required")
+	}
+
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		log.Fatal("DATABASE_URL environment variable is required")
+	}
+
+	// Create PostgreSQL connection pool
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer pool.Close()
+
+	// Create the pgx/v5 driver
+	drv := pgxv5.New(pool)
+
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create client: %v", err)
+	}
+
+	// Register tools on the client
+	if err := client.RegisterTool(createTimeTool()); err != nil {
 		log.Fatalf("Failed to register time tool: %v", err)
 	}
-	if err := agent.RegisterTool(dateDiffTool); err != nil {
+	if err := client.RegisterTool(createDateDiffTool()); err != nil {
 		log.Fatalf("Failed to register date diff tool: %v", err)
 	}
 
+	// Register the time assistant agent
+	maxTokens := 1024
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "time-assistant",
+		Description:  "A helpful time assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful time assistant. Use the available tools to provide time information.",
+		Tools:        []string{"get_time", "calculate_date_diff"},
+		MaxTokens:    &maxTokens,
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
 	// Create session
-	sessionID, err := agent.NewSession(ctx, "1", "func-tool-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, "1", "func-tool-demo", nil, map[string]any{
 		"description": "Function-based tool demonstration",
 	})
 	if err != nil {
@@ -234,7 +261,7 @@ func main() {
 
 	// Example 1: Get time in different timezone
 	fmt.Println("=== Example 1: Get Time in Tokyo ===")
-	response1, err := agent.Run(ctx, "What time is it in Tokyo right now?")
+	response1, err := client.RunSync(ctx, sessionID, "time-assistant", "What time is it in Tokyo right now?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -247,7 +274,7 @@ func main() {
 
 	// Example 2: Get time with specific format
 	fmt.Println("\n=== Example 2: Time in 12-hour Format ===")
-	response2, err := agent.Run(ctx, "What's the current time in New York (EST) in 12-hour format?")
+	response2, err := client.RunSync(ctx, sessionID, "time-assistant", "What's the current time in New York (EST) in 12-hour format?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -260,7 +287,7 @@ func main() {
 
 	// Example 3: Calculate date difference
 	fmt.Println("\n=== Example 3: Date Difference ===")
-	response3, err := agent.Run(ctx, "How many weeks are between 2024-01-01 and 2024-12-31?")
+	response3, err := client.RunSync(ctx, sessionID, "time-assistant", "How many weeks are between 2024-01-01 and 2024-12-31?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -269,12 +296,6 @@ func main() {
 		if block.Type == agentpg.ContentTypeText {
 			fmt.Println(block.Text)
 		}
-	}
-
-	// Show registered tools
-	fmt.Println("\n=== Registered Tools ===")
-	for _, name := range agent.GetTools() {
-		fmt.Printf("- %s\n", name)
 	}
 
 	fmt.Println("\n=== Demo Complete ===")

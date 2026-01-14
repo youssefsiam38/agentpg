@@ -1,3 +1,10 @@
+// Package main demonstrates the Client API with extended context support.
+//
+// This example shows:
+// - Using the 1M token extended context window
+// - Configuring extended context via AgentDefinition.Config
+// - Processing very long documents
+// - Per-client agent registration
 package main
 
 import (
@@ -5,10 +12,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
@@ -84,7 +91,9 @@ func generateLongDocument(sections int) string {
 }
 
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -104,38 +113,52 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-
-	// Create driver
+	// Create the pgx/v5 driver
 	drv := pgxv5.New(pool)
 
 	// ==========================================================
-	// Create agent WITH extended context support
+	// Create client with extended context support
 	// ==========================================================
 
 	fmt.Println("=== Extended Context (1M Token) Example ===")
 	fmt.Println()
 
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a document analysis assistant. You can process very long documents and answer questions about them accurately.",
-		},
-		// Enable extended context for 1M token support
-		agentpg.WithExtendedContext(true),
-
-		// Higher token limit for responses
-		agentpg.WithMaxTokens(4096),
-
-		// Disable auto-compaction since we're using extended context
-		agentpg.WithAutoCompaction(false),
-	)
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
 	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
+		log.Fatalf("Failed to create client: %v", err)
 	}
+
+	// Register agent with extended context enabled
+	maxTokens := 4096
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "extended-context-demo",
+		Description:  "Document analysis with extended context support",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a document analysis assistant. You can process very long documents and answer questions about them accurately.",
+		MaxTokens:    &maxTokens,
+		Config: map[string]any{
+			"extended_context": true,  // Enable 1M token support
+			"auto_compaction":  false, // Disable compaction - rely on extended context
+		},
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	fmt.Printf("Client started (instance ID: %s)\n", client.InstanceID())
+	fmt.Println()
 
 	fmt.Println("Configuration:")
 	fmt.Println("- Extended context: ENABLED")
@@ -144,7 +167,7 @@ func main() {
 	fmt.Println()
 
 	// Create session
-	sessionID, err := agent.NewSession(ctx, "1", "extended-context-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, "1", "extended-context-demo", nil, map[string]any{
 		"description": "Extended context demonstration",
 	})
 	if err != nil {
@@ -161,7 +184,7 @@ func main() {
 	fmt.Println()
 
 	// Generate a document (adjust sections for desired length)
-	// Each section is roughly 2-3KB, so 20 sections ≈ 50KB of text
+	// Each section is roughly 2-3KB, so 20 sections ~ 50KB of text
 	document := generateLongDocument(20)
 
 	fmt.Printf("Generated document: %d characters (~%d tokens estimated)\n",
@@ -178,7 +201,7 @@ Please confirm you've received the document and provide a brief summary of its s
 
 	fmt.Println("\nSubmitting document for analysis...")
 
-	response1, err := agent.Run(ctx, prompt)
+	response1, err := client.RunFastSync(ctx, sessionID, "extended-context-demo", prompt)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -215,7 +238,7 @@ Please confirm you've received the document and provide a brief summary of its s
 	for i, question := range questions {
 		fmt.Printf("Question %d: %s\n", i+1, question)
 
-		response, err := agent.Run(ctx, question)
+		response, err := client.RunFastSync(ctx, sessionID, "extended-context-demo", question)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}
@@ -241,7 +264,7 @@ Please confirm you've received the document and provide a brief summary of its s
 
 	fmt.Println("=== Extended Context Features ===")
 	fmt.Println()
-	fmt.Println("When WithExtendedContext(true) is enabled:")
+	fmt.Println("When extended_context is enabled via Config:")
 	fmt.Println()
 	fmt.Println("1. AUTOMATIC FALLBACK:")
 	fmt.Println("   If the API returns a max_tokens error, AgentPG")
@@ -251,9 +274,9 @@ Please confirm you've received the document and provide a brief summary of its s
 	fmt.Println("   Adds 'anthropic-beta: context-1m-2025-08-07' header")
 	fmt.Println("   to enable 1M token context window.")
 	fmt.Println()
-	fmt.Println("3. NO CODE CHANGES NEEDED:")
-	fmt.Println("   Just add WithExtendedContext(true) to your agent")
-	fmt.Println("   configuration - everything else is handled automatically.")
+	fmt.Println("3. SIMPLE CONFIGURATION:")
+	fmt.Println("   Just add extended_context: true to your agent's Config")
+	fmt.Println("   in the AgentDefinition - everything else is handled automatically.")
 
 	// ==========================================================
 	// When to use extended context vs compaction

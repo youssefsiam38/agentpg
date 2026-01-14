@@ -1,0 +1,93 @@
+{{define "content"}}
+<div class="max-w-4xl mx-auto space-y-6">
+    <!-- Page Header -->
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-100">Conversation</h1>
+            <p class="mt-1 text-sm text-gray-400">
+            Session: <span class="font-mono">{{.Data.Conversation.SessionID}}</span>
+            </p>
+        </div>
+        <a href="{{$.BasePath}}/sessions/{{.Data.Conversation.SessionID}}" class="px-4 py-2 bg-gray-700 text-gray-200 rounded-md hover:bg-gray-600 ring-1 ring-gray-600">
+            Back to Session
+        </a>
+    </div>
+
+    <!-- Messages -->
+    <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 divide-y divide-gray-700">
+        {{range .Data.Conversation.Messages}}
+        <div class="p-6">
+            <!-- Message Header -->
+            <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center">
+                    {{if eq .Message.Role "user"}}
+                    <div class="w-8 h-8 rounded-full bg-cyan-500/20 flex items-center justify-center">
+                        <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                        </svg>
+                    </div>
+                    <span class="ml-3 font-medium text-gray-100">User</span>
+                    {{else}}
+                    <div class="w-8 h-8 rounded-full bg-purple-500/20 flex items-center justify-center">
+                        <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                        </svg>
+                    </div>
+                    <span class="ml-3 font-medium text-gray-100">Assistant</span>
+                    {{end}}
+                </div>
+                <span class="text-xs text-gray-500">{{formatTimeAgo .Message.CreatedAt}}</span>
+            </div>
+
+            <!-- Content Blocks -->
+            <div class="space-y-4 ml-11">
+                {{range .ContentBlocks}}
+                {{if eq .Type "text"}}
+                <div class="prose prose-sm prose-invert max-w-none [&_pre]:bg-gray-950 [&_pre]:text-green-400 [&_pre]:border [&_pre]:border-gray-700 [&_pre]:rounded-lg [&_pre]:p-4 [&_pre]:overflow-x-auto [&_code]:bg-gray-700 [&_code]:text-cyan-400 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-sm [&_pre_code]:bg-transparent [&_pre_code]:text-green-400 [&_pre_code]:p-0 [&_table]:w-full [&_th]:bg-gray-700 [&_th]:px-3 [&_th]:py-2 [&_td]:px-3 [&_td]:py-2 [&_td]:border-gray-600 [&_th]:border-gray-600 [&_a]:text-cyan-400">{{markdown .Text}}</div>
+                {{else if eq .Type "tool_use"}}
+                <div class="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="font-medium text-blue-400">Tool: {{.ToolName}}</span>
+                        <span class="text-xs text-blue-500 font-mono">{{.ToolUseID}}</span>
+                    </div>
+                    <pre class="text-xs text-green-400 bg-gray-950 p-2 rounded border border-gray-700 overflow-x-auto">{{json .ToolInput}}</pre>
+                </div>
+                {{else if eq .Type "tool_result"}}
+                <div class="bg-gray-700/50 border border-gray-600 rounded-lg p-4">
+                    <div class="flex items-center mb-2">
+                        <span class="font-medium text-gray-300">Tool Result</span>
+                        {{if .IsError}}
+                        <span class="ml-2 px-2 py-0.5 bg-red-500/20 text-red-400 text-xs rounded ring-1 ring-red-500/30">Error</span>
+                        {{end}}
+                    </div>
+                    <pre class="text-xs text-green-400 bg-gray-950 p-2 rounded border border-gray-700 overflow-x-auto whitespace-pre-wrap">{{.ToolContent}}</pre>
+                </div>
+                {{end}}
+                {{end}}
+            </div>
+
+            <!-- Message Metadata -->
+            {{if .RunInfo}}
+            <div class="mt-4 ml-11 flex items-center text-xs text-gray-500">
+                <a href="{{$.BasePath}}/runs/{{.RunInfo.ID}}" class="text-cyan-400 hover:text-cyan-300">
+                    View Run
+                </a>
+                <span class="mx-2">|</span>
+                <span class="text-gray-400">{{.RunInfo.AgentName}}</span>
+                <span class="mx-2">|</span>
+                <span class="{{stateBgColor .RunInfo.State}} px-2 py-0.5 rounded">{{.RunInfo.State}}</span>
+            </div>
+            {{end}}
+        </div>
+        {{else}}
+        <div class="p-12 text-center">
+            <svg class="mx-auto h-12 w-12 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+            <h3 class="mt-2 text-sm font-medium text-gray-100">No messages</h3>
+            <p class="mt-1 text-sm text-gray-400">This conversation is empty.</p>
+        </div>
+        {{end}}
+    </div>
+</div>
+{{end}}

@@ -1,0 +1,18 @@
+{{define "spinner"}}
+{{/*
+  Loading spinner with customizable size and color.
+
+  Parameters (via dict):
+    Size  - string: "sm" (h-3 w-3), "md" (h-4 w-4 default), "lg" (h-5 w-5)
+    Color - string: Tailwind color class (default: "text-cyan-400")
+*/}}
+{{$size := default .Size "md"}}
+{{$color := default .Color "text-cyan-400"}}
+{{$sizeClass := "h-4 w-4"}}
+{{if eq $size "sm"}}{{$sizeClass = "h-3 w-3"}}{{end}}
+{{if eq $size "lg"}}{{$sizeClass = "h-5 w-5"}}{{end}}
+<svg class="animate-spin {{$sizeClass}} {{$color}}" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+</svg>
+{{end}}

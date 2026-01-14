@@ -1,0 +1,130 @@
+{{define "content"}}
+<div class="space-y-6">
+    <!-- Page Header -->
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-100">Agents</h1>
+            <p class="mt-1 text-sm text-gray-400">Registered agent definitions and statistics</p>
+        </div>
+    </div>
+
+    <!-- Agents Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {{range .Data.Agents}}
+        <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 overflow-hidden{{if not .IsActive}} opacity-60{{end}}">
+            <div class="p-6">
+                <div class="flex items-start">
+                    <div class="flex-shrink-0 w-12 h-12 bg-cyan-500/20 rounded-lg flex items-center justify-center">
+                        <svg class="w-7 h-7 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                        </svg>
+                    </div>
+                    <div class="ml-4 flex-1">
+                        <h3 class="text-lg font-medium text-gray-100">
+                            {{.Agent.Name}}
+                            {{if not .IsActive}}
+                            <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-600/50 text-gray-400 ring-1 ring-gray-500/30">
+                                Inactive
+                            </span>
+                            {{end}}
+                        </h3>
+                        <p class="text-sm text-gray-400">{{.Agent.Model}}</p>
+                    </div>
+                </div>
+
+                {{if .Agent.Description}}
+                <p class="mt-3 text-sm text-gray-300">{{.Agent.Description}}</p>
+                {{end}}
+
+                <!-- System Prompt Preview -->
+                {{if .Agent.SystemPrompt}}
+                <div class="mt-3">
+                    <p class="text-xs text-gray-500 mb-1">System Prompt:</p>
+                    <p class="text-sm text-gray-400 bg-gray-900 p-2 rounded border border-gray-700 truncate" title="{{.Agent.SystemPrompt}}">
+                        {{if gt (len .Agent.SystemPrompt) 100}}
+                        {{slice .Agent.SystemPrompt 0 100}}...
+                        {{else}}
+                        {{.Agent.SystemPrompt}}
+                        {{end}}
+                    </p>
+                </div>
+                {{end}}
+
+                <!-- Tools -->
+                {{if .Agent.ToolNames}}
+                <div class="mt-3">
+                    <p class="text-xs text-gray-500 mb-1">Available Tools:</p>
+                    <div class="flex flex-wrap gap-1">
+                        {{range .Agent.ToolNames}}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-purple-400 ring-1 ring-purple-500/30">
+                            {{.}}
+                        </span>
+                        {{end}}
+                    </div>
+                </div>
+                {{end}}
+
+                <!-- Stats -->
+                <div class="mt-4 pt-4 border-t border-gray-700 grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                        <span class="text-gray-500">Total Runs:</span>
+                        <span class="ml-1 font-medium text-gray-200">{{.TotalRuns}}</span>
+                    </div>
+                    <div>
+                        <span class="text-gray-500">Active:</span>
+                        <span class="ml-1 font-medium text-blue-400">{{.ActiveRuns}}</span>
+                    </div>
+                    <div>
+                        <span class="text-gray-500">Completed:</span>
+                        <span class="ml-1 font-medium text-green-400">{{.CompletedRuns}}</span>
+                    </div>
+                    <div>
+                        <span class="text-gray-500">Failed:</span>
+                        <span class="ml-1 font-medium text-red-400">{{.FailedRuns}}</span>
+                    </div>
+                </div>
+
+                <!-- Registered On -->
+                {{if .RegisteredOn}}
+                <div class="mt-4 pt-4 border-t border-gray-700">
+                    <p class="text-xs text-gray-500 mb-2">Registered on instances:</p>
+                    <div class="flex flex-wrap gap-1">
+                        {{range .RegisteredOn}}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300 ring-1 ring-gray-600">
+                            {{.}}
+                        </span>
+                        {{end}}
+                    </div>
+                </div>
+                {{end}}
+
+                <!-- Model Settings -->
+                <div class="mt-4 pt-4 border-t border-gray-700">
+                    <p class="text-xs text-gray-500 mb-2">Model Settings:</p>
+                    <div class="grid grid-cols-2 gap-2 text-xs">
+                        {{if .Agent.MaxTokens}}
+                        <div>
+                            <span class="text-gray-500">Max Tokens:</span>
+                            <span class="ml-1 text-gray-300">{{.Agent.MaxTokens}}</span>
+                        </div>
+                        {{end}}
+                        {{if .Agent.Temperature}}
+                        <div>
+                            <span class="text-gray-500">Temperature:</span>
+                            <span class="ml-1 text-gray-300">{{.Agent.Temperature}}</span>
+                        </div>
+                        {{end}}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {{else}}
+        <div class="col-span-full">
+            <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700">
+                {{template "empty-state" (dict "Icon" "computer" "Title" "No agents registered" "Description" "Agents will appear here when registered with the client.")}}
+            </div>
+        </div>
+        {{end}}
+    </div>
+</div>
+{{end}}

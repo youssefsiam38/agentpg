@@ -1,45 +1,53 @@
 # Getting Started with AgentPG
 
-This guide will help you build your first AI agent with PostgreSQL persistence in under 10 minutes.
+This guide will help you set up AgentPG and run your first AI agent in under 5 minutes.
+
+## Table of Contents
+
+1. [Prerequisites](#prerequisites)
+2. [Installation](#installation)
+3. [Database Setup](#database-setup)
+4. [Your First Agent](#your-first-agent)
+5. [Adding Tools](#adding-tools)
+6. [API Modes](#api-modes)
+7. [Next Steps](#next-steps)
+
+---
 
 ## Prerequisites
 
-- Go 1.21 or later
-- PostgreSQL 14 or later
-- Anthropic API key
+- **Go 1.24+** (with modules enabled)
+- **PostgreSQL 14+** (with a running instance)
+- **Anthropic API Key** (from [console.anthropic.com](https://console.anthropic.com))
 
 ## Installation
+
+Install AgentPG using Go modules:
 
 ```bash
 go get github.com/youssefsiam38/agentpg
 ```
 
-## Quick Start
+## Database Setup
 
-### 1. Set Up PostgreSQL
-
-Start a PostgreSQL instance (using Docker):
+AgentPG uses PostgreSQL for state management. Run the migration to create the required schema:
 
 ```bash
-docker run -d \
-  --name agentpg-db \
-  -e POSTGRES_USER=agentpg \
-  -e POSTGRES_PASSWORD=agentpg \
-  -e POSTGRES_DB=agentpg \
-  -p 5432:5432 \
-  postgres:16-alpine
+# Set your database URL
+export DATABASE_URL="postgresql://user:password@localhost:5432/agentpg"
+
+# Create the database (if needed)
+createdb agentpg
+
+# Run the migration
+psql $DATABASE_URL -f storage/migrations/001_agentpg_migration.up.sql
 ```
 
-### 2. Run Migrations
+The migration creates tables for sessions, runs, messages, tools, and distributed coordination.
 
-Apply the database schema:
+## Your First Agent
 
-```bash
-psql "postgres://agentpg:agentpg@localhost:5432/agentpg" \
-  -f storage/migrations/001_agentpg_migration.up.sql
-```
-
-### 3. Create Your First Agent
+Create a file called `main.go`:
 
 ```go
 package main
@@ -48,8 +56,8 @@ import (
     "context"
     "fmt"
     "log"
+    "os"
 
-    "github.com/anthropics/anthropic-sdk-go"
     "github.com/jackc/pgx/v5/pgxpool"
     "github.com/youssefsiam38/agentpg"
     "github.com/youssefsiam38/agentpg/driver/pgxv5"
@@ -58,61 +66,76 @@ import (
 func main() {
     ctx := context.Background()
 
-    // Connect to PostgreSQL
-    pool, err := pgxpool.New(ctx, "postgres://agentpg:agentpg@localhost:5432/agentpg")
+    // 1. Connect to PostgreSQL
+    pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
     if err != nil {
         log.Fatal(err)
     }
     defer pool.Close()
 
-    // Create driver and agent
+    // 2. Create driver and client
     drv := pgxv5.New(pool)
-    client := anthropic.NewClient() // Uses ANTHROPIC_API_KEY env var
-
-    agent, err := agentpg.New(drv, agentpg.Config{
-        Client:       &client,
-        Model:        "claude-sonnet-4-5-20250929",
-        SystemPrompt: "You are a helpful assistant.",
+    client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+        APIKey: os.Getenv("ANTHROPIC_API_KEY"),
     })
     if err != nil {
         log.Fatal(err)
     }
 
-    // Create a new session
-    sessionID, err := agent.NewSession(ctx, "my-tenant", "user-123", nil, nil)
+    // 3. Register an agent
+    err = client.RegisterAgent(&agentpg.AgentDefinition{
+        Name:         "assistant",
+        Model:        "claude-sonnet-4-5-20250929",
+        SystemPrompt: "You are a helpful assistant. Be concise.",
+    })
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Printf("Created session: %s\n", sessionID)
 
-    // Send a message and get a response
-    response, err := agent.Run(ctx, "Hello! What can you help me with?")
+    // 4. Start the client (begins background processing)
+    if err := client.Start(ctx); err != nil {
+        log.Fatal(err)
+    }
+    defer client.Stop(context.Background())
+
+    // 5. Create a session
+    sessionID, err := client.NewSession(ctx, "tenant-1", "user-123", nil, nil)
     if err != nil {
         log.Fatal(err)
     }
 
-    // Access the response content
-    for _, block := range response.Message.Content {
-        if block.Type == agentpg.ContentTypeText {
-            fmt.Printf("Assistant: %s\n", block.Text)
-        }
+    // 6. Run the agent
+    response, err := client.RunSync(ctx, sessionID, "assistant", "What is 2+2?")
+    if err != nil {
+        log.Fatal(err)
     }
 
-    // The conversation is automatically persisted
-    // You can resume it later with agent.LoadSession(ctx, sessionID)
+    // 7. Print the response
+    fmt.Println("Response:", response.Text)
+    fmt.Printf("Tokens: %d input, %d output\n",
+        response.Usage.InputTokens,
+        response.Usage.OutputTokens)
 }
 ```
 
-### 4. Run Your Agent
+Run it:
 
 ```bash
 export ANTHROPIC_API_KEY="your-api-key"
+export DATABASE_URL="postgresql://user:password@localhost:5432/agentpg"
+
 go run main.go
+```
+
+Expected output:
+```
+Response: 2+2 equals 4.
+Tokens: 42 input, 8 output
 ```
 
 ## Adding Tools
 
-Tools allow your agent to perform actions and access external data:
+Tools allow agents to perform actions. Here's how to add a simple calculator tool:
 
 ```go
 package main
@@ -121,167 +144,185 @@ import (
     "context"
     "encoding/json"
     "fmt"
-    "time"
 
     "github.com/youssefsiam38/agentpg/tool"
 )
 
-func main() {
-    // Create a tool registry
-    registry := tool.NewRegistry()
+// 1. Define the tool
+type CalculatorTool struct{}
 
-    // Register a simple tool
-    weatherTool := tool.NewFuncTool(
-        "get_weather",
-        "Get the current weather for a city",
-        tool.ToolSchema{
-            Type: "object",
-            Properties: map[string]tool.PropertyDef{
-                "city": {
-                    Type:        "string",
-                    Description: "The city name",
-                },
+func (t *CalculatorTool) Name() string {
+    return "calculator"
+}
+
+func (t *CalculatorTool) Description() string {
+    return "Perform basic math operations (add, subtract, multiply, divide)"
+}
+
+func (t *CalculatorTool) InputSchema() tool.ToolSchema {
+    return tool.ToolSchema{
+        Type: "object",
+        Properties: map[string]tool.PropertyDef{
+            "operation": {
+                Type:        "string",
+                Description: "The operation to perform",
+                Enum:        []string{"add", "subtract", "multiply", "divide"},
             },
-            Required: []string{"city"},
+            "a": {Type: "number", Description: "First number"},
+            "b": {Type: "number", Description: "Second number"},
         },
-        func(ctx context.Context, input json.RawMessage) (string, error) {
-            var params struct {
-                City string `json:"city"`
-            }
-            json.Unmarshal(input, &params)
+        Required: []string{"operation", "a", "b"},
+    }
+}
 
-            // Your weather API call here
-            return fmt.Sprintf("Weather in %s: 72F, Sunny", params.City), nil
-        },
-    )
-    registry.Register(weatherTool)
+func (t *CalculatorTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    var params struct {
+        Operation string  `json:"operation"`
+        A         float64 `json:"a"`
+        B         float64 `json:"b"`
+    }
+    if err := json.Unmarshal(input, &params); err != nil {
+        return "", fmt.Errorf("invalid input: %w", err)
+    }
 
-    // Create agent with tools (assuming drv and client are already set up)
-    agent, _ := agentpg.New(drv, agentpg.Config{
-        Client:       &client,
-        Model:        "claude-sonnet-4-5-20250929",
-        SystemPrompt: "You are a weather assistant. Use the get_weather tool to help users.",
-    }, agentpg.WithTools(weatherTool))
-
-    // Create session and run
-    agent.NewSession(ctx, "tenant", "user", nil, nil)
-
-    // The agent will automatically use tools when appropriate
-    response, _ := agent.Run(ctx, "What's the weather in Tokyo?")
-    for _, block := range response.Message.Content {
-        if block.Type == agentpg.ContentTypeText {
-            fmt.Println(block.Text)
+    var result float64
+    switch params.Operation {
+    case "add":
+        result = params.A + params.B
+    case "subtract":
+        result = params.A - params.B
+    case "multiply":
+        result = params.A * params.B
+    case "divide":
+        if params.B == 0 {
+            return "", fmt.Errorf("division by zero")
         }
-    }
-}
-```
-
-## Response Processing
-
-AgentPG uses streaming internally for all API calls but returns complete responses. Process the response content blocks:
-
-```go
-response, err := agent.Run(ctx, "Tell me a story")
-if err != nil {
-    log.Fatal(err)
-}
-
-// Process content blocks
-for _, block := range response.Message.Content {
-    switch block.Type {
-    case agentpg.ContentTypeText:
-        fmt.Printf("Text: %s\n", block.Text)
-    case agentpg.ContentTypeToolUse:
-        fmt.Printf("Tool call: %s with input %v\n", block.ToolName, block.ToolInput)
-    case agentpg.ContentTypeToolResult:
-        fmt.Printf("Tool result: %s\n", block.ToolContent)
-    }
-}
-
-// Access usage statistics
-fmt.Printf("Tokens used: %d input, %d output\n",
-    response.Usage.InputTokens, response.Usage.OutputTokens)
-```
-
-## Session Management
-
-### Resuming Conversations
-
-```go
-// Load an existing session by ID
-err := agent.LoadSession(ctx, "session-uuid-here")
-if err != nil {
-    log.Fatal(err)
-}
-
-// Continue the conversation
-response, _ := agent.Run(ctx, "What were we talking about?")
-```
-
-### Listing Sessions
-
-```go
-// Get all sessions for a tenant
-sessions, err := store.GetSessionsByTenant(ctx, "my-tenant")
-for _, s := range sessions {
-    fmt.Printf("Session %s: %s (created: %v)\n", s.ID, s.Identifier, s.CreatedAt)
-}
-```
-
-### Session Metadata
-
-```go
-// Create session with metadata
-metadata := map[string]any{
-    "user_name": "Alice",
-    "plan":      "premium",
-    "tags":      []string{"support", "billing"},
-}
-sessionID, _ := agent.NewSession(ctx, "tenant", "user", nil, metadata)
-
-// Access metadata later
-sessionInfo, _ := agent.GetSession(ctx, sessionID)
-userName := sessionInfo.Metadata["user_name"].(string)
-```
-
-## Multi-Tenancy
-
-AgentPG is designed for multi-tenant applications:
-
-```go
-// Each tenant's sessions are isolated
-agent.NewSession(ctx, "company-a", "user-1", nil, nil) // Company A's user
-agent.NewSession(ctx, "company-b", "user-1", nil, nil) // Company B's user (different session)
-```
-
-For single-tenant applications, use a constant tenant ID:
-
-```go
-const TenantID = "default"
-agent.NewSession(ctx, TenantID, "user-123", nil, nil)
-```
-
-## Error Handling
-
-```go
-response, err := agent.Run(ctx, "Hello")
-if err != nil {
-    switch {
-    case errors.Is(err, agentpg.ErrNoSession):
-        // No session loaded - call NewSession or LoadSession first
-    case errors.Is(err, context.DeadlineExceeded):
-        // Request timed out
+        result = params.A / params.B
     default:
-        // API or other error
-        log.Printf("Agent error: %v", err)
+        return "", fmt.Errorf("unknown operation: %s", params.Operation)
     }
+
+    return fmt.Sprintf("%.2f", result), nil
 }
 ```
+
+Register the tool and assign it to an agent:
+
+```go
+// Register tool on client
+client.RegisterTool(&CalculatorTool{})
+
+// Register agent with tool access
+client.RegisterAgent(&agentpg.AgentDefinition{
+    Name:         "math-assistant",
+    Model:        "claude-sonnet-4-5-20250929",
+    SystemPrompt: "You are a math assistant. Use the calculator tool for calculations.",
+    Tools:        []string{"calculator"},  // Grant access to the tool
+})
+```
+
+Now the agent can use the calculator:
+
+```go
+response, _ := client.RunSync(ctx, sessionID, "math-assistant", "What is 15 * 7?")
+// Agent will call calculator(operation="multiply", a=15, b=7)
+// Response: "15 * 7 = 105"
+```
+
+## API Modes
+
+AgentPG supports two API modes for different use cases:
+
+### Batch API (Cost-Effective)
+
+Uses Claude's Batch API with 50% cost savings. Best for background processing.
+
+```go
+// Async - returns immediately
+runID, _ := client.Run(ctx, sessionID, "assistant", "Analyze this data...")
+// Do other work...
+response, _ := client.WaitForRun(ctx, runID)
+
+// Sync - waits for completion
+response, _ := client.RunSync(ctx, sessionID, "assistant", "Hello!")
+```
+
+### Streaming API (Real-Time)
+
+Uses Claude's Streaming API for lower latency. Best for interactive applications.
+
+```go
+// Async
+runID, _ := client.RunFast(ctx, sessionID, "assistant", "Quick question...")
+response, _ := client.WaitForRun(ctx, runID)
+
+// Sync (recommended for chat UIs)
+response, _ := client.RunFastSync(ctx, sessionID, "assistant", "Hello!")
+```
+
+| Feature | Batch API | Streaming API |
+|---------|-----------|---------------|
+| Cost | 50% discount | Standard pricing |
+| Latency | Higher | Lower |
+| Best for | Background tasks | Interactive apps |
+| Methods | `Run()`, `RunSync()` | `RunFast()`, `RunFastSync()` |
 
 ## Next Steps
 
-- [Configuration](./configuration.md) - Customize agent behavior
-- [Tools](./tools.md) - Build powerful tool integrations
-- [Architecture](./architecture.md) - Understand system design
-- [Compaction](./compaction.md) - Manage long conversations
-- [Deployment](./deployment.md) - Production best practices
+Now that you have a working agent, explore these topics:
+
+- **[Configuration](./configuration.md)** - Customize client settings, concurrency, and timeouts
+- **[Tools Guide](./tools.md)** - Build advanced tools with database access and error handling
+- **[Architecture](./architecture.md)** - Understand the event-driven design and data model
+- **[Distributed Workers](./distributed.md)** - Scale across multiple instances
+- **[Context Compaction](./compaction.md)** - Manage long conversations efficiently
+- **[Admin UI](./ui.md)** - Set up the monitoring dashboard
+
+### Example Code
+
+Check the `/examples` directory for complete working examples:
+
+| Example | Description |
+|---------|-------------|
+| `basic/01_simple_chat` | Minimal agent setup |
+| `basic/02_shared_tools` | Multiple agents sharing tools |
+| `custom_tools/01_struct_tool` | Full Tool interface implementation |
+| `custom_tools/02_func_tool` | Quick function-based tools |
+| `nested_agents/01_basic_delegation` | Agent-as-tool pattern |
+| `distributed/main.go` | Multi-instance worker setup |
+| `admin_ui/main.go` | Web dashboard setup |
+
+### Using database/sql Instead of pgx
+
+If you prefer the standard library:
+
+```go
+import (
+    "database/sql"
+    _ "github.com/lib/pq"
+    "github.com/youssefsiam38/agentpg/driver/databasesql"
+)
+
+db, _ := sql.Open("postgres", os.Getenv("DATABASE_URL"))
+drv := databasesql.New(db)
+client, _ := agentpg.NewClient(drv, config)
+```
+
+### Transaction Support
+
+For atomic operations across your app and AgentPG:
+
+```go
+// Begin transaction
+tx, _ := pool.Begin(ctx)
+
+// Create session and run in same transaction
+sessionID, _ := client.NewSessionTx(ctx, tx, "tenant", "user", nil, nil)
+runID, _ := client.RunTx(ctx, tx, sessionID, "assistant", "Process this order")
+
+// Commit - run becomes visible to workers
+tx.Commit(ctx)
+
+// Wait for completion (OUTSIDE transaction)
+response, _ := client.WaitForRun(ctx, runID)
+```

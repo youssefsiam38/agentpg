@@ -1,0 +1,30 @@
+{{define "fragments/run-list.html"}}
+<div class="space-y-3">
+    {{range .Runs}}
+    <a href="{{$.BasePath}}/runs/{{.ID}}" class="block p-4 bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 hover:bg-gray-700/50 transition-colors">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <span class="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium {{stateBgColor .State}}">
+                    {{.State}}
+                </span>
+                <span class="font-medium text-gray-100">{{.AgentName}}</span>
+            </div>
+            <span class="text-sm text-gray-500">{{formatTimeAgo .CreatedAt}}</span>
+        </div>
+        <div class="mt-2 flex items-center space-x-4 text-sm text-gray-400">
+            <span>{{.IterationCount}} iterations</span>
+            <span>{{formatTokens .TotalTokens}} tokens</span>
+            {{if .Duration}}<span>{{formatDuration .Duration}}</span>{{end}}
+        </div>
+    </a>
+    {{else}}
+    <div class="text-center py-8 text-gray-500">No runs found</div>
+    {{end}}
+
+    {{if .HasMore}}
+    <div class="text-center py-4">
+        <a href="{{$.BasePath}}/runs" class="text-sm text-cyan-400 hover:text-cyan-300">Load more...</a>
+    </div>
+    {{end}}
+</div>
+{{end}}

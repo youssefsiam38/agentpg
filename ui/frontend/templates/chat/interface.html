@@ -1,0 +1,305 @@
+{{define "content"}}
+<div class="flex rounded-lg overflow-hidden border border-gray-700 shadow-lg shadow-gray-900/50" style="height: calc(100vh - 4rem);">
+    <!-- Sidebar: Session List -->
+    <div class="w-72 flex-shrink-0 bg-gray-800 border-r border-gray-700 flex flex-col">
+        <div class="p-4 border-b border-gray-700">
+            <a href="{{$.BasePath}}/chat/new" class="w-full inline-flex items-center justify-center rounded-md bg-cyan-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-cyan-500">
+                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                </svg>
+                New Chat
+            </a>
+        </div>
+        <div class="flex-1 overflow-y-auto p-2">
+            <h3 class="px-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">Recent Sessions</h3>
+            <ul class="mt-2 space-y-1">
+                {{$selectedSessionID := ""}}
+                {{if .Data.Session}}{{$selectedSessionID = printf "%s" .Data.Session.Session.ID}}{{end}}
+                {{range .Data.Sessions}}
+                <li>
+                    <a href="{{$.BasePath}}/chat/session/{{.ID}}" class="block px-3 py-2 text-sm rounded-lg transition-colors {{if eq (printf "%s" .ID) $selectedSessionID}}bg-cyan-500/20 border border-cyan-500/30 text-cyan-300{{else}}text-gray-300 hover:bg-gray-700{{end}}">
+                        <div class="font-medium truncate font-mono text-xs">{{.ID | truncate 16}}</div>
+                        <div class="text-xs text-gray-500 mt-0.5">{{.UserID}} · {{formatTimeAgo .LastActivityAt}}</div>
+                    </a>
+                </li>
+                {{else}}
+                <li class="px-2 py-8 text-center text-sm text-gray-500">
+                    <svg class="mx-auto h-8 w-8 text-gray-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                    </svg>
+                    No sessions yet
+                </li>
+                {{end}}
+            </ul>
+        </div>
+    </div>
+
+    <!-- Main Chat Area -->
+    <div class="flex-1 flex flex-col bg-gray-900">
+        {{if .Data.Session}}
+        <!-- Session Header -->
+        <div class="flex-shrink-0 bg-gray-800/50 border-b border-gray-700 px-4 py-3">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-lg font-medium text-gray-100 font-mono">{{.Data.Session.Session.ID}}</h2>
+                    <div class="flex items-center space-x-3 text-sm text-gray-400">
+                        <span>User: {{.Data.Session.Session.UserID}}</span>
+                        <span>Tenant: {{.Data.Session.Session.TenantID}}</span>
+                        {{if .Data.Conversation.AgentName}}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-cyan-500/20 text-cyan-400 ring-1 ring-cyan-500/30">
+                            {{.Data.Conversation.AgentName}}
+                        </span>
+                        {{end}}
+                    </div>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <!-- View Toggle -->
+                    <div class="flex items-center space-x-2">
+                        <span class="text-xs text-gray-400">View:</span>
+                        <div class="flex rounded-lg overflow-hidden border border-gray-600">
+                            <a href="{{$.BasePath}}/chat/session/{{.Data.Session.Session.ID}}?view=top-level"
+                               class="px-3 py-1.5 text-xs font-medium transition-colors {{if eq .Data.ViewMode "top-level"}}bg-cyan-600 text-white{{else}}bg-gray-700 text-gray-300 hover:bg-gray-600{{end}}">
+                                Top Level
+                            </a>
+                            <a href="{{$.BasePath}}/chat/session/{{.Data.Session.Session.ID}}?view=hierarchy"
+                               class="px-3 py-1.5 text-xs font-medium transition-colors {{if eq .Data.ViewMode "hierarchy"}}bg-cyan-600 text-white{{else}}bg-gray-700 text-gray-300 hover:bg-gray-600{{end}}">
+                                Hierarchy
+                            </a>
+                        </div>
+                        <div class="relative group">
+                            <button type="button" class="w-5 h-5 flex items-center justify-center rounded-full bg-gray-700 text-gray-400 hover:bg-gray-600 hover:text-gray-300 text-xs font-bold">
+                                ?
+                            </button>
+                            <div class="hidden group-hover:block absolute right-0 top-6 z-50 w-64 p-3 bg-gray-800 border border-gray-600 rounded-lg shadow-xl text-xs text-gray-300">
+                                <p class="font-semibold text-gray-100 mb-2">View Modes:</p>
+                                <p class="mb-2"><span class="text-cyan-400 font-medium">Top Level:</span> Shows only the main conversation with the root agent. Nested agent calls appear as collapsed tool results.</p>
+                                <p><span class="text-cyan-400 font-medium">Hierarchy:</span> Shows all messages from all agents, grouped by run hierarchy with visual depth indicators.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="chat-stats" class="flex items-center space-x-4">
+                        <span class="text-sm text-gray-400">{{.Data.Conversation.MessageCount}} messages</span>
+                        <span class="text-sm text-gray-400">{{formatTokens .Data.Conversation.TotalTokens}} tokens</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Messages -->
+        <div id="messages-container" class="flex-1 overflow-y-auto p-4 space-y-4">
+            <!-- Messages area - can be updated via OOB swap -->
+            <div id="messages-area" class="space-y-4">
+            {{if eq .Data.ViewMode "hierarchy"}}
+            {{/* Hierarchy View: Messages grouped by run showing all nested agents */}}
+            {{if .Data.HierarchicalConversation}}
+                {{/* Render orphan messages (no run_id) first */}}
+                {{if .Data.HierarchicalConversation.OrphanMessages}}
+                <div class="orphan-messages mb-4">
+                    {{range .Data.HierarchicalConversation.OrphanMessages}}
+                    {{template "message-bubble" (dict "Msg" . "BasePath" $.BasePath "ToolResults" $.Data.HierarchicalConversation.ToolResults)}}
+                    {{end}}
+                </div>
+                {{end}}
+
+                {{/* Render run groups hierarchically */}}
+                {{if .Data.HierarchicalConversation.RootGroups}}
+                <div class="run-groups space-y-4">
+                    {{range .Data.HierarchicalConversation.RootGroups}}
+                    {{template "run-message-group" (dict "Group" . "BasePath" $.BasePath "ToolResults" $.Data.HierarchicalConversation.ToolResults)}}
+                    {{end}}
+                </div>
+                {{else if not .Data.HierarchicalConversation.OrphanMessages}}
+                <div class="flex items-center justify-center h-full text-gray-400">
+                    <div class="text-center">
+                        <svg class="mx-auto h-12 w-12 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                        </svg>
+                        <p class="mt-2">No messages yet. Start a conversation!</p>
+                    </div>
+                </div>
+                {{end}}
+            {{end}}
+            {{else}}
+            {{/* Top Level View: Only root-level messages, nested agent conversations hidden */}}
+            {{range .Data.Conversation.Messages}}
+            {{template "message-bubble" (dict "Msg" . "BasePath" $.BasePath "ToolResults" $.Data.Conversation.ToolResults)}}
+            {{else}}
+            <div class="flex items-center justify-center h-full text-gray-400">
+                <div class="text-center">
+                    <svg class="mx-auto h-12 w-12 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                    </svg>
+                    <p class="mt-2">No messages yet. Start a conversation!</p>
+                </div>
+            </div>
+            {{end}}
+            {{end}}
+            </div>
+
+            <!-- Pending response container -->
+            <div id="pending-response">
+                {{if .Data.PendingRunID}}
+                {{if eq .Data.ViewMode "hierarchy"}}
+                {{/* For hierarchy view: minimal polling div - UI is shown in run-message-group */}}
+                <div id="run-{{.Data.PendingRunID}}"
+                     hx-get="{{$.BasePath}}/chat/poll/{{.Data.PendingRunID}}?view={{.Data.ViewMode}}"
+                     hx-trigger="every 1s"
+                     hx-swap="outerHTML">
+                </div>
+                {{else}}
+                {{/* For top-level view: show processing indicator and tool executions */}}
+                {{/* When state is pending_tools, messages already have tool_use blocks - show minimal polling div */}}
+                {{if eq .Data.PendingRunState "pending_tools"}}
+                <div id="run-{{.Data.PendingRunID}}"
+                     hx-get="{{$.BasePath}}/chat/poll/{{.Data.PendingRunID}}?view={{.Data.ViewMode}}"
+                     hx-trigger="every 1s"
+                     hx-swap="outerHTML">
+                </div>
+                {{else}}
+                <div id="run-{{.Data.PendingRunID}}"
+                     class="flex justify-start"
+                     hx-get="{{$.BasePath}}/chat/poll/{{.Data.PendingRunID}}?view={{.Data.ViewMode}}"
+                     hx-trigger="every 1s"
+                     hx-swap="outerHTML">
+                    <div class="max-w-3xl bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 shadow-sm">
+                        {{if .Data.Conversation.AgentName}}
+                        <div class="flex items-center space-x-2 mb-2 text-gray-400 text-xs">
+                            <span>{{.Data.Conversation.AgentName}}</span>
+                        </div>
+                        {{end}}
+                        {{template "processing-indicator" (dict)}}
+
+                        {{/* Show in-progress tool executions on initial load */}}
+                        {{range .Data.PendingToolExecutions}}
+                        {{if or (eq .State "pending") (eq .State "running")}}
+                        <div class="mt-2 p-2 rounded bg-gray-700/50 border border-gray-600">
+                            <div class="flex items-center space-x-2 text-sm">
+                                <svg class="w-3 h-3 animate-spin text-purple-400" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                <span class="text-gray-300">{{.ToolName}}</span>
+                                <span class="text-xs text-gray-500">{{.State}}</span>
+                            </div>
+                            {{if .ToolInput}}
+                            <details class="mt-2">
+                                <summary class="text-xs text-gray-400 cursor-pointer">View Input</summary>
+                                <pre class="mt-1 text-xs text-green-400 overflow-x-auto bg-gray-950 p-2 rounded border border-gray-700">{{json .ToolInput}}</pre>
+                            </details>
+                            {{end}}
+                        </div>
+                        {{end}}
+                        {{end}}
+                    </div>
+                </div>
+                {{end}}
+                {{end}}
+                {{end}}
+            </div>
+        </div>
+
+        <!-- Input Form -->
+        {{if not $.ReadOnly}}
+        <div class="flex-shrink-0 bg-gray-800/50 border-t border-gray-700 p-4">
+            <form id="chat-form"
+                  hx-post="{{$.BasePath}}/chat/send"
+                  hx-target="#pending-response"
+                  hx-swap="innerHTML"
+                  class="flex space-x-3">
+                <input type="hidden" name="session_id" value="{{.Data.Session.Session.ID}}">
+                <input type="hidden" name="agent_name" value="{{.Data.Conversation.AgentName}}">
+                <input type="hidden" name="view_mode" value="{{.Data.ViewMode}}">
+                <div class="flex-1">
+                    <input type="text" name="message"
+                           placeholder="Type your message..."
+                           class="block w-full rounded-lg border border-gray-600 bg-gray-900 text-gray-100 px-4 py-2.5 shadow-sm placeholder-gray-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 sm:text-sm"
+                           autocomplete="off"
+                           autofocus>
+                </div>
+                <button type="submit" class="inline-flex items-center rounded-lg bg-cyan-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-cyan-500 transition-colors">
+                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
+                    </svg>
+                    Send
+                </button>
+            </form>
+        </div>
+        {{end}}
+        {{else}}
+        <!-- No Session Selected -->
+        <div class="flex-1 flex items-center justify-center">
+            <div class="text-center">
+                <svg class="mx-auto h-16 w-16 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                </svg>
+                <h3 class="mt-4 text-lg font-medium text-gray-100">Start a conversation</h3>
+                <p class="mt-2 text-sm text-gray-400">Select an existing session or create a new one.</p>
+                <a href="{{$.BasePath}}/chat/new" class="mt-4 inline-flex items-center rounded-md bg-cyan-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-cyan-500">
+                    New Chat
+                </a>
+            </div>
+        </div>
+        {{end}}
+    </div>
+</div>
+
+<script>
+// Scroll to bottom helper
+function scrollMessagesToBottom() {
+    var container = document.getElementById('messages-container');
+    if (container) {
+        container.scrollTop = container.scrollHeight;
+    }
+}
+
+// Toggle run group collapse/expand
+function toggleRunGroup(header) {
+    var group = header.closest('.run-group');
+    if (!group) return;
+
+    var content = group.querySelector('.run-group-content');
+    var childGroups = group.querySelector('.run-child-groups');
+    var icon = header.querySelector('.run-collapse-icon');
+
+    var isCollapsed = group.classList.contains('collapsed');
+
+    if (isCollapsed) {
+        // Expand
+        group.classList.remove('collapsed');
+        if (content) content.style.display = '';
+        if (childGroups) childGroups.style.display = '';
+        if (icon) icon.style.transform = '';
+    } else {
+        // Collapse
+        group.classList.add('collapsed');
+        if (content) content.style.display = 'none';
+        if (childGroups) childGroups.style.display = 'none';
+        if (icon) icon.style.transform = 'rotate(-90deg)';
+    }
+}
+
+// Scroll to bottom when new messages arrive
+document.body.addEventListener('htmx:afterSwap', function(evt) {
+    if (evt.detail.target.id === 'pending-response' || evt.detail.target.id === 'messages-container') {
+        scrollMessagesToBottom();
+    }
+});
+
+// Handle OOB swaps (for messages refresh)
+document.body.addEventListener('htmx:oobAfterSwap', function(evt) {
+    if (evt.detail.target.id === 'messages-container') {
+        // Use setTimeout to ensure DOM is fully updated
+        setTimeout(scrollMessagesToBottom, 10);
+    }
+});
+
+// Clear input after sending
+document.body.addEventListener('htmx:afterRequest', function(evt) {
+    if (evt.detail.elt.id === 'chat-form') {
+        evt.detail.elt.querySelector('input[name="message"]').value = '';
+    }
+});
+</script>
+{{end}}
+
+{{/* message-bubble template is now in chat/message-bubble.html (shared) */}}

@@ -2,203 +2,217 @@ package compaction
 
 import (
 	"context"
-	"encoding/json"
+	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/youssefsiam38/agentpg/types"
+	"github.com/google/uuid"
+	"github.com/youssefsiam38/agentpg/driver"
 )
 
-const (
-	// DefaultPruneProtect is default recent tokens protected (OpenCode pattern)
-	// Used when config.ProtectedTokens is 0
-	DefaultPruneProtect = 40000
-
-	// DefaultPruneMinimum only prunes if tool outputs exceed this threshold
-	// Used as a floor to avoid unnecessary pruning of small outputs
-	DefaultPruneMinimum = 1000
-)
-
-// HybridStrategy implements prune-then-summarize (OpenCode pattern)
-// Step 1: Prune tool outputs (free, no API call)
-// Step 2: If still over target, summarize
+// HybridStrategy implements a two-phase compaction approach:
+// 1. First, prune tool outputs from compactable messages (free, no API call)
+// 2. If still over target, summarize remaining messages using the summarization strategy
 type HybridStrategy struct {
-	client      *anthropic.Client
-	summarizer  *SummarizationStrategy
-	counter     *TokenCounter
-	partitioner *Partitioner
+	summarizer          *Summarizer
+	tokenCounter        *TokenCounter
+	config              *Config
+	preserveToolOutputs bool
 }
 
-// NewHybridStrategy creates a new hybrid strategy
-func NewHybridStrategy(client *anthropic.Client) *HybridStrategy {
+// NewHybridStrategy creates a new hybrid compaction strategy.
+func NewHybridStrategy(summarizer *Summarizer, tokenCounter *TokenCounter, config *Config) *HybridStrategy {
 	return &HybridStrategy{
-		client:      client,
-		summarizer:  NewSummarizationStrategy(client),
-		counter:     NewTokenCounter(client),
-		partitioner: NewPartitioner(),
+		summarizer:          summarizer,
+		tokenCounter:        tokenCounter,
+		config:              config,
+		preserveToolOutputs: config.PreserveToolOutputs,
 	}
 }
 
-func (h *HybridStrategy) Name() string {
-	return "hybrid"
+// Name returns the strategy name.
+func (h *HybridStrategy) Name() Strategy {
+	return StrategyHybrid
 }
 
-func (h *HybridStrategy) ShouldCompact(messages []*types.Message, config CompactionConfig) bool {
-	totalTokens := SumTokens(messages)
-	threshold := int(float64(config.MaxContextTokens) * config.TriggerThreshold)
-	return totalTokens >= threshold
-}
-
-func (h *HybridStrategy) Compact(
-	ctx context.Context,
-	messages []*types.Message,
-	config CompactionConfig,
-) (*CompactionResult, error) {
-	originalTokens := SumTokens(messages)
-	originalCount := len(messages)
-
-	// Step 1: Prune tool outputs first (cheaper, no API call)
-	pruned, prunedCount := h.pruneToolOutputs(messages, config)
-	prunedTokens := SumTokens(pruned)
-
-	// Step 2: Check if pruning was sufficient to reach target
-	// Use TargetTokens as the goal, not the trigger threshold
-	if prunedTokens <= config.TargetTokens {
-		// Pruning was sufficient, no summarization needed
-		result := &CompactionResult{
-			Summary:           "[Tool outputs pruned]",
-			PreservedMessages: pruned,
-			OriginalTokens:    originalTokens,
-			CompactedTokens:   prunedTokens,
-			MessagesRemoved:   0,
-			Strategy:          h.Name(),
-		}
-		// Only return this if we actually pruned something
-		if prunedCount > 0 {
-			return result, nil
-		}
+// Execute performs the hybrid compaction strategy.
+func (h *HybridStrategy) Execute(ctx context.Context, partition *MessagePartition) (*StrategyResult, error) {
+	if !partition.CanCompact() {
+		return nil, ErrNoMessagesToCompact
 	}
 
-	// Step 3: Still over target or nothing was pruned, need summarization
-	result, err := h.summarizer.Compact(ctx, pruned, config)
+	start := time.Now()
+
+	// Phase 1: Prune tool outputs if enabled
+	var prunedMessages []*driver.Message
+	var tokensSavedByPruning int
+
+	if !h.preserveToolOutputs {
+		prunedMessages, tokensSavedByPruning = h.pruneToolOutputs(partition.Compactable)
+	} else {
+		prunedMessages = partition.Compactable
+	}
+
+	// Calculate tokens after pruning
+	tokensAfterPruning := partition.Stats.TotalTokens - tokensSavedByPruning
+
+	// Check if pruning alone is sufficient
+	if tokensAfterPruning <= h.config.TargetTokens {
+		// Pruning was sufficient - no summarization needed
+		return &StrategyResult{
+			SummaryText:        "", // No summary created
+			SummaryTokens:      0,
+			ArchivedMessageIDs: h.findPrunedMessageIDs(partition.Compactable, prunedMessages),
+			TokensRemoved:      tokensSavedByPruning,
+			TokensAfter:        tokensAfterPruning,
+			Duration:           time.Since(start),
+		}, nil
+	}
+
+	// Phase 2: Summarization needed
+	// Create a modified partition with the pruned messages
+	prunedPartition := &MessagePartition{
+		Protected:   partition.Protected,
+		Preserved:   partition.Preserved,
+		Recent:      partition.Recent,
+		Summaries:   partition.Summaries,
+		Compactable: prunedMessages,
+		Stats: PartitionStats{
+			ProtectedTokens:   partition.Stats.ProtectedTokens,
+			PreservedTokens:   partition.Stats.PreservedTokens,
+			RecentTokens:      partition.Stats.RecentTokens,
+			SummaryTokens:     partition.Stats.SummaryTokens,
+			CompactableTokens: partition.Stats.CompactableTokens - tokensSavedByPruning,
+			TotalTokens:       tokensAfterPruning,
+		},
+	}
+
+	// Get context messages
+	contextMsgs := prunedPartition.ContextMessages()
+
+	// Summarize the pruned compactable messages
+	summaryText, err := h.summarizer.SummarizeWithContext(ctx, contextMsgs, prunedPartition.Compactable)
 	if err != nil {
 		return nil, err
 	}
 
-	// Fix the token counts to reflect original -> final (not pruned -> final)
-	if result != nil {
-		result.OriginalTokens = originalTokens
-		result.MessagesRemoved = originalCount - len(result.PreservedMessages)
+	// Estimate tokens for the summary
+	summaryTokens, err := h.tokenCounter.CountTokensForContent(ctx, summaryText)
+	if err != nil {
+		summaryTokens = approximateTokens(summaryText)
 	}
 
-	return result, nil
+	// Calculate final token reduction
+	totalTokensRemoved := partition.Stats.CompactableTokens
+	tokensAfter := partition.Stats.TotalTokens - totalTokensRemoved + summaryTokens
+
+	return &StrategyResult{
+		SummaryText:        summaryText,
+		SummaryTokens:      summaryTokens,
+		ArchivedMessageIDs: partition.CompactableIDs(),
+		TokensRemoved:      totalTokensRemoved,
+		TokensAfter:        tokensAfter,
+		Duration:           time.Since(start),
+	}, nil
 }
 
-// pruneToolOutputs removes verbose tool outputs outside protected zone
-func (h *HybridStrategy) pruneToolOutputs(
-	messages []*types.Message,
-	config CompactionConfig,
-) ([]*types.Message, int) {
-	// Create deep copy to avoid modifying original
-	result := make([]*types.Message, len(messages))
-	for i := range messages {
-		result[i] = h.copyMessage(messages[i])
-	}
+// pruneToolOutputs replaces tool output content with a placeholder.
+// Returns the modified messages and estimated tokens saved.
+func (h *HybridStrategy) pruneToolOutputs(messages []*driver.Message) ([]*driver.Message, int) {
+	const prunedPlaceholder = "[TOOL OUTPUT PRUNED]"
+	tokensSaved := 0
+	prunedMessages := make([]*driver.Message, 0, len(messages))
 
-	totalPruned := 0
-	toolOutputTokens := 0
-
-	// Use config.ProtectedTokens, fallback to default if not set
-	protectedTokens := config.ProtectedTokens
-	if protectedTokens == 0 {
-		protectedTokens = DefaultPruneProtect
-	}
-
-	// Calculate protected zone from end
-	protectedIdx := h.partitioner.findProtectedIndex(messages, protectedTokens)
-
-	// First pass: count tool output tokens outside protected zone
-	for i := 0; i < protectedIdx; i++ {
-		for _, block := range result[i].Content {
-			if block.Type == types.ContentTypeToolResult && block.ToolContent != "" {
-				// Approximate tokens in tool result
-				tokens := ApproximateTokens(block.ToolContent)
-				toolOutputTokens += tokens
-			}
+	for _, msg := range messages {
+		// Skip messages that shouldn't be pruned
+		if msg.IsPreserved || msg.IsSummary {
+			prunedMessages = append(prunedMessages, msg)
+			continue
 		}
-	}
 
-	// Only prune if tool outputs exceed minimum threshold
-	if toolOutputTokens < DefaultPruneMinimum {
-		return result, 0
-	}
-
-	// Second pass: prune tool outputs outside protected zone
-	for i := 0; i < protectedIdx; i++ {
-		for j := range result[i].Content {
-			block := &result[i].Content[j]
-			if block.Type == types.ContentTypeToolResult && block.ToolContent != "" {
-				// Save original token count
-				originalTokens := ApproximateTokens(block.ToolContent)
-
-				// Replace with pruned marker
-				block.ToolContent = "[TOOL OUTPUT PRUNED]"
-				block.IsError = false
-
-				// Update token count
-				prunedTokens := 4 // "[TOOL OUTPUT PRUNED]" is ~4 tokens
-				totalPruned += originalTokens - prunedTokens
+		// Check if message has tool results to prune
+		hasPrunableContent := false
+		for _, block := range msg.Content {
+			if block.Type == "tool_result" && len(block.ToolContent) > len(prunedPlaceholder) {
+				hasPrunableContent = true
+				break
 			}
 		}
 
-		// Recalculate message token count
-		result[i].Usage = &types.Usage{
-			InputTokens: h.calculateMessageTokens(result[i]),
+		if !hasPrunableContent {
+			prunedMessages = append(prunedMessages, msg)
+			continue
 		}
+
+		// Create a copy of the message with pruned content
+		prunedMsg := &driver.Message{
+			ID:          msg.ID,
+			SessionID:   msg.SessionID,
+			RunID:       msg.RunID,
+			Role:        msg.Role,
+			IsPreserved: msg.IsPreserved,
+			IsSummary:   msg.IsSummary,
+			Metadata:    msg.Metadata,
+			CreatedAt:   msg.CreatedAt,
+			UpdatedAt:   msg.UpdatedAt,
+		}
+
+		prunedContent := make([]driver.ContentBlock, 0, len(msg.Content))
+		for _, block := range msg.Content {
+			if block.Type == "tool_result" && len(block.ToolContent) > len(prunedPlaceholder) {
+				// Calculate tokens saved
+				originalTokens := approximateTokens(block.ToolContent)
+				placeholderTokens := approximateTokens(prunedPlaceholder)
+				tokensSaved += originalTokens - placeholderTokens
+
+				// Create pruned block
+				prunedBlock := driver.ContentBlock{
+					Type:               block.Type,
+					ToolResultForUseID: block.ToolResultForUseID,
+					ToolContent:        prunedPlaceholder,
+					IsError:            block.IsError,
+					Metadata:           block.Metadata,
+				}
+				prunedContent = append(prunedContent, prunedBlock)
+			} else {
+				prunedContent = append(prunedContent, block)
+			}
+		}
+
+		prunedMsg.Content = prunedContent
+		prunedMessages = append(prunedMessages, prunedMsg)
 	}
 
-	return result, totalPruned
+	return prunedMessages, tokensSaved
 }
 
-// copyMessage creates a deep copy of a message
-func (h *HybridStrategy) copyMessage(msg *types.Message) *types.Message {
-	msgCopy := *msg
+// findPrunedMessageIDs returns the IDs of messages that were modified during pruning.
+// These are the messages where tool outputs were replaced with placeholders.
+func (h *HybridStrategy) findPrunedMessageIDs(original, pruned []*driver.Message) []uuid.UUID {
+	prunedIDs := make([]uuid.UUID, 0)
 
-	// Deep copy content blocks
-	msgCopy.Content = make([]types.ContentBlock, len(msg.Content))
-	copy(msgCopy.Content, msg.Content)
-
-	// Deep copy usage if present
-	if msg.Usage != nil {
-		usageCopy := *msg.Usage
-		msgCopy.Usage = &usageCopy
-	}
-
-	// Deep copy metadata if present
-	if msg.Metadata != nil {
-		msgCopy.Metadata = make(map[string]any, len(msg.Metadata))
-		for k, v := range msg.Metadata {
-			msgCopy.Metadata[k] = v
+	for i, msg := range original {
+		if i < len(pruned) && h.wasMessagePruned(msg, pruned[i]) {
+			prunedIDs = append(prunedIDs, msg.ID)
 		}
 	}
 
-	return &msgCopy
+	return prunedIDs
 }
 
-// calculateMessageTokens estimates tokens for a message
-func (h *HybridStrategy) calculateMessageTokens(msg *types.Message) int {
-	totalTokens := 0
-	for _, block := range msg.Content {
-		switch block.Type {
-		case types.ContentTypeText:
-			totalTokens += ApproximateTokens(block.Text)
-		case types.ContentTypeToolUse:
-			inputJSON, _ := json.Marshal(block.ToolInput)
-			totalTokens += ApproximateTokens(string(inputJSON))
-			totalTokens += 10 // Overhead for tool call structure
-		case types.ContentTypeToolResult:
-			totalTokens += ApproximateTokens(block.ToolContent)
-			totalTokens += 10 // Overhead for tool result structure
+// wasMessagePruned checks if a message was modified during pruning.
+func (h *HybridStrategy) wasMessagePruned(original, pruned *driver.Message) bool {
+	if original.ID != pruned.ID {
+		return false
+	}
+
+	for i, block := range original.Content {
+		if i >= len(pruned.Content) {
+			return true
+		}
+		if block.Type == "tool_result" &&
+			block.ToolContent != pruned.Content[i].ToolContent {
+			return true
 		}
 	}
-	return totalTokens + 4 // Message overhead
+
+	return false
 }

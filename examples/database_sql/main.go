@@ -1,3 +1,10 @@
+// Package main demonstrates using the Client API with database/sql driver.
+//
+// This example shows:
+// - Using the standard library database/sql package instead of pgx
+// - Per-client agent registration
+// - Transaction support with RunTx and NewSessionTx
+// - Compatible with any database/sql driver (lib/pq, pgx stdlib, etc.)
 package main
 
 import (
@@ -6,16 +13,18 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/databasesql"
 )
 
 func main() {
-	ctx := context.Background()
+	// Create a context that cancels on SIGINT/SIGTERM
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	// Get environment variables
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -32,7 +41,7 @@ func main() {
 	// Create database/sql connection
 	// ==========================================================
 
-	fmt.Println("=== database/sql Driver Example ===")
+	fmt.Println("=== database/sql Driver Example (Client API) ===")
 	fmt.Println()
 	fmt.Println("This example demonstrates using AgentPG with the")
 	fmt.Println("standard library database/sql package instead of pgx.")
@@ -52,39 +61,51 @@ func main() {
 	fmt.Println("Connected to PostgreSQL using database/sql")
 	fmt.Println()
 
-	// Create Anthropic client
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-
 	// ==========================================================
-	// Create driver and agent
+	// Create driver and client
 	// ==========================================================
 
-	// Create the database/sql driver
-	drv := databasesql.New(db)
+	// Create the database/sql driver (requires connection string for LISTEN/NOTIFY)
+	drv := databasesql.New(db, dbURL)
 
-	// Create agent - note: no explicit generic type parameter needed!
-	// Type inference handles it automatically based on the driver
-	agent, err := agentpg.New(
-		drv,
-		agentpg.Config{
-			Client:       &client,
-			Model:        "claude-sonnet-4-5-20250929",
-			SystemPrompt: "You are a helpful assistant. Keep responses concise.",
-		},
-		agentpg.WithMaxTokens(1024),
-	)
+	// Create the AgentPG client
+	client, err := agentpg.NewClient(drv, &agentpg.ClientConfig{
+		APIKey: apiKey,
+	})
 	if err != nil {
-		log.Fatalf("Failed to create agent: %v", err)
+		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	fmt.Println("Agent created with database/sql driver")
+	// Register agent on the client
+	maxTokens := 1024
+	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+		Name:         "database-sql-demo",
+		Description:  "Demonstrates database/sql driver usage",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Keep responses concise.",
+		MaxTokens:    &maxTokens,
+	}); err != nil {
+		log.Fatalf("Failed to register agent: %v", err)
+	}
+
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
+	fmt.Printf("Client started (instance ID: %s)\n", client.InstanceID())
 	fmt.Println()
 
 	// ==========================================================
 	// Create session
 	// ==========================================================
 
-	sessionID, err := agent.NewSession(ctx, "tenant-1", "database-sql-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, "tenant-1", "database-sql-demo", nil, map[string]any{
 		"driver": "database/sql",
 	})
 	if err != nil {
@@ -107,7 +128,7 @@ func main() {
 		fmt.Printf("=== Message %d ===\n", i+1)
 		fmt.Printf("User: %s\n", prompt)
 
-		response, err := agent.Run(ctx, prompt)
+		response, err := client.RunFastSync(ctx, sessionID, "database-sql-demo", prompt)
 		if err != nil {
 			log.Printf("Error: %v\n\n", err)
 			continue
@@ -137,16 +158,33 @@ func main() {
 		log.Fatalf("Failed to begin transaction: %v", err)
 	}
 
-	// Run agent within the transaction
-	response, err := agent.RunTx(ctx, tx, "What's a fun fact about Tokyo?")
+	// Create a new session within the transaction
+	sessionID2, err := client.NewSessionTx(ctx, tx, "tenant-1", "tx-demo", nil, map[string]any{
+		"description": "Transaction demo session",
+	})
 	if err != nil {
 		tx.Rollback()
-		log.Fatalf("Failed to run agent in transaction: %v", err)
+		log.Fatalf("Failed to create session in transaction: %v", err)
+	}
+
+	// Create a run within the transaction
+	runID, err := client.RunFastTx(ctx, tx, sessionID2, "database-sql-demo", "What's a fun fact about Tokyo?")
+	if err != nil {
+		tx.Rollback()
+		log.Fatalf("Failed to create run in transaction: %v", err)
 	}
 
 	// Commit the transaction
 	if err := tx.Commit(); err != nil {
 		log.Fatalf("Failed to commit transaction: %v", err)
+	}
+
+	fmt.Printf("Created session %s and run %s in transaction\n", sessionID2.String()[:8]+"...", runID.String()[:8]+"...")
+
+	// Wait for the run to complete (after transaction is committed)
+	response, err := client.WaitForRun(ctx, runID)
+	if err != nil {
+		log.Fatalf("Failed to wait for run: %v", err)
 	}
 
 	fmt.Println("User: What's a fun fact about Tokyo?")
@@ -166,13 +204,16 @@ func main() {
 	fmt.Println("The database/sql driver provides:")
 	fmt.Println("1. Compatibility with any database/sql driver (lib/pq, pgx stdlib, etc.)")
 	fmt.Println("2. Same API as pgxv5 driver - just swap the driver creation")
-	fmt.Println("3. Full transaction support with savepoint-based nesting")
+	fmt.Println("3. Full transaction support with NewSessionTx and RunTx")
 	fmt.Println("4. Standard library compatibility for existing codebases")
 	fmt.Println()
-	fmt.Println("Usage:")
+	fmt.Println("Client API Usage:")
 	fmt.Println("  db, _ := sql.Open(\"postgres\", dbURL)")
 	fmt.Println("  drv := databasesql.New(db)")
-	fmt.Println("  agent, _ := agentpg.New(drv, config)")
+	fmt.Println("  client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{APIKey: apiKey})")
+	fmt.Println("  client.RegisterAgent(&agentpg.AgentDefinition{...})")
+	fmt.Println("  client.Start(ctx)")
+	fmt.Println("  response, _ := client.RunSync(ctx, sessionID, \"agent-name\", prompt)")
 	fmt.Println()
 	fmt.Println("=== Demo Complete ===")
 }

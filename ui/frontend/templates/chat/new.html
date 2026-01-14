@@ -1,0 +1,132 @@
+{{define "content"}}
+<div class="max-w-2xl mx-auto py-12">
+    <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 p-8">
+        <h1 class="text-2xl font-bold text-gray-100 mb-6">Start New Chat</h1>
+
+        <form method="POST" action="{{$.BasePath}}/chat/send" class="space-y-6">
+            <!-- Agent Selection -->
+            <div>
+                <label for="agent_name" class="block text-sm font-medium text-gray-300 mb-2">
+                    Select Agent
+                </label>
+                <select name="agent_name" id="agent_name" required
+                    class="w-full px-4 py-3 border border-gray-600 bg-gray-900 text-gray-100 rounded-lg shadow-sm focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500">
+                    {{range .Data.Agents}}
+                    {{if .IsActive}}
+                    <option value="{{.Agent.Name}}">
+                        {{.Agent.Name}}{{if .Agent.Description}} - {{.Agent.Description}}{{end}}
+                    </option>
+                    {{else}}
+                    <option value="{{.Agent.Name}}" disabled class="text-gray-500">
+                        {{.Agent.Name}} (Inactive)
+                    </option>
+                    {{end}}
+                    {{end}}
+                </select>
+                <p class="mt-2 text-sm text-gray-500">
+                    Choose which agent to chat with. The agent will be fixed for the entire session.
+                </p>
+            </div>
+
+            <!-- User ID -->
+            <div>
+                <label for="user_id" class="block text-sm font-medium text-gray-300 mb-2">
+                    User ID
+                </label>
+                <input type="text" name="user_id" id="user_id" value="agentpg-ui-user" placeholder="my-user-id" required
+                    class="w-full px-4 py-3 border border-gray-600 bg-gray-900 text-gray-100 placeholder-gray-500 rounded-lg shadow-sm focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500">
+                <p class="mt-2 text-sm text-gray-500">
+                    Enter the user ID who owns this session. A user can have multiple sessions.
+                </p>
+            </div>
+
+            <!-- Tenant ID (for multi-tenant) -->
+            {{if not .TenantID}}
+            <div>
+                <label for="tenant_id" class="block text-sm font-medium text-gray-300 mb-2">
+                    Tenant ID
+                </label>
+                <input type="text" name="tenant_id" id="tenant_id" value="agentpg-ui-tenant"
+                    placeholder="agentpg-ui-tenant" required
+                    class="w-full px-4 py-3 border border-gray-600 bg-gray-900 text-gray-100 rounded-lg shadow-sm focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500">
+                <p class="mt-2 text-sm text-gray-500">
+                    Tenant identifier for multi-tenant isolation.
+                </p>
+            </div>
+            {{else}}
+            <input type="hidden" name="tenant_id" value="{{.TenantID}}">
+            {{end}}
+
+            <!-- Initial Message -->
+            <div>
+                <label for="message" class="block text-sm font-medium text-gray-300 mb-2">
+                    Your Message
+                </label>
+                <textarea name="message" id="message" rows="4" required placeholder="Hello! How can you help me today?"
+                    class="w-full px-4 py-3 border border-gray-600 bg-gray-900 text-gray-100 placeholder-gray-500 rounded-lg shadow-sm focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500"></textarea>
+            </div>
+
+            <!-- Hidden field to indicate new session -->
+            <input type="hidden" name="new_session" value="true">
+
+            <!-- Submit -->
+            <div class="flex items-center justify-between">
+                <a href="{{$.BasePath}}/chat" class="text-gray-400 hover:text-gray-200">
+                    Cancel
+                </a>
+                <button type="submit"
+                    class="px-6 py-3 bg-cyan-600 text-white font-medium rounded-lg hover:bg-cyan-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-cyan-500">
+                    Start Chat
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Agent Information -->
+    {{if .Data.Agents}}
+    <div class="mt-8">
+        <h2 class="text-lg font-medium text-gray-100 mb-4">Available Agents</h2>
+        <div class="space-y-4">
+            {{range .Data.Agents}}
+            <div
+                class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 p-4{{if not .IsActive}} opacity-60{{end}}">
+                <div class="flex items-start">
+                    <div class="flex-shrink-0 w-10 h-10 bg-cyan-500/20 rounded-lg flex items-center justify-center">
+                        <svg class="w-6 h-6 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                        </svg>
+                    </div>
+                    <div class="ml-4">
+                        <h3 class="font-medium text-gray-100">
+                            {{.Agent.Name}}
+                            {{if not .IsActive}}
+                            <span
+                                class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-600/50 text-gray-400 ring-1 ring-gray-500/30">
+                                Inactive
+                            </span>
+                            {{end}}
+                        </h3>
+                        {{if .Agent.Description}}
+                        <p class="text-sm text-gray-400">{{.Agent.Description}}</p>
+                        {{end}}
+                        <p class="text-xs text-gray-500 mt-1">Model: {{.Agent.Model}}</p>
+                        {{if .Agent.ToolNames}}
+                        <div class="mt-2 flex flex-wrap gap-1">
+                            {{range .Agent.ToolNames}}
+                            <span
+                                class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-purple-400 ring-1 ring-purple-500/30">
+                                {{.}}
+                            </span>
+                            {{end}}
+                        </div>
+                        {{end}}
+                    </div>
+                </div>
+            </div>
+            {{end}}
+        </div>
+    </div>
+    {{end}}
+</div>
+{{end}}
