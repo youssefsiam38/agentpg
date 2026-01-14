@@ -415,7 +415,7 @@ func (s *Store) createRun(ctx context.Context, e executor, params driver.CreateR
 	if err != nil {
 		return nil, fmt.Errorf("failed to create run: %w", err)
 	}
-	json.Unmarshal(metadata, &run.Metadata)
+	_ = json.Unmarshal(metadata, &run.Metadata)
 	return &run, nil
 }
 
@@ -445,7 +445,7 @@ func (s *Store) GetRun(ctx context.Context, id uuid.UUID) (*driver.Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(metadata, &run.Metadata)
+	_ = json.Unmarshal(metadata, &run.Metadata)
 	return &run, nil
 }
 
@@ -462,8 +462,9 @@ func (s *Store) UpdateRunState(ctx context.Context, id uuid.UUID, state driver.R
 }
 
 func (s *Store) updateRun(ctx context.Context, id uuid.UUID, updates map[string]any) error {
-	sets := []string{}
-	args := []any{id}
+	sets := make([]string, 0, len(updates))
+	args := make([]any, 0, 1+len(updates))
+	args = append(args, id)
 	i := 2
 
 	for k, v := range updates {
@@ -545,7 +546,7 @@ func (s *Store) GetStuckPendingToolsRuns(ctx context.Context, limit int) ([]*dri
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return collectRuns(rows)
 }
@@ -632,7 +633,7 @@ func (s *Store) ListRuns(ctx context.Context, params driver.ListRunsParams) ([]*
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list runs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	runs, err := collectRuns(rows)
 	if err != nil {
@@ -697,8 +698,9 @@ func (s *Store) GetIteration(ctx context.Context, id uuid.UUID) (*driver.Iterati
 }
 
 func (s *Store) UpdateIteration(ctx context.Context, id uuid.UUID, updates map[string]any) error {
-	sets := []string{}
-	args := []any{id}
+	sets := make([]string, 0, len(updates))
+	args := make([]any, 0, 1+len(updates))
+	args = append(args, id)
 	i := 2
 
 	for k, v := range updates {
@@ -722,7 +724,7 @@ func (s *Store) GetIterationsForPoll(ctx context.Context, instanceID string, pol
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return collectIterations(rows)
 }
@@ -740,7 +742,7 @@ func (s *Store) GetIterationsByRun(ctx context.Context, runID uuid.UUID) ([]*dri
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return collectIterations(rows)
 }
@@ -832,7 +834,7 @@ func (s *Store) CreateToolExecutionsAndUpdateRunState(ctx context.Context, param
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tool executions and update run: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return collectToolExecutions(rows)
 }
@@ -860,8 +862,9 @@ func (s *Store) GetToolExecution(ctx context.Context, id uuid.UUID) (*driver.Too
 }
 
 func (s *Store) UpdateToolExecution(ctx context.Context, id uuid.UUID, updates map[string]any) error {
-	sets := []string{}
-	args := []any{id}
+	sets := make([]string, 0, len(updates))
+	args := make([]any, 0, 1+len(updates))
+	args = append(args, id)
 	i := 2
 
 	for k, v := range updates {
@@ -884,7 +887,7 @@ func (s *Store) ClaimToolExecutions(ctx context.Context, instanceID string, maxC
 	if err != nil {
 		return nil, fmt.Errorf("failed to claim tool executions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return collectToolExecutions(rows)
 }
@@ -912,7 +915,7 @@ func (s *Store) GetToolExecutionsByRun(ctx context.Context, runID uuid.UUID) ([]
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return collectToolExecutions(rows)
 }
@@ -927,7 +930,7 @@ func (s *Store) GetToolExecutionsByIteration(ctx context.Context, iterationID uu
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return collectToolExecutions(rows)
 }
@@ -942,7 +945,7 @@ func (s *Store) GetPendingToolExecutionsForRun(ctx context.Context, runID uuid.U
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return collectToolExecutions(rows)
 }
@@ -1023,7 +1026,7 @@ func (s *Store) ListToolExecutions(ctx context.Context, params driver.ListToolEx
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list tool executions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	executions, err := collectToolExecutions(rows)
 	if err != nil {
@@ -1050,8 +1053,8 @@ func (s *Store) CreateMessage(ctx context.Context, params driver.CreateMessagePa
 	if err != nil {
 		return nil, fmt.Errorf("failed to create message: %w", err)
 	}
-	json.Unmarshal(usage, &msg.Usage)
-	json.Unmarshal(metadata, &msg.Metadata)
+	_ = json.Unmarshal(usage, &msg.Usage)
+	_ = json.Unmarshal(metadata, &msg.Metadata)
 
 	if err := s.CreateContentBlocks(ctx, msg.ID, params.Content); err != nil {
 		return nil, err
@@ -1076,8 +1079,8 @@ func (s *Store) GetMessage(ctx context.Context, id uuid.UUID) (*driver.Message, 
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(usage, &msg.Usage)
-	json.Unmarshal(metadata, &msg.Metadata)
+	_ = json.Unmarshal(usage, &msg.Usage)
+	_ = json.Unmarshal(metadata, &msg.Metadata)
 
 	blocks, err := s.GetContentBlocks(ctx, msg.ID)
 	if err != nil {
@@ -1101,7 +1104,7 @@ func (s *Store) GetMessages(ctx context.Context, sessionID uuid.UUID, limit int)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []*driver.Message
 	for rows.Next() {
@@ -1112,8 +1115,8 @@ func (s *Store) GetMessages(ctx context.Context, sessionID uuid.UUID, limit int)
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(usage, &msg.Usage)
-		json.Unmarshal(metadata, &msg.Metadata)
+		_ = json.Unmarshal(usage, &msg.Usage)
+		_ = json.Unmarshal(metadata, &msg.Metadata)
 
 		blocks, err := s.GetContentBlocks(ctx, msg.ID)
 		if err != nil {
@@ -1143,7 +1146,7 @@ func (s *Store) GetMessagesWithRunInfo(ctx context.Context, sessionID uuid.UUID,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []*driver.MessageWithRunInfo
 	for rows.Next() {
@@ -1156,8 +1159,8 @@ func (s *Store) GetMessagesWithRunInfo(ctx context.Context, sessionID uuid.UUID,
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(usage, &msg.Usage)
-		json.Unmarshal(metadata, &msg.Metadata)
+		_ = json.Unmarshal(usage, &msg.Usage)
+		_ = json.Unmarshal(metadata, &msg.Metadata)
 		msg.RunState = runState
 
 		blocks, err := s.GetContentBlocks(ctx, msg.ID)
@@ -1178,7 +1181,7 @@ func (s *Store) GetMessagesByRun(ctx context.Context, runID uuid.UUID) ([]*drive
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []*driver.Message
 	for rows.Next() {
@@ -1189,8 +1192,8 @@ func (s *Store) GetMessagesByRun(ctx context.Context, runID uuid.UUID) ([]*drive
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(usage, &msg.Usage)
-		json.Unmarshal(metadata, &msg.Metadata)
+		_ = json.Unmarshal(usage, &msg.Usage)
+		_ = json.Unmarshal(metadata, &msg.Metadata)
 
 		blocks, err := s.GetContentBlocks(ctx, msg.ID)
 		if err != nil {
@@ -1237,7 +1240,7 @@ func (s *Store) GetMessagesForRunContext(ctx context.Context, runID uuid.UUID) (
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []*driver.Message
 	for rows.Next() {
@@ -1248,8 +1251,8 @@ func (s *Store) GetMessagesForRunContext(ctx context.Context, runID uuid.UUID) (
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(usage, &msg.Usage)
-		json.Unmarshal(metadata, &msg.Metadata)
+		_ = json.Unmarshal(usage, &msg.Usage)
+		_ = json.Unmarshal(metadata, &msg.Metadata)
 
 		blocks, err := s.GetContentBlocks(ctx, msg.ID)
 		if err != nil {
@@ -1262,8 +1265,10 @@ func (s *Store) GetMessagesForRunContext(ctx context.Context, runID uuid.UUID) (
 }
 
 func (s *Store) UpdateMessage(ctx context.Context, id uuid.UUID, updates map[string]any) error {
-	sets := []string{"updated_at = NOW()"}
-	args := []any{id}
+	sets := make([]string, 0, 1+len(updates))
+	sets = append(sets, "updated_at = NOW()")
+	args := make([]any, 0, 1+len(updates))
+	args = append(args, id)
 	i := 2
 
 	for k, v := range updates {
@@ -1315,7 +1320,7 @@ func (s *Store) GetContentBlocks(ctx context.Context, messageID uuid.UUID) ([]dr
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var blocks []driver.ContentBlock
 	for rows.Next() {
@@ -1346,7 +1351,7 @@ func (s *Store) GetContentBlocks(ctx context.Context, messageID uuid.UUID) ([]dr
 		}
 		block.Source = source
 		block.SearchResults = searchResults
-		json.Unmarshal(metadata, &block.Metadata)
+		_ = json.Unmarshal(metadata, &block.Metadata)
 		blocks = append(blocks, block)
 	}
 	return blocks, rows.Err()
@@ -1408,7 +1413,7 @@ func (s *Store) GetInstance(ctx context.Context, instanceID string) (*driver.Ins
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(metadata, &inst.Metadata)
+	_ = json.Unmarshal(metadata, &inst.Metadata)
 	// ActiveRunCount and ActiveToolCount are calculated on-the-fly via GetInstanceActiveCounts
 	return &inst, nil
 }
@@ -1422,7 +1427,7 @@ func (s *Store) ListInstances(ctx context.Context) ([]*driver.Instance, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var instances []*driver.Instance
 	for rows.Next() {
@@ -1435,7 +1440,7 @@ func (s *Store) ListInstances(ctx context.Context) ([]*driver.Instance, error) {
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(metadata, &inst.Metadata)
+		_ = json.Unmarshal(metadata, &inst.Metadata)
 		// ActiveRunCount and ActiveToolCount are calculated on-the-fly via GetAllInstanceActiveCounts
 		instances = append(instances, &inst)
 	}
@@ -1449,7 +1454,7 @@ func (s *Store) GetStaleInstances(ctx context.Context, ttl time.Duration) ([]str
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []string
 	for rows.Next() {
@@ -1515,7 +1520,7 @@ func (s *Store) GetAllInstanceActiveCounts(ctx context.Context) (map[string][2]i
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var instanceID string
@@ -1542,7 +1547,7 @@ func (s *Store) GetAllInstanceActiveCounts(ctx context.Context) (map[string][2]i
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var instanceID string
@@ -1600,7 +1605,7 @@ func (s *Store) GetInstanceAgents(ctx context.Context, instanceID string) ([]str
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var names []string
 	for rows.Next() {
@@ -1620,7 +1625,7 @@ func (s *Store) GetInstanceTools(ctx context.Context, instanceID string) ([]stri
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var names []string
 	for rows.Next() {
@@ -1708,7 +1713,7 @@ func (s *Store) CreateCompactionEvent(ctx context.Context, params driver.CreateC
 	if err != nil {
 		return nil, fmt.Errorf("failed to create compaction event: %w", err)
 	}
-	json.Unmarshal(preservedIDs, &event.PreservedMessageIDs)
+	_ = json.Unmarshal(preservedIDs, &event.PreservedMessageIDs)
 	return &event, nil
 }
 
@@ -1729,7 +1734,7 @@ func (s *Store) GetCompactionEvents(ctx context.Context, sessionID uuid.UUID, li
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var events []*driver.CompactionEvent
 	for rows.Next() {
@@ -1741,7 +1746,7 @@ func (s *Store) GetCompactionEvents(ctx context.Context, sessionID uuid.UUID, li
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(preservedIDs, &event.PreservedMessageIDs)
+		_ = json.Unmarshal(preservedIDs, &event.PreservedMessageIDs)
 		events = append(events, &event)
 	}
 	return events, rows.Err()
@@ -1809,7 +1814,7 @@ func collectRuns(rows *sql.Rows) ([]*driver.Run, error) {
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(metadata, &run.Metadata)
+		_ = json.Unmarshal(metadata, &run.Metadata)
 		runs = append(runs, &run)
 	}
 	return runs, rows.Err()
@@ -1955,8 +1960,8 @@ func (s *Store) CompleteToolsAndContinueRun(ctx context.Context, sessionID, runI
 	msg.IsSummary = *isSummary
 	msg.CreatedAt = *createdAt
 	msg.UpdatedAt = *updatedAt
-	json.Unmarshal(usage, &msg.Usage)
-	json.Unmarshal(metadata, &msg.Metadata)
+	_ = json.Unmarshal(usage, &msg.Usage)
+	_ = json.Unmarshal(metadata, &msg.Metadata)
 	msg.Content = contentBlocks
 
 	return &msg, nil
@@ -1969,7 +1974,7 @@ func (s *Store) GetStuckRuns(ctx context.Context, timeout time.Duration, maxResc
 	if err != nil {
 		return nil, fmt.Errorf("failed to get stuck runs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return collectRuns(rows)
 }
