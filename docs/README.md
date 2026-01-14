@@ -1,5 +1,6 @@
 # AgentPG Documentation
 
+
 AgentPG is a fully event-driven Go framework for building async AI agents using PostgreSQL for state management and distribution. It provides stateful, distributed, and transaction-safe agent execution with Claude API integration.
 
 ## Key Features
@@ -110,4 +111,4 @@ func main() {
 
 ## License
 
-MIT License - see [LICENSE](../LICENSE) for details.
+Mozilla Public License 2.0 - see [LICENSE](../LICENSE) for details.  
