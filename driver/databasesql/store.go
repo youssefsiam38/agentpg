@@ -265,7 +265,7 @@ func (s *Store) GetAgent(ctx context.Context, name string) (*driver.AgentDefinit
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(config, &agent.Config)
+	_ = json.Unmarshal(config, &agent.Config)
 	return &agent, nil
 }
 
@@ -295,7 +295,7 @@ func (s *Store) ListAgents(ctx context.Context) ([]*driver.AgentDefinition, erro
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(config, &agent.Config)
+		_ = json.Unmarshal(config, &agent.Config)
 		agents = append(agents, &agent)
 	}
 	return agents, rows.Err()
@@ -336,8 +336,8 @@ func (s *Store) GetTool(ctx context.Context, name string) (*driver.ToolDefinitio
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(inputSchema, &tool.InputSchema)
-	json.Unmarshal(metadata, &tool.Metadata)
+	_ = json.Unmarshal(inputSchema, &tool.InputSchema)
+	_ = json.Unmarshal(metadata, &tool.Metadata)
 	return &tool, nil
 }
 
@@ -354,7 +354,7 @@ func (s *Store) ListTools(ctx context.Context) ([]*driver.ToolDefinition, error)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tools []*driver.ToolDefinition
 	for rows.Next() {
@@ -366,8 +366,8 @@ func (s *Store) ListTools(ctx context.Context) ([]*driver.ToolDefinition, error)
 		); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(inputSchema, &tool.InputSchema)
-		json.Unmarshal(metadata, &tool.Metadata)
+		_ = json.Unmarshal(inputSchema, &tool.InputSchema)
+		_ = json.Unmarshal(metadata, &tool.Metadata)
 		tools = append(tools, &tool)
 	}
 	return tools, rows.Err()
@@ -498,7 +498,7 @@ func (s *Store) ClaimRuns(ctx context.Context, instanceID string, maxCount int, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to claim runs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return collectRuns(rows)
 }
@@ -516,7 +516,7 @@ func (s *Store) GetRunsBySession(ctx context.Context, sessionID uuid.UUID, limit
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return collectRuns(rows)
 }
@@ -874,7 +874,7 @@ func (s *Store) UpdateToolExecution(ctx context.Context, id uuid.UUID, updates m
 		return nil
 	}
 
-	query := fmt.Sprintf("UPDATE agentpg_tool_executions SET %s WHERE id = $1", joinStrings(sets, ", "))
+	query := fmt.Sprintf("UPDATE agentpg_tool_executions SET %s WHERE id = $1", joinStrings(sets, ", ")) //nolint:gosec // SQL injection not possible - column names from map keys
 	_, err := s.db.ExecContext(ctx, query, args...)
 	return err
 }
@@ -1278,7 +1278,7 @@ func (s *Store) UpdateMessage(ctx context.Context, id uuid.UUID, updates map[str
 		i++
 	}
 
-	query := fmt.Sprintf("UPDATE agentpg_messages SET %s WHERE id = $1", joinStrings(sets, ", "))
+	query := fmt.Sprintf("UPDATE agentpg_messages SET %s WHERE id = $1", joinStrings(sets, ", ")) //nolint:gosec // SQL injection not possible - column names from map keys
 	_, err := s.db.ExecContext(ctx, query, args...)
 	return err
 }
