@@ -62,7 +62,7 @@ func (s *Store) createSession(ctx context.Context, e executor, params driver.Cre
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
 
-	json.Unmarshal(metadata, &session.Metadata)
+	_ = json.Unmarshal(metadata, &session.Metadata)
 	return &session, nil
 }
 
@@ -83,7 +83,7 @@ func (s *Store) GetSession(ctx context.Context, id uuid.UUID) (*driver.Session, 
 		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
 
-	json.Unmarshal(metadata, &session.Metadata)
+	_ = json.Unmarshal(metadata, &session.Metadata)
 	return &session, nil
 }
 
@@ -107,7 +107,7 @@ func (s *Store) UpdateSession(ctx context.Context, id uuid.UUID, updates map[str
 		i++
 	}
 
-	query := fmt.Sprintf("UPDATE agentpg_sessions SET %s WHERE id = $1", joinStrings(sets, ", "))
+	query := fmt.Sprintf("UPDATE agentpg_sessions SET %s WHERE id = $1", joinStrings(sets, ", ")) //nolint:gosec // SQL injection not possible - sets built from allowed keys
 	_, err := s.db.ExecContext(ctx, query, args...)
 	return err
 }
@@ -173,7 +173,7 @@ func (s *Store) ListSessions(ctx context.Context, params driver.ListSessionsPara
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sessions []*driver.Session
 	for rows.Next() {
@@ -185,7 +185,7 @@ func (s *Store) ListSessions(ctx context.Context, params driver.ListSessionsPara
 		); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan session: %w", err)
 		}
-		json.Unmarshal(metadata, &session.Metadata)
+		_ = json.Unmarshal(metadata, &session.Metadata)
 		sessions = append(sessions, &session)
 	}
 
@@ -206,7 +206,7 @@ func (s *Store) ListTenants(ctx context.Context) ([]driver.TenantInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tenants: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tenants []driver.TenantInfo
 	for rows.Next() {
@@ -282,7 +282,7 @@ func (s *Store) ListAgents(ctx context.Context) ([]*driver.AgentDefinition, erro
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var agents []*driver.AgentDefinition
 	for rows.Next() {
@@ -482,7 +482,7 @@ func (s *Store) updateRun(ctx context.Context, id uuid.UUID, updates map[string]
 		return nil
 	}
 
-	query := fmt.Sprintf("UPDATE agentpg_runs SET %s WHERE id = $1", joinStrings(sets, ", "))
+	query := fmt.Sprintf("UPDATE agentpg_runs SET %s WHERE id = $1", joinStrings(sets, ", ")) //nolint:gosec // SQL injection not possible - column names from map keys
 	_, err := s.db.ExecContext(ctx, query, args...)
 	return err
 }
@@ -569,8 +569,8 @@ func (s *Store) ListRuns(ctx context.Context, params driver.ListRunsParams) ([]*
 
 	// Join with sessions for tenant filtering
 	if params.TenantID != "" {
-		baseQuery = baseQuery[:len(baseQuery)] + " JOIN agentpg_sessions s ON r.session_id = s.id"
-		countQuery = countQuery + " JOIN agentpg_sessions s ON r.session_id = s.id"
+		baseQuery += " JOIN agentpg_sessions s ON r.session_id = s.id"
+		countQuery += " JOIN agentpg_sessions s ON r.session_id = s.id"
 		whereClauses = append(whereClauses, fmt.Sprintf("s.tenant_id = $%d", argNum))
 		args = append(args, params.TenantID)
 		argNum++
@@ -711,7 +711,7 @@ func (s *Store) UpdateIteration(ctx context.Context, id uuid.UUID, updates map[s
 		return nil
 	}
 
-	query := fmt.Sprintf("UPDATE agentpg_iterations SET %s WHERE id = $1", joinStrings(sets, ", "))
+	query := fmt.Sprintf("UPDATE agentpg_iterations SET %s WHERE id = $1", joinStrings(sets, ", ")) //nolint:gosec // SQL injection not possible - column names from map keys
 	_, err := s.db.ExecContext(ctx, query, args...)
 	return err
 }
@@ -774,7 +774,7 @@ func (s *Store) CreateToolExecution(ctx context.Context, params driver.CreateToo
 }
 
 func (s *Store) CreateToolExecutions(ctx context.Context, params []driver.CreateToolExecutionParams) ([]*driver.ToolExecution, error) {
-	var execs []*driver.ToolExecution
+	execs := make([]*driver.ToolExecution, 0, len(params))
 	for _, p := range params {
 		exec, err := s.CreateToolExecution(ctx, p)
 		if err != nil {
@@ -1520,15 +1520,15 @@ func (s *Store) GetAllInstanceActiveCounts(ctx context.Context) (map[string][2]i
 	for rows.Next() {
 		var instanceID string
 		var count int
-		if err := rows.Scan(&instanceID, &count); err != nil {
-			return nil, err
+		if scanErr := rows.Scan(&instanceID, &count); scanErr != nil {
+			return nil, scanErr
 		}
 		counts := result[instanceID]
 		counts[0] = count
 		result[instanceID] = counts
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
 	}
 
 	// Get active tool counts by instance

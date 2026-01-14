@@ -55,7 +55,7 @@ func (l *Listener) Listen(ctx context.Context, channels ...string) error {
 	// Subscribe to channels
 	for _, channel := range channels {
 		if err := l.listener.Listen(channel); err != nil {
-			l.listener.Close()
+			_ = l.listener.Close()
 			l.listener = nil
 			return err
 		}
@@ -119,7 +119,7 @@ func (l *Listener) Close() error {
 
 	// Close pq listener
 	if l.listener != nil {
-		l.listener.Close()
+		_ = l.listener.Close()
 		l.listener = nil
 	}
 
