@@ -35,18 +35,16 @@ AgentPG is a fully event-driven Go framework for building async AI agents using 
 │                                                                                   │
 │  ┌────────────────────────────────────────────────────────────────────────────┐  │
 │  │                      HTTP Server Layer (Optional)                           │  │
-│  │  ┌─────────────────────────┐    ┌─────────────────────────┐                │  │
-│  │  │     ui.UIHandler()      │    │    ui.APIHandler()      │                │  │
-│  │  │  /ui/* (HTMX + SSR)     │    │   /api/* (REST JSON)    │                │  │
-│  │  │  • Dashboard            │    │   • Sessions CRUD       │                │  │
-│  │  │  • Sessions/Runs        │    │   • Runs/Iterations     │                │  │
-│  │  │  • Chat Interface       │    │   • Tool Executions     │                │  │
-│  │  │  • Monitoring           │    │   • Agents/Instances    │                │  │
-│  │  └───────────┬─────────────┘    └───────────┬─────────────┘                │  │
-│  │              │ (optional: chat via client)  │                              │  │
-│  └──────────────┼──────────────────────────────┼──────────────────────────────┘  │
-│                 │                              │                                  │
-│  ┌──────────────┴──────────────────────────────┴──────────────────────────────┐  │
+│  │  ┌─────────────────────────────────────────────────────────────────────┐   │  │
+│  │  │                      ui.UIHandler()                                  │   │  │
+│  │  │  /ui/* (HTMX + SSR)                                                  │   │  │
+│  │  │  • Dashboard                    • Sessions/Runs                      │   │  │
+│  │  │  • Chat Interface               • Monitoring                         │   │  │
+│  │  └───────────────────────────────────┬─────────────────────────────────┘   │  │
+│  │                                      │ (optional: chat via client)         │  │
+│  └──────────────────────────────────────┼─────────────────────────────────────┘  │
+│                                         │                                        │
+│  ┌──────────────────────────────────────┴─────────────────────────────────────┐  │
 │  │                                                                             │  │
 │  │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                  │  │
 │  │  │   Client 1   │    │   Client 2   │    │   Client N   │   (k8s pods)     │  │
@@ -2090,19 +2088,17 @@ See the [Go documentation](https://pkg.go.dev/github.com/youssefsiam38/agentpg) 
 
 ---
 
-## Admin UI and REST API
+## Admin UI
 
-AgentPG includes an embedded admin UI and REST API for monitoring and managing agents. The UI is built with HTMX + Tailwind CSS and provides server-side rendering for a fast, responsive experience.
+AgentPG includes an embedded admin UI for monitoring and managing agents. The UI is built with HTMX + Tailwind CSS and provides server-side rendering for a fast, responsive experience.
 
 ### Overview
 
-The `ui` package provides three handler functions:
+The `ui` package provides a handler function:
 
 | Handler | Description |
 |---------|-------------|
 | `ui.UIHandler()` | SSR frontend with HTMX + Tailwind |
-| `ui.APIHandler()` | REST API with JSON responses |
-| `ui.Handler()` | Combined handler (UI + API under one path) |
 
 ### Basic Setup
 
@@ -2123,9 +2119,6 @@ uiConfig := &ui.Config{
     RefreshInterval: 5 * time.Second,
 }
 http.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(drv.Store(), client, uiConfig)))
-
-// Mount API at /api/
-http.Handle("/api/", http.StripPrefix("/api", ui.APIHandler(drv.Store(), uiConfig)))
 ```
 
 ### Configuration Options
@@ -2265,117 +2258,6 @@ Chat features:
 - View tool executions inline
 - Automatic polling for run completion
 
-### REST API Endpoints
-
-All API endpoints return JSON responses.
-
-#### Dashboard
-```
-GET /dashboard          - Dashboard statistics
-GET /dashboard/events   - Real-time dashboard events (SSE)
-```
-
-#### Sessions
-```
-GET  /sessions          - List sessions (paginated)
-GET  /sessions/{id}     - Get session detail
-POST /sessions          - Create new session
-```
-
-Query parameters for list:
-- `tenant_id` - Filter by tenant (admin mode only)
-- `limit` - Page size (default: 25, max: 1000)
-- `offset` - Pagination offset
-- `order_by` - Sort field: `created_at`, `updated_at`
-- `order_dir` - Sort direction: `asc`, `desc`
-
-#### Runs
-```
-GET /runs                       - List runs (paginated)
-GET /runs/{id}                  - Get run detail
-GET /runs/{id}/hierarchy        - Get run hierarchy (for nested agents)
-GET /runs/{id}/iterations       - Get run iterations
-GET /runs/{id}/tool-executions  - Get run tool executions
-GET /runs/{id}/messages         - Get run messages
-```
-
-Query parameters for list:
-- `tenant_id` - Filter by tenant
-- `session_id` - Filter by session
-- `agent_name` - Filter by agent
-- `state` - Filter by state
-- `run_mode` - Filter by mode (`batch`, `streaming`)
-- `limit`, `offset`, `order_by`, `order_dir` - Pagination
-
-#### Iterations
-```
-GET /iterations        - List iterations (paginated)
-GET /iterations/{id}   - Get iteration detail
-```
-
-#### Tool Executions
-```
-GET /tool-executions        - List tool executions (paginated)
-GET /tool-executions/{id}   - Get tool execution detail
-```
-
-Query parameters:
-- `run_id` - Filter by run
-- `tool_name` - Filter by tool
-- `state` - Filter by state: `pending`, `running`, `completed`, `failed`
-
-#### Messages
-```
-GET /messages        - List messages (paginated)
-GET /messages/{id}   - Get message with content blocks
-```
-
-#### Registry
-```
-GET /agents          - List registered agents
-GET /agents/{name}   - Get agent details
-GET /tools           - List registered tools
-GET /tools/{name}    - Get tool details
-```
-
-#### Instances
-```
-GET /instances       - List active instances
-GET /instances/{id}  - Get instance details with agents/tools
-```
-
-#### Compaction
-```
-GET /compaction-events        - List compaction events
-GET /compaction-events/{id}   - Get compaction event detail
-```
-
-#### Tenants (Admin Mode)
-```
-GET /tenants         - List all tenants with session/run counts
-```
-
-### API Response Format
-
-Success responses return the data directly:
-```json
-{
-  "sessions": [...],
-  "total_count": 100,
-  "has_more": true
-}
-```
-
-Error responses use a standard format:
-```json
-{
-  "error": {
-    "code": "not_found",
-    "message": "Session not found"
-  }
-}
-```
-
 ### Complete Example
 
 ```go
@@ -2427,9 +2309,6 @@ func main() {
     }
     mux.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(drv.Store(), client, fullConfig)))
 
-    // REST API
-    mux.Handle("/api/", http.StripPrefix("/api", ui.APIHandler(drv.Store(), fullConfig)))
-
     // Read-only monitoring (separate endpoint)
     monitorConfig := &ui.Config{
         BasePath: "/monitor",
@@ -2440,19 +2319,7 @@ func main() {
 
     log.Println("Server starting on :8080")
     log.Println("  /ui/      - Admin UI with chat")
-    log.Println("  /api/     - REST API")
     log.Println("  /monitor/ - Read-only monitoring")
     http.ListenAndServe(":8080", mux)
 }
-```
-
-### Using Combined Handler
-
-For simpler setups, use the combined handler:
-
-```go
-// Mounts both API and UI under /admin/
-// - /admin/api/* - REST API
-// - /admin/*     - Frontend UI
-mux.Handle("/admin/", http.StripPrefix("/admin", ui.Handler(store, client, config)))
 ```

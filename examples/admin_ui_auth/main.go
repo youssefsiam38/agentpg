@@ -4,7 +4,7 @@
 // - In-memory user authentication with bcrypt password hashing
 // - Session-based auth using secure cookies
 // - Login/logout flow with redirect handling
-// - Protected admin UI and API endpoints
+// - Protected admin UI endpoints
 // - Public health check endpoint
 //
 // Default credentials:
@@ -400,13 +400,6 @@ func main() {
 	}
 	mux.Handle("/ui/", http.StripPrefix("/ui", authMiddleware(ui.UIHandler(drv.Store(), client, uiConfig))))
 
-	// Protected API - wrap handler with authMiddleware externally
-	apiConfig := &ui.Config{
-		PageSize:        25,
-		RefreshInterval: 5 * time.Second,
-	}
-	mux.Handle("/api/", http.StripPrefix("/api", authMiddleware(ui.APIHandler(drv.Store(), apiConfig))))
-
 	// Start server
 	server := &http.Server{
 		Addr:    ":8080",
@@ -429,7 +422,6 @@ func main() {
 		log.Println("  /login     - Login page")
 		log.Println("  /logout    - Logout and redirect to login")
 		log.Println("  /ui/       - Admin UI (requires auth)")
-		log.Println("  /api/      - REST API (requires auth)")
 		log.Println("  /health    - Health check (public)")
 		log.Println("")
 		log.Println("===========================================")

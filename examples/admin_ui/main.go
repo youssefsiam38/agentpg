@@ -2,9 +2,8 @@
 //
 // This example demonstrates how to embed the AgentPG admin UI into your application.
 // It shows:
-// - Mounting the API handler for REST endpoints
 // - Mounting the UI handler for the web interface
-// - Running both alongside your own application routes
+// - Running the UI alongside your own application routes
 //
 // Run with:
 //
@@ -83,14 +82,6 @@ func main() {
 	// Create HTTP server with admin UI
 	mux := http.NewServeMux()
 
-	// Mount the admin UI API at /api/
-	// This provides JSON endpoints for programmatic access
-	apiHandler := ui.APIHandler(drv.Store(), &ui.Config{
-		PageSize:        25,
-		RefreshInterval: 5 * time.Second,
-	})
-	mux.Handle("/api/", http.StripPrefix("/api", apiHandler))
-
 	// Mount the admin UI frontend at /ui/
 	// This provides the web interface with HTMX + Tailwind
 	uiHandler := ui.UIHandler(drv.Store(), client, &ui.Config{
@@ -119,15 +110,6 @@ func main() {
 		<li><a href="/ui/instances">Instances</a> - Monitor worker instances</li>
 		<li><a href="/ui/chat">Chat</a> - Interactive chat interface</li>
 	</ul>
-	<h2>API Endpoints</h2>
-	<ul>
-		<li><a href="/api/dashboard">/api/dashboard</a> - Dashboard stats</li>
-		<li><a href="/api/sessions">/api/sessions</a> - List sessions</li>
-		<li><a href="/api/runs">/api/runs</a> - List runs</li>
-		<li><a href="/api/agents">/api/agents</a> - List agents</li>
-		<li><a href="/api/tools">/api/tools</a> - List tools</li>
-		<li><a href="/api/instances">/api/instances</a> - List instances</li>
-	</ul>
 </body>
 </html>`)
 	})
@@ -147,7 +129,6 @@ func main() {
 	go func() {
 		log.Println("Starting server on http://localhost:8080")
 		log.Println("Admin UI available at http://localhost:8080/ui/")
-		log.Println("API available at http://localhost:8080/api/")
 		if err := server.ListenAndServe(); err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
 		}

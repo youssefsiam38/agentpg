@@ -1,11 +1,7 @@
 // Package ui provides an embedded admin UI for AgentPG.
 //
-// The package provides two separate HTTP handlers:
-//   - APIHandler: REST API endpoints with JSON responses
+// The package provides an HTTP handler for the SSR frontend:
 //   - UIHandler: SSR frontend with HTMX + Tailwind
-//
-// Both handlers share the same service layer, ensuring consistency
-// between API and frontend operations.
 //
 // # Quick Start
 //
@@ -22,14 +18,13 @@
 //	client.Start(ctx)
 //
 //	mux := http.NewServeMux()
-//	mux.Handle("/api/", http.StripPrefix("/api", ui.APIHandler(drv.Store(), nil)))
 //	mux.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(drv.Store(), client, nil)))
 //
 //	http.ListenAndServe(":8080", mux)
 //
 // # Configuration
 //
-// Both handlers accept an optional Config struct for customization:
+// The handler accepts an optional Config struct for customization:
 //
 //	cfg := &ui.Config{
 //	    TenantID:        "my-tenant",  // Filter to single tenant (empty = admin mode)
@@ -40,19 +35,19 @@
 //
 // # Framework Integration
 //
-// The handlers return standard http.Handler, compatible with any Go framework:
+// The handler returns standard http.Handler, compatible with any Go framework:
 //
 //	// Standard library
-//	http.Handle("/api/", ui.APIHandler(store, cfg))
+//	http.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(store, client, cfg)))
 //
 //	// Chi
-//	r.Mount("/api", ui.APIHandler(store, cfg))
+//	r.Mount("/ui", ui.UIHandler(store, client, cfg))
 //
 //	// Gin
-//	router.Any("/api/*any", gin.WrapH(ui.APIHandler(store, cfg)))
+//	router.Any("/ui/*any", gin.WrapH(ui.UIHandler(store, client, cfg)))
 //
 //	// Echo
-//	e.Any("/api/*", echo.WrapHandler(ui.APIHandler(store, cfg)))
+//	e.Any("/ui/*", echo.WrapHandler(ui.UIHandler(store, client, cfg)))
 //
 // # Adding Middleware
 //

@@ -6,7 +6,6 @@
 // - Agent-as-tool pattern (nested agents)
 // - Chat interface with real-time responses
 // - Multi-tenant admin mode
-// - API and UI authentication middleware
 // - Separate read-only monitoring endpoint
 //
 // Run with:
@@ -103,9 +102,6 @@ func main() {
 		// TenantID: "", // Empty = admin mode (shows all tenants)
 	}
 
-	// Mount API at /api/
-	mux.Handle("/api/", http.StripPrefix("/api", ui.APIHandler(drv.Store(), fullUIConfig)))
-
 	// Mount full UI at /ui/ (with chat enabled)
 	mux.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(drv.Store(), client, fullUIConfig)))
 
@@ -149,7 +145,6 @@ func main() {
 		log.Println("  /         - Home page with links")
 		log.Println("  /ui/      - Full admin UI with chat")
 		log.Println("  /monitor/ - Read-only monitoring UI")
-		log.Println("  /api/     - REST API endpoints")
 		log.Println("")
 		log.Println("Registered Agents:")
 		log.Println("  - assistant: General-purpose assistant")
@@ -465,11 +460,11 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
                 <a href="/ui/instances" class="p-4 bg-red-50 rounded hover:bg-red-100 transition text-center">
                     <span class="text-red-900 font-medium">Instances</span>
                 </a>
-                <a href="/api/dashboard" class="p-4 bg-gray-50 rounded hover:bg-gray-100 transition text-center">
-                    <span class="text-gray-900 font-medium">API: Dashboard</span>
+                <a href="/ui/sessions" class="p-4 bg-gray-50 rounded hover:bg-gray-100 transition text-center">
+                    <span class="text-gray-900 font-medium">Sessions</span>
                 </a>
-                <a href="/api/agents" class="p-4 bg-gray-50 rounded hover:bg-gray-100 transition text-center">
-                    <span class="text-gray-900 font-medium">API: Agents</span>
+                <a href="/ui/tool-executions" class="p-4 bg-gray-50 rounded hover:bg-gray-100 transition text-center">
+                    <span class="text-gray-900 font-medium">Tool Executions</span>
                 </a>
             </div>
 
