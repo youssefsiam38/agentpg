@@ -69,8 +69,11 @@ func main() {
 	fmt.Printf("AgentPG client started (instance: %s)\n\n", client.InstanceID())
 
 	// Create a new session
-	// Parameters: tenantID, userIdentifier, parentSessionID, metadata
-	sessionID, err := client.NewSession(ctx, "tenant-1", "example-user", nil, map[string]any{
+	// Parameters: parentSessionID, metadata
+	// App-specific fields (tenant_id, user_id, etc.) go in metadata
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{
+		"tenant_id":   "tenant-1",
+		"user_id":     "example-user",
 		"description": "Basic example session",
 	})
 	if err != nil {

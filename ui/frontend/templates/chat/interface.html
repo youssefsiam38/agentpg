@@ -19,7 +19,7 @@
                 <li>
                     <a href="{{$.BasePath}}/chat/session/{{.ID}}" class="block px-3 py-2 text-sm rounded-lg transition-colors {{if eq (printf "%s" .ID) $selectedSessionID}}bg-cyan-500/20 border border-cyan-500/30 text-cyan-300{{else}}text-gray-300 hover:bg-gray-700{{end}}">
                         <div class="font-medium truncate font-mono text-xs">{{.ID | truncate 16}}</div>
-                        <div class="text-xs text-gray-500 mt-0.5">{{.UserID}} · {{formatTimeAgo .LastActivityAt}}</div>
+                        <div class="text-xs text-gray-500 mt-0.5">{{formatTimeAgo .LastActivityAt}}</div>
                     </a>
                 </li>
                 {{else}}
@@ -41,14 +41,15 @@
         <div class="flex-shrink-0 bg-gray-800/50 border-b border-gray-700 px-4 py-3">
             <div class="flex items-center justify-between">
                 <div>
-                    <h2 class="text-lg font-medium text-gray-100 font-mono">{{.Data.Session.Session.ID}}</h2>
+                    <h2 class="text-lg font-medium text-gray-100 font-mono">{{slice .Data.Session.Session.ID.String 0 16}}...</h2>
                     <div class="flex items-center space-x-3 text-sm text-gray-400">
-                        <span>User: {{.Data.Session.Session.UserID}}</span>
-                        <span>Tenant: {{.Data.Session.Session.TenantID}}</span>
                         {{if .Data.Conversation.AgentName}}
                         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-cyan-500/20 text-cyan-400 ring-1 ring-cyan-500/30">
                             {{.Data.Conversation.AgentName}}
                         </span>
+                        {{end}}
+                        {{range $key, $value := .Data.Session.Session.Metadata}}
+                        <span class="text-xs text-gray-400 bg-gray-700 px-2 py-0.5 rounded">{{$key}}: {{$value}}</span>
                         {{end}}
                     </div>
                 </div>

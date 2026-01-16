@@ -105,13 +105,9 @@
 
     <!-- Footer -->
     <div class="p-3 border-t border-gray-800 space-y-2">
-        {{if .TenantID}}
+        {{if .MetadataFilter}}
         <div class="px-3 py-2 text-xs text-gray-400">
-            Tenant: <span class="text-gray-200">{{.TenantID}}</span>
-        </div>
-        {{else}}
-        <div class="px-3 py-1">
-            <span class="inline-flex items-center rounded-md bg-yellow-500/20 px-2 py-1 text-xs font-medium text-yellow-300">Admin Mode</span>
+            <span class="inline-flex items-center rounded-md bg-cyan-500/20 px-2 py-1 text-xs font-medium text-cyan-300">Filtered</span>
         </div>
         {{end}}
         {{if .ReadOnly}}

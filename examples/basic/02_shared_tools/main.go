@@ -209,7 +209,7 @@ func main() {
 
 	// General Assistant - can do everything
 	fmt.Println("--- General Assistant (all tools) ---")
-	sid1, err := client.NewSession(ctx, "1", "general-demo", nil, nil)
+	sid1, err := client.NewSession(ctx, nil, map[string]any{"demo": "general"})
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
@@ -221,7 +221,7 @@ func main() {
 
 	// Math Tutor
 	fmt.Println("--- Math Tutor ---")
-	sid2, err := client.NewSession(ctx, "1", "math-demo", nil, nil)
+	sid2, err := client.NewSession(ctx, nil, map[string]any{"demo": "math"})
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
@@ -233,7 +233,7 @@ func main() {
 
 	// Weather Bot
 	fmt.Println("--- Weather Bot ---")
-	sid3, err := client.NewSession(ctx, "1", "weather-demo", nil, nil)
+	sid3, err := client.NewSession(ctx, nil, map[string]any{"demo": "weather"})
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}

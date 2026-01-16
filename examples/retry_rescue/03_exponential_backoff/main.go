@@ -157,7 +157,7 @@ func main() {
 	log.Println("The tool will fail first 2 calls to show backoff in action...")
 	log.Println("")
 
-	sessionID, err := client.NewSession(ctx, "tenant1", "backoff-demo", nil, nil)
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{"demo": "backoff"})
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}

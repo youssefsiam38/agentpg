@@ -40,9 +40,18 @@ type Config struct {
     // All navigation links will be prefixed with this path.
     BasePath string
 
-    // TenantID filters data to a single tenant.
-    // If empty, shows all tenants (admin mode) with a tenant selector.
-    TenantID string
+    // MetadataFilter filters all data to sessions matching these metadata key-value pairs.
+    // Example: map[string]any{"tenant_id": "my-tenant"} to show only matching sessions.
+    // If empty, shows all sessions.
+    MetadataFilter map[string]any
+
+    // MetadataDisplayKeys specifies which metadata keys to show in session lists.
+    // Example: []string{"tenant_id", "user_id", "environment"}
+    MetadataDisplayKeys []string
+
+    // MetadataFilterKeys specifies which metadata keys to show filter dropdowns for.
+    // Enables users to filter sessions by these metadata fields in the UI.
+    MetadataFilterKeys []string
 
     // ReadOnly disables write operations (chat, session creation).
     // Useful for monitoring-only deployments.
@@ -61,27 +70,25 @@ type Config struct {
 }
 ```
 
-## Operating Modes
+## Configuration Examples
 
-### Admin Mode
-
-Shows all tenants with a tenant selector dropdown:
+### Show All Sessions with Filter Dropdowns
 
 ```go
-adminConfig := &ui.Config{
-    BasePath: "/admin",
-    // TenantID is empty = admin mode
+allSessionsConfig := &ui.Config{
+    BasePath:           "/ui",
+    MetadataFilterKeys: []string{"tenant_id", "user_id"},  // Show filter dropdowns
 }
 ```
 
-### Single-Tenant Mode
-
-Filters all data to one tenant only:
+### Pre-filter to Specific Metadata
 
 ```go
-tenantConfig := &ui.Config{
+filteredConfig := &ui.Config{
     BasePath: "/ui",
-    TenantID: "tenant-123",
+    MetadataFilter: map[string]any{
+        "tenant_id": "tenant-123",  // Only shows sessions with this metadata
+    },
 }
 ```
 
@@ -286,8 +293,8 @@ The minimal JavaScript (`app.js`) provides:
 - Safe HTML template function
 - Code highlighting classes allowed
 
-### Tenant Isolation
+### Data Isolation
 
-- TenantID filters all queries
-- Admin mode explicitly manages tenant access
-- No cross-tenant data leakage
+- MetadataFilter restricts data access by metadata key-value pairs
+- Pre-configured filters cannot be overridden by query params
+- No cross-tenant data leakage when MetadataFilter is set

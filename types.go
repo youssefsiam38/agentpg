@@ -168,10 +168,9 @@ func (r *Run) Usage() Usage {
 }
 
 // Session represents a conversation context.
+// App-specific fields (tenant_id, user_id, etc.) should be stored in Metadata.
 type Session struct {
 	ID              uuid.UUID      `json:"id"`
-	TenantID        string         `json:"tenant_id"`
-	UserID          string         `json:"user_id"`
 	ParentSessionID *uuid.UUID     `json:"parent_session_id,omitempty"`
 	Depth           int            `json:"depth"`
 	Metadata        map[string]any `json:"metadata,omitempty"`

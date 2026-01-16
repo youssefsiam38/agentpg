@@ -388,11 +388,9 @@ Returns all tool names (both regular and agent-as-tool).
 ```go
 type Session struct {
     ID              uuid.UUID
-    TenantID        string
-    UserID          string
     ParentSessionID *uuid.UUID
     Depth           int
-    Metadata        map[string]any
+    Metadata        map[string]any  // App-specific fields (tenant_id, user_id, etc.)
     CompactionCount int
     CreatedAt       time.Time
     UpdatedAt       time.Time
@@ -1132,12 +1130,14 @@ type Stats struct {
 
 ```go
 type Config struct {
-    BasePath        string         // URL prefix for UI mounting
-    TenantID        string         // Filter to single tenant (empty = admin mode)
-    ReadOnly        bool           // Disable write operations
-    Logger          Logger
-    RefreshInterval time.Duration  // SSE update frequency (default: 5s)
-    PageSize        int            // Pagination size (default: 25)
+    BasePath            string           // URL prefix for UI mounting
+    MetadataFilter      map[string]any   // Filter sessions by metadata key-value pairs
+    MetadataDisplayKeys []string         // Metadata keys to show in session lists
+    MetadataFilterKeys  []string         // Metadata keys for filter dropdowns
+    ReadOnly            bool             // Disable write operations
+    Logger              Logger
+    RefreshInterval     time.Duration    // SSE update frequency (default: 5s)
+    PageSize            int              // Pagination size (default: 25)
 }
 
 func DefaultConfig() *Config

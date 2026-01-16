@@ -18,9 +18,18 @@ type Config struct {
 	// Defaults to empty string (root mount).
 	BasePath string
 
-	// TenantID filters data to a single tenant.
-	// If empty, shows all tenants (admin mode) with a tenant selector.
-	TenantID string
+	// MetadataFilter filters all data to sessions matching these metadata key-value pairs.
+	// Example: map[string]any{"tenant_id": "my-tenant"} to show only matching sessions.
+	// If empty, shows all sessions.
+	MetadataFilter map[string]any
+
+	// MetadataDisplayKeys specifies which metadata keys to show in session lists.
+	// Example: []string{"tenant_id", "user_id", "environment"}
+	MetadataDisplayKeys []string
+
+	// MetadataFilterKeys specifies which metadata keys to show filter dropdowns for.
+	// Enables users to filter sessions by these metadata fields in the UI.
+	MetadataFilterKeys []string
 
 	// ReadOnly disables write operations (chat, session creation).
 	// Useful for monitoring-only deployments.

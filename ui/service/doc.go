@@ -1,4 +1,4 @@
-// Package service provides the shared business logic for the AgentPG admin UI.
+// Package service provides the shared business logic for the AgentPG web UI.
 //
 // The service layer is HTTP-agnostic and used by both the REST API and
 // SSR frontend handlers. This ensures consistency and avoids duplication.
@@ -13,9 +13,9 @@
 //
 //	// List sessions with filtering
 //	sessions, err := svc.ListSessions(ctx, service.SessionListParams{
-//	    TenantID: "my-tenant",
-//	    Limit:    25,
-//	    Offset:   0,
+//	    MetadataFilter: map[string]any{"tenant_id": "my-tenant"},
+//	    Limit:          25,
+//	    Offset:         0,
 //	})
 //
 // # Design

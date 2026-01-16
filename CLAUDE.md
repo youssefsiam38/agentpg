@@ -140,10 +140,13 @@ client.RegisterTool(&WeatherTool{})
 
 ### Session
 
-A `Session` is a conversation context. Messages are stored per-session, enabling multi-turn conversations.
+A `Session` is a conversation context. Messages are stored per-session, enabling multi-turn conversations. Sessions use flexible metadata for app-specific fields like tenant/user identifiers.
 
 ```go
-sessionID, err := client.NewSession(ctx, "tenant-1", "user-123", nil, nil)
+sessionID, err := client.NewSession(ctx, nil, map[string]any{
+    "tenant_id": "tenant-1",
+    "user_id":   "user-123",
+})
 ```
 
 ### Run
@@ -230,7 +233,7 @@ func main() {
     defer client.Stop(context.Background())
 
     // Create session and run
-    sessionID, _ := client.NewSession(ctx, "tenant-1", "demo", nil, nil)
+    sessionID, _ := client.NewSession(ctx, nil, nil)
     response, err := client.RunSync(ctx, sessionID, "assistant", "What is 2+2?")
     if err != nil {
         log.Fatal(err)
@@ -742,17 +745,21 @@ ORDER BY created_at;
 ### Creating Sessions
 
 ```go
-// Basic session
-sessionID, err := client.NewSession(ctx, "tenant-1", "user-123", nil, nil)
+// Basic session (no metadata)
+sessionID, err := client.NewSession(ctx, nil, nil)
 
-// Session with metadata
-sessionID, err := client.NewSession(ctx, "tenant-1", "user-123", nil, map[string]any{
+// Session with app-specific metadata (replaces old tenant_id/user_id fields)
+sessionID, err := client.NewSession(ctx, nil, map[string]any{
+    "tenant_id": "tenant-1",
+    "user_id":   "user-123",
     "user_name": "John Doe",
     "plan":      "premium",
 })
 
 // Child session (for nested agents)
-childSessionID, err := client.NewSession(ctx, "tenant-1", "child-session", &parentSessionID, nil)
+childSessionID, err := client.NewSession(ctx, &parentSessionID, map[string]any{
+    "inherited_from": parentSessionID.String(),
+})
 ```
 
 ### Running Agents
@@ -889,7 +896,10 @@ func CreateOrderWithNotification(ctx context.Context, client *agentpg.Client, po
     }
 
     // Create session in same transaction
-    sessionID, err := client.NewSessionTx(ctx, tx, "tenant-1", fmt.Sprintf("order-%s", orderID), nil, nil)
+    sessionID, err := client.NewSessionTx(ctx, tx, nil, map[string]any{
+        "tenant_id": "tenant-1",
+        "order_id":  orderID,
+    })
     if err != nil {
         return err
     }
@@ -917,7 +927,7 @@ func CreateOrderWithNotification(ctx context.Context, client *agentpg.Client, po
 
 ```go
 // Session creation in transaction
-sessionID, err := client.NewSessionTx(ctx, tx, tenantID, userID, parentSessionID, metadata)
+sessionID, err := client.NewSessionTx(ctx, tx, parentSessionID, metadata)
 
 // Run creation in transaction
 runID, err := client.RunTx(ctx, tx, sessionID, agentName, prompt)
@@ -1865,7 +1875,7 @@ func TestAgentRun(t *testing.T) {
     client.Start(ctx)
     defer client.Stop(context.Background())
 
-    sessionID, _ := client.NewSession(ctx, "test", "test-session", nil, nil)
+    sessionID, _ := client.NewSession(ctx, nil, map[string]any{"test": "integration"})
     response, err := client.RunSync(ctx, sessionID, "test-assistant", "Say OK")
 
     require.NoError(t, err)
@@ -1988,7 +1998,7 @@ psql $DATABASE_URL -f storage/migrations/001_agentpg_migration.up.sql
 
 ### Security
 
-1. **Tenant Isolation**: Always filter by tenant_id
+1. **Data Isolation**: Use MetadataFilter in UI config to restrict access by metadata (e.g., tenant_id)
 2. **API Key Protection**: Use environment variables
 3. **Input Validation**: Sanitize all user input
 4. **Tool Permissions**: Limit tool capabilities appropriately
@@ -2130,9 +2140,18 @@ type Config struct {
     // All navigation links will be prefixed with this path.
     BasePath string
 
-    // TenantID filters data to a single tenant.
-    // If empty, shows all tenants (admin mode) with a tenant selector.
-    TenantID string
+    // MetadataFilter filters all data to sessions matching these metadata key-value pairs.
+    // Example: map[string]any{"tenant_id": "my-tenant"} to show only matching sessions.
+    // If empty, shows all sessions.
+    MetadataFilter map[string]any
+
+    // MetadataDisplayKeys specifies which metadata keys to show in session lists.
+    // Example: []string{"tenant_id", "user_id", "environment"}
+    MetadataDisplayKeys []string
+
+    // MetadataFilterKeys specifies which metadata keys to show filter dropdowns for.
+    // Enables users to filter sessions by these metadata fields in the UI.
+    MetadataFilterKeys []string
 
     // ReadOnly disables write operations (chat, session creation).
     // Useful for monitoring-only deployments.
@@ -2151,19 +2170,21 @@ type Config struct {
 }
 ```
 
-### Admin Mode vs Single-Tenant Mode
+### Metadata Filtering Examples
 
 ```go
-// Admin mode: shows all tenants with a selector
-adminConfig := &ui.Config{
-    BasePath: "/admin",
-    // TenantID is empty = admin mode
+// Show all sessions with filter dropdowns for metadata keys
+allSessionsConfig := &ui.Config{
+    BasePath:           "/ui",
+    MetadataFilterKeys: []string{"tenant_id", "user_id"},  // Show filter dropdowns
 }
 
-// Single-tenant mode: filters to one tenant only
-tenantConfig := &ui.Config{
+// Pre-filter to sessions with specific metadata
+filteredConfig := &ui.Config{
     BasePath: "/ui",
-    TenantID: "tenant-123",  // Only shows this tenant's data
+    MetadataFilter: map[string]any{
+        "tenant_id": "tenant-123",  // Only shows sessions with this metadata
+    },
 }
 ```
 

@@ -39,7 +39,7 @@ type PageData struct {
 	Title           string
 	BasePath        string
 	CurrentPath     string
-	TenantID        string
+	MetadataFilter  map[string]any // Active metadata filter (for showing filter status)
 	ReadOnly        bool
 	RefreshInterval int // in seconds
 	Flash           *FlashMessage
@@ -59,7 +59,7 @@ func (r *renderer) render(w http.ResponseWriter, req *http.Request, name string,
 	pageData := PageData{
 		BasePath:        r.config.BasePath,
 		CurrentPath:     req.URL.Path,
-		TenantID:        r.config.TenantID,
+		MetadataFilter:  r.config.MetadataFilter,
 		ReadOnly:        r.config.ReadOnly,
 		RefreshInterval: int(r.config.RefreshInterval.Seconds()),
 		Data:            data,

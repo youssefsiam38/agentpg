@@ -35,7 +35,7 @@ func main() {
     defer client.Stop(ctx)
 
     // Create session and run
-    sessionID, _ := client.NewSession(ctx, "tenant1", "user1", nil, nil)
+    sessionID, _ := client.NewSession(ctx, nil, nil)
     response, _ := client.RunSync(ctx, sessionID, "chat", "Hello!")
 }
 ```

@@ -215,7 +215,7 @@ func main() {
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
 	// Create a new session
-	sessionID, err := client.NewSession(ctx, "1", "struct-tool-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{
 		"description": "Struct-based tool demonstration",
 	})
 	if err != nil {

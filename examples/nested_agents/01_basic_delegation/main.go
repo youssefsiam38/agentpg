@@ -107,7 +107,7 @@ For simple questions, answer directly without delegation.`,
 	fmt.Println()
 
 	// Create session
-	sessionID, err := client.NewSession(ctx, "1", "delegation-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{
 		"description": "Basic delegation demonstration",
 	})
 	if err != nil {

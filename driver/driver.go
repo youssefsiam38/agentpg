@@ -43,8 +43,9 @@ type Store[TTx any] interface {
 	// ListSessions returns sessions with optional filtering and pagination.
 	// Returns (sessions, totalCount, error). Used by admin UI for browsing all sessions.
 	ListSessions(ctx context.Context, params ListSessionsParams) ([]*Session, int, error)
-	// ListTenants returns distinct tenant IDs with session counts.
-	ListTenants(ctx context.Context) ([]TenantInfo, error)
+	// GetMetadataValues returns distinct values for a metadata key with session counts.
+	// Used by UI to populate filter dropdowns (e.g., list all tenant_id values).
+	GetMetadataValues(ctx context.Context, key string) ([]MetadataValue, error)
 
 	// Agent operations
 	UpsertAgent(ctx context.Context, agent *AgentDefinition) error
@@ -208,8 +209,6 @@ type Notification struct {
 
 // CreateSessionParams contains parameters for creating a session.
 type CreateSessionParams struct {
-	TenantID        string
-	UserID          string
 	ParentSessionID *uuid.UUID
 	Metadata        map[string]any
 }
@@ -286,13 +285,13 @@ type CreateCompactionEventParams struct {
 
 // ListRunsParams contains parameters for listing runs with optional filtering.
 type ListRunsParams struct {
-	TenantID  string     // Filter by tenant (requires join with sessions)
-	SessionID *uuid.UUID // Filter by session
-	AgentName string     // Filter by agent name
-	State     string     // Filter by run state
-	RunMode   string     // Filter by run mode ("batch" or "streaming")
-	Limit     int        // Maximum number of results
-	Offset    int        // Offset for pagination
+	MetadataFilter map[string]any // Filter sessions by metadata key-value pairs (uses @> operator)
+	SessionID      *uuid.UUID     // Filter by session
+	AgentName      string         // Filter by agent name
+	State          string         // Filter by run state
+	RunMode        string         // Filter by run mode ("batch" or "streaming")
+	Limit          int            // Maximum number of results
+	Offset         int            // Offset for pagination
 }
 
 // ListToolExecutionsParams contains parameters for listing tool executions with optional filtering.
@@ -308,16 +307,17 @@ type ListToolExecutionsParams struct {
 
 // ListSessionsParams contains parameters for listing sessions with optional filtering.
 type ListSessionsParams struct {
-	TenantID string // Filter by tenant
-	Limit    int    // Maximum number of results
-	Offset   int    // Offset for pagination
-	OrderBy  string // Field to order by (created_at, updated_at, user_id)
-	OrderDir string // Order direction (asc, desc)
+	MetadataFilter map[string]any // Filter by metadata key-value pairs (uses @> operator)
+	Limit          int            // Maximum number of results
+	Offset         int            // Offset for pagination
+	OrderBy        string         // Field to order by (created_at, updated_at)
+	OrderDir       string         // Order direction (asc, desc)
 }
 
-// TenantInfo contains tenant information with session count.
-type TenantInfo struct {
-	TenantID     string
+// MetadataValue contains a metadata value with its session count.
+// Used by GetMetadataValues to return distinct values for a metadata key.
+type MetadataValue struct {
+	Value        string
 	SessionCount int
 }
 
@@ -325,8 +325,6 @@ type TenantInfo struct {
 type (
 	Session = struct {
 		ID              uuid.UUID
-		TenantID        string
-		UserID          string
 		ParentSessionID *uuid.UUID
 		Depth           int
 		Metadata        map[string]any

@@ -347,7 +347,7 @@ When given a task:
 	fmt.Println()
 
 	// Create session
-	sessionID, err := client.NewSession(ctx, "tenant-1", "hierarchy-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{
 		"description": "Multi-level hierarchy demonstration",
 	})
 	if err != nil {

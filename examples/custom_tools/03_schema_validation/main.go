@@ -345,7 +345,7 @@ func main() {
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
 	// Create session
-	sessionID, err := client.NewSession(ctx, "1", "schema-validation-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{
 		"description": "Schema validation demonstration",
 	})
 	if err != nil {

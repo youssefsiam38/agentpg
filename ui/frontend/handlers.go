@@ -94,7 +94,7 @@ func (rt *router[TTx]) handleRedirectToDashboard(w http.ResponseWriter, r *http.
 }
 
 func (rt *router[TTx]) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	stats, err := rt.svc.GetDashboardStats(r.Context(), rt.config.TenantID)
+	stats, err := rt.svc.GetDashboardStats(r.Context(), rt.config.MetadataFilter, rt.config.MetadataFilterKeys)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -111,18 +111,27 @@ func (rt *router[TTx]) handleDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rt *router[TTx]) handleSessions(w http.ResponseWriter, r *http.Request) {
-	params := service.SessionListParams{
-		TenantID: rt.config.TenantID,
-		Limit:    parseInt(r, "limit", rt.config.PageSize),
-		Offset:   parseOffset(r, "offset", 0),
-		OrderBy:  service.ValidateOrderBy(r.URL.Query().Get("order_by"), service.AllowedSessionOrderBy),
-		OrderDir: service.ValidateOrderDir(r.URL.Query().Get("order_dir")),
+	// Start with configured metadata filter
+	metadataFilter := make(map[string]any)
+	for k, v := range rt.config.MetadataFilter {
+		metadataFilter[k] = v
 	}
-	// Only allow tenant_id override if config.TenantID is empty (admin mode)
-	if rt.config.TenantID == "" {
-		if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
-			params.TenantID = tenantID
+
+	// Allow overriding filter keys from query params (only when MetadataFilter is not pre-configured)
+	if len(rt.config.MetadataFilter) == 0 {
+		for _, key := range rt.config.MetadataFilterKeys {
+			if val := r.URL.Query().Get(key); val != "" {
+				metadataFilter[key] = val
+			}
 		}
+	}
+
+	params := service.SessionListParams{
+		MetadataFilter: metadataFilter,
+		Limit:          parseInt(r, "limit", rt.config.PageSize),
+		Offset:         parseOffset(r, "offset", 0),
+		OrderBy:        service.ValidateOrderBy(r.URL.Query().Get("order_by"), service.AllowedSessionOrderBy),
+		OrderDir:       service.ValidateOrderDir(r.URL.Query().Get("order_dir")),
 	}
 
 	list, err := rt.svc.ListSessions(r.Context(), params)
@@ -131,27 +140,31 @@ func (rt *router[TTx]) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get tenants for filter dropdown (only in admin mode)
-	var tenants []*service.TenantInfo
-	if rt.config.TenantID == "" {
-		var err error
-		tenants, err = rt.svc.ListTenants(r.Context())
-		if err != nil {
-			rt.logError("failed to list tenants for filter dropdown", err)
+	// Get metadata filter options for dropdowns (only when MetadataFilter is not pre-configured)
+	filterOptions := make(map[string][]*service.MetadataFilterOption)
+	if len(rt.config.MetadataFilter) == 0 {
+		for _, key := range rt.config.MetadataFilterKeys {
+			options, err := rt.svc.GetMetadataValues(r.Context(), key)
+			if err != nil {
+				rt.logError("failed to get metadata values for "+key, err)
+			} else {
+				filterOptions[key] = options
+			}
 		}
 	}
 
 	data := map[string]any{
-		"Title":         "Sessions",
-		"Sessions":      list.Sessions,
-		"TotalCount":    list.TotalCount,
-		"HasMore":       list.HasMore,
-		"Limit":         params.Limit,
-		"Offset":        params.Offset,
-		"CurrentTenant": params.TenantID,
-		"Tenants":       tenants,
-		"CurrentPage":   params.Offset/params.Limit + 1,
-		"TotalPages":    (list.TotalCount + params.Limit - 1) / params.Limit,
+		"Title":              "Sessions",
+		"Sessions":           list.Sessions,
+		"TotalCount":         list.TotalCount,
+		"HasMore":            list.HasMore,
+		"Limit":              params.Limit,
+		"Offset":             params.Offset,
+		"MetadataFilter":     metadataFilter,
+		"FilterOptions":      filterOptions,
+		"MetadataFilterKeys": rt.config.MetadataFilterKeys,
+		"CurrentPage":        params.Offset/params.Limit + 1,
+		"TotalPages":         (list.TotalCount + params.Limit - 1) / params.Limit,
 	}
 
 	if err := rt.renderer.render(w, r, "sessions/list.html", data); err != nil {
@@ -173,7 +186,7 @@ func (rt *router[TTx]) handleSessionDetail(w http.ResponseWriter, r *http.Reques
 	}
 
 	data := map[string]any{
-		"Title":   "Session: " + detail.Session.UserID,
+		"Title":   "Session: " + detail.Session.ID.String()[:8],
 		"Session": detail,
 	}
 
@@ -183,21 +196,30 @@ func (rt *router[TTx]) handleSessionDetail(w http.ResponseWriter, r *http.Reques
 }
 
 func (rt *router[TTx]) handleRuns(w http.ResponseWriter, r *http.Request) {
-	params := service.RunListParams{
-		TenantID:  rt.config.TenantID,
-		AgentName: r.URL.Query().Get("agent_name"),
-		State:     r.URL.Query().Get("state"),
-		RunMode:   r.URL.Query().Get("run_mode"),
-		Limit:     parseInt(r, "limit", rt.config.PageSize),
-		Offset:    parseOffset(r, "offset", 0),
-		OrderBy:   service.ValidateOrderBy(r.URL.Query().Get("order_by"), service.AllowedRunOrderBy),
-		OrderDir:  service.ValidateOrderDir(r.URL.Query().Get("order_dir")),
+	// Start with configured metadata filter
+	metadataFilter := make(map[string]any)
+	for k, v := range rt.config.MetadataFilter {
+		metadataFilter[k] = v
 	}
-	// Only allow tenant_id override if config.TenantID is empty (admin mode)
-	if rt.config.TenantID == "" {
-		if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
-			params.TenantID = tenantID
+
+	// Allow overriding filter keys from query params (only when MetadataFilter is not pre-configured)
+	if len(rt.config.MetadataFilter) == 0 {
+		for _, key := range rt.config.MetadataFilterKeys {
+			if val := r.URL.Query().Get(key); val != "" {
+				metadataFilter[key] = val
+			}
 		}
+	}
+
+	params := service.RunListParams{
+		MetadataFilter: metadataFilter,
+		AgentName:      r.URL.Query().Get("agent_name"),
+		State:          r.URL.Query().Get("state"),
+		RunMode:        r.URL.Query().Get("run_mode"),
+		Limit:          parseInt(r, "limit", rt.config.PageSize),
+		Offset:         parseOffset(r, "offset", 0),
+		OrderBy:        service.ValidateOrderBy(r.URL.Query().Get("order_by"), service.AllowedRunOrderBy),
+		OrderDir:       service.ValidateOrderDir(r.URL.Query().Get("order_dir")),
 	}
 	if sessionID := r.URL.Query().Get("session_id"); sessionID != "" {
 		if id, err := parseUUID(sessionID); err == nil {
@@ -480,10 +502,10 @@ func (rt *router[TTx]) handleChat(w http.ResponseWriter, r *http.Request) {
 	// Get recent sessions for sidebar
 	var sessionList []*service.SessionSummary
 	sessions, err := rt.svc.ListSessions(r.Context(), service.SessionListParams{
-		TenantID: rt.config.TenantID,
-		Limit:    10,
-		OrderBy:  "updated_at",
-		OrderDir: "desc",
+		MetadataFilter: rt.config.MetadataFilter,
+		Limit:          10,
+		OrderBy:        "updated_at",
+		OrderDir:       "desc",
 	})
 	if err != nil {
 		rt.logError("failed to list sessions for chat sidebar", err)
@@ -512,15 +534,26 @@ func (rt *router[TTx]) handleChatNew(w http.ResponseWriter, r *http.Request) {
 	if agentsErr != nil {
 		rt.logError("failed to list agents for new chat", agentsErr)
 	}
-	tenants, tenantsErr := rt.svc.ListTenants(r.Context())
-	if tenantsErr != nil {
-		rt.logError("failed to list tenants for new chat", tenantsErr)
+
+	// Get metadata filter options for dropdowns (only when MetadataFilter is not pre-configured)
+	filterOptions := make(map[string][]*service.MetadataFilterOption)
+	if len(rt.config.MetadataFilter) == 0 {
+		for _, key := range rt.config.MetadataFilterKeys {
+			options, err := rt.svc.GetMetadataValues(r.Context(), key)
+			if err != nil {
+				rt.logError("failed to get metadata values for "+key, err)
+			} else {
+				filterOptions[key] = options
+			}
+		}
 	}
 
 	data := map[string]any{
-		"Title":   "New Chat",
-		"Agents":  agents,
-		"Tenants": tenants,
+		"Title":              "New Chat",
+		"Agents":             agents,
+		"MetadataFilter":     rt.config.MetadataFilter,
+		"FilterOptions":      filterOptions,
+		"MetadataFilterKeys": rt.config.MetadataFilterKeys,
 	}
 
 	if err := rt.renderer.render(w, r, "chat/new.html", data); err != nil {
@@ -563,24 +596,28 @@ func (rt *router[TTx]) handleChatSend(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Create a new session
-		tenantID := r.FormValue("tenant_id")
-		if tenantID == "" {
-			tenantID = "default"
+		// Collect metadata from config filter and form values
+		metadata := make(map[string]any)
+		// Start with pre-configured metadata filter
+		for k, v := range rt.config.MetadataFilter {
+			metadata[k] = v
+		}
+		// Add metadata from filter keys
+		for _, key := range rt.config.MetadataFilterKeys {
+			if val := r.FormValue(key); val != "" {
+				metadata[key] = val
+			}
+		}
+		// Parse metadata_key_N / metadata_value_N pairs from form
+		for i := 1; i <= 10; i++ { // Support up to 10 metadata pairs
+			key := r.FormValue(fmt.Sprintf("metadata_key_%d", i))
+			value := r.FormValue(fmt.Sprintf("metadata_value_%d", i))
+			if key != "" && value != "" {
+				metadata[key] = value
+			}
 		}
 
-		// Validate user ID (required)
-		userID := r.FormValue("user_id")
-		if userID == "" {
-			http.Error(w, "User ID is required", http.StatusBadRequest)
-			return
-		}
-		if validated := validateUserID(userID); validated == "" {
-			http.Error(w, "Invalid user ID: must be alphanumeric with hyphens/underscores only", http.StatusBadRequest)
-			return
-		}
-
-		sessionID, err = rt.client.NewSession(r.Context(), tenantID, userID, nil, nil)
+		sessionID, err = rt.client.NewSession(r.Context(), nil, metadata)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to create session: %v", err), http.StatusInternalServerError)
 			return
@@ -811,10 +848,10 @@ func (rt *router[TTx]) handleChatSession(w http.ResponseWriter, r *http.Request)
 
 	// Get recent sessions for sidebar
 	sessions, sessionsErr := rt.svc.ListSessions(r.Context(), service.SessionListParams{
-		TenantID: rt.config.TenantID,
-		Limit:    10,
-		OrderBy:  "updated_at",
-		OrderDir: "desc",
+		MetadataFilter: rt.config.MetadataFilter,
+		Limit:          10,
+		OrderBy:        "updated_at",
+		OrderDir:       "desc",
 	})
 	if sessionsErr != nil {
 		rt.logError("failed to list sessions for chat sidebar", sessionsErr)
@@ -873,7 +910,7 @@ func (rt *router[TTx]) handleChatSession(w http.ResponseWriter, r *http.Request)
 	}
 
 	data := map[string]any{
-		"Title":                    "Chat: " + session.Session.UserID,
+		"Title":                    "Chat: " + session.Session.ID.String()[:8],
 		"Session":                  session,
 		"Conversation":             conversation,
 		"HierarchicalConversation": hierarchicalConversation,
@@ -893,7 +930,7 @@ func (rt *router[TTx]) handleChatSession(w http.ResponseWriter, r *http.Request)
 // Fragment handlers for HTMX
 
 func (rt *router[TTx]) handleFragmentDashboardStats(w http.ResponseWriter, r *http.Request) {
-	stats, err := rt.svc.GetDashboardStats(r.Context(), rt.config.TenantID)
+	stats, err := rt.svc.GetDashboardStats(r.Context(), rt.config.MetadataFilter, rt.config.MetadataFilterKeys)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -906,11 +943,11 @@ func (rt *router[TTx]) handleFragmentDashboardStats(w http.ResponseWriter, r *ht
 
 func (rt *router[TTx]) handleFragmentRunList(w http.ResponseWriter, r *http.Request) {
 	params := service.RunListParams{
-		TenantID:  rt.config.TenantID,
-		AgentName: r.URL.Query().Get("agent_name"),
-		State:     r.URL.Query().Get("state"),
-		Limit:     parseInt(r, "limit", 10),
-		Offset:    parseOffset(r, "offset", 0),
+		MetadataFilter: rt.config.MetadataFilter,
+		AgentName:      r.URL.Query().Get("agent_name"),
+		State:          r.URL.Query().Get("state"),
+		Limit:          parseInt(r, "limit", 10),
+		Offset:         parseOffset(r, "offset", 0),
 	}
 
 	list, err := rt.svc.ListRuns(r.Context(), params)
@@ -931,16 +968,25 @@ func (rt *router[TTx]) handleFragmentRunList(w http.ResponseWriter, r *http.Requ
 }
 
 func (rt *router[TTx]) handleFragmentSessionList(w http.ResponseWriter, r *http.Request) {
-	params := service.SessionListParams{
-		TenantID: rt.config.TenantID,
-		Limit:    parseInt(r, "limit", 10),
-		Offset:   parseOffset(r, "offset", 0),
+	// Start with configured metadata filter
+	metadataFilter := make(map[string]any)
+	for k, v := range rt.config.MetadataFilter {
+		metadataFilter[k] = v
 	}
-	// Only allow tenant_id override if config.TenantID is empty (admin mode)
-	if rt.config.TenantID == "" {
-		if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
-			params.TenantID = tenantID
+
+	// Allow overriding filter keys from query params (only when MetadataFilter is not pre-configured)
+	if len(rt.config.MetadataFilter) == 0 {
+		for _, key := range rt.config.MetadataFilterKeys {
+			if val := r.URL.Query().Get(key); val != "" {
+				metadataFilter[key] = val
+			}
 		}
+	}
+
+	params := service.SessionListParams{
+		MetadataFilter: metadataFilter,
+		Limit:          parseInt(r, "limit", 10),
+		Offset:         parseOffset(r, "offset", 0),
 	}
 
 	list, err := rt.svc.ListSessions(r.Context(), params)

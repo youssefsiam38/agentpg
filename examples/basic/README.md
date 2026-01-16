@@ -85,7 +85,7 @@ if err := client.Start(ctx); err != nil {
 defer client.Stop(context.Background())
 
 // Create session and run
-sessionID, _ := client.NewSession(ctx, "tenant-1", "demo", nil, nil)
+sessionID, _ := client.NewSession(ctx, nil, nil)
 response, err := client.RunSync(ctx, sessionID, "assistant", "What is 2+2?")
 ```
 

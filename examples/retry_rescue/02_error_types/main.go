@@ -184,7 +184,7 @@ func main() {
 	}
 
 	for i, demo := range demos {
-		sessionID, err := client.NewSession(ctx, "tenant1", fmt.Sprintf("demo-%d", i), nil, nil)
+		sessionID, err := client.NewSession(ctx, nil, map[string]any{"demo": fmt.Sprintf("error-types-%d", i)})
 		if err != nil {
 			log.Fatalf("Failed to create session: %v", err)
 		}
