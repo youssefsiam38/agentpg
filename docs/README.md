@@ -36,7 +36,6 @@ AgentPG is a fully event-driven Go framework for building async AI agents using 
 | Document | Description |
 |----------|-------------|
 | [Go API Reference](./golang-api-reference.md.md) | Complete Go package documentation |
-| [REST API Reference](./rest-api-reference.md) | HTTP API endpoints for the admin UI |
 
 ### Operations
 

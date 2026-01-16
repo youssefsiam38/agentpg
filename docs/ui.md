@@ -4,13 +4,11 @@ AgentPG includes an embedded admin UI for monitoring and managing agents. The UI
 
 ## Overview
 
-The `ui` package provides three handler functions:
+The `ui` package provides a handler function:
 
 | Handler | Description |
 |---------|-------------|
 | `ui.UIHandler()` | SSR frontend with HTMX + Tailwind |
-| `ui.APIHandler()` | REST API with JSON responses |
-| `ui.Handler()` | Combined handler (UI + API under one path) |
 
 ## Quick Start
 
@@ -184,17 +182,6 @@ r.Route("/ui", func(r chi.Router) {
 })
 ```
 
-## Combined Handler
-
-For simpler setups, use the combined handler that mounts both API and UI:
-
-```go
-// Mounts both:
-// - /admin/api/* - REST API
-// - /admin/*     - Frontend UI
-mux.Handle("/admin/", http.StripPrefix("/admin", ui.Handler(store, client, config)))
-```
-
 ## Complete Example
 
 ```go
@@ -246,9 +233,6 @@ func main() {
     }
     mux.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(drv.Store(), client, fullConfig)))
 
-    // REST API
-    mux.Handle("/api/", http.StripPrefix("/api", ui.APIHandler(drv.Store(), fullConfig)))
-
     // Read-only monitoring (separate endpoint)
     monitorConfig := &ui.Config{
         BasePath: "/monitor",
@@ -259,7 +243,6 @@ func main() {
 
     log.Println("Server starting on :8080")
     log.Println("  /ui/      - Admin UI with chat")
-    log.Println("  /api/     - REST API")
     log.Println("  /monitor/ - Read-only monitoring")
     http.ListenAndServe(":8080", mux)
 }

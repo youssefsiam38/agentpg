@@ -28,18 +28,16 @@ AgentPG is a fully event-driven Go framework for building async AI agents using 
 │                                                                                   │
 │  ┌────────────────────────────────────────────────────────────────────────────┐  │
 │  │                      HTTP Server Layer (Optional)                           │  │
-│  │  ┌─────────────────────────┐    ┌─────────────────────────┐                │  │
-│  │  │     ui.UIHandler()      │    │    ui.APIHandler()      │                │  │
-│  │  │  /ui/* (HTMX + SSR)     │    │   /api/* (REST JSON)    │                │  │
-│  │  │  • Dashboard            │    │   • Sessions CRUD       │                │  │
-│  │  │  • Sessions/Runs        │    │   • Runs/Iterations     │                │  │
-│  │  │  • Chat Interface       │    │   • Tool Executions     │                │  │
-│  │  │  • Monitoring           │    │   • Agents/Instances    │                │  │
-│  │  └───────────┬─────────────┘    └───────────┬─────────────┘                │  │
-│  │              │ (optional: chat via client)  │                              │  │
-│  └──────────────┼──────────────────────────────┼──────────────────────────────┘  │
-│                 │                              │                                  │
-│  ┌──────────────┴──────────────────────────────┴──────────────────────────────┐  │
+│  │  ┌─────────────────────────────────────────────────────────────────────┐   │  │
+│  │  │                      ui.UIHandler()                                  │   │  │
+│  │  │  /ui/* (HTMX + SSR)                                                  │   │  │
+│  │  │  • Dashboard                    • Sessions/Runs                      │   │  │
+│  │  │  • Chat Interface               • Monitoring                         │   │  │
+│  │  └───────────────────────────────────┬─────────────────────────────────┘   │  │
+│  │                                      │ (optional: chat via client)         │  │
+│  └──────────────────────────────────────┼─────────────────────────────────────┘  │
+│                                         │                                        │
+│  ┌──────────────────────────────────────┴─────────────────────────────────────┐  │
 │  │                        Worker Instances (k8s pods)                          │  │
 │  │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                  │  │
 │  │  │   Client 1   │    │   Client 2   │    │   Client N   │                  │  │
@@ -142,15 +140,12 @@ agentpg/
 │   └── prompt.go             # Summarization prompts
 │
 ├── ui/                       # Admin UI (HTMX + Tailwind SSR)
-│   ├── handler.go            # UIHandler & APIHandler entry points
+│   ├── handler.go            # UIHandler entry point
 │   ├── config.go             # UI configuration
 │   ├── frontend/             # Web UI with HTMX
 │   │   ├── handlers.go
 │   │   ├── router.go
 │   │   └── render.go
-│   ├── api/                  # REST API handlers
-│   │   ├── handlers.go
-│   │   └── router.go
 │   └── service/              # Business logic layer
 │       └── ...
 │
@@ -816,4 +811,4 @@ Records tool results and restarts run in a single transaction:
 | `driver/driver.go` | ~400 | Driver and Store interfaces |
 | `storage/migrations/*.sql` | ~1,800 | Database schema |
 | `compaction/*.go` | ~800 | Context compaction |
-| `ui/*.go` | ~2,000 | Admin UI and REST API |
+| `ui/*.go` | ~1,500 | Admin UI |

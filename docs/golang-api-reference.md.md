@@ -1146,9 +1146,7 @@ func DefaultConfig() *Config
 ### Handlers
 
 ```go
-func APIHandler[TTx any](store driver.Store[TTx], cfg *Config) http.Handler
 func UIHandler[TTx any](store driver.Store[TTx], client *agentpg.Client[TTx], cfg *Config) http.Handler
-func Handler[TTx any](store driver.Store[TTx], client *agentpg.Client[TTx], cfg *Config) http.Handler
 ```
 
 ---
