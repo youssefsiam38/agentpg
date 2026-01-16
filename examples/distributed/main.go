@@ -179,8 +179,11 @@ func main() {
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
 	// Create a new session
-	sessionID, err := client.NewSession(ctx, "tenant1", "user-123", nil, map[string]any{
-		"source": "distributed-example",
+	// App-specific fields (tenant_id, user_id, etc.) go in metadata
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{
+		"tenant_id": "tenant1",
+		"user_id":   "user-123",
+		"source":    "distributed-example",
 	})
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)

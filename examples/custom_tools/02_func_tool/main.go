@@ -250,7 +250,7 @@ func main() {
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
 	// Create session
-	sessionID, err := client.NewSession(ctx, "1", "func-tool-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{
 		"description": "Function-based tool demonstration",
 	})
 	if err != nil {

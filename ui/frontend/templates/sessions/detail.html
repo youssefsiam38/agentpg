@@ -7,11 +7,17 @@
                 <ol class="flex items-center space-x-2">
                     <li><a href="{{$.BasePath}}/sessions" class="text-gray-400 hover:text-gray-200">Sessions</a></li>
                     <li><span class="text-gray-500">/</span></li>
-                    <li class="text-gray-100 font-medium">{{.Data.Session.Session.UserID}}</li>
+                    <li class="text-gray-100 font-medium font-mono">{{slice .Data.Session.Session.ID.String 0 8}}</li>
                 </ol>
             </nav>
-            <h1 class="mt-2 text-2xl font-semibold text-gray-100">{{.Data.Session.Session.UserID}}</h1>
-            <p class="mt-1 text-sm text-gray-400">Tenant: {{.Data.Session.Session.TenantID}}</p>
+            <h1 class="mt-2 text-2xl font-semibold text-gray-100 font-mono">{{.Data.Session.Session.ID}}</h1>
+            {{if .Data.Session.Session.Metadata}}
+            <div class="mt-1 flex flex-wrap gap-2">
+                {{range $key, $value := .Data.Session.Session.Metadata}}
+                <span class="text-xs text-gray-400 bg-gray-700 px-2 py-1 rounded">{{$key}}: {{$value}}</span>
+                {{end}}
+            </div>
+            {{end}}
         </div>
         <div class="mt-4 sm:mt-0 flex space-x-3">
             <a href="{{$.BasePath}}/messages/session/{{.Data.Session.Session.ID}}" class="inline-flex items-center rounded-md bg-gray-700 px-3 py-2 text-sm font-medium text-gray-200 shadow-sm ring-1 ring-inset ring-gray-600 hover:bg-gray-600">
@@ -147,10 +153,6 @@
                     <dd class="mt-1 text-sm text-gray-200 font-mono bg-gray-900 border border-gray-700 rounded px-2 py-1 inline-block">{{.Data.Session.Session.ID}}</dd>
                 </div>
                 <div>
-                    <dt class="text-sm font-medium text-gray-400">Tenant</dt>
-                    <dd class="mt-1 text-sm text-gray-200">{{.Data.Session.Session.TenantID}}</dd>
-                </div>
-                <div>
                     <dt class="text-sm font-medium text-gray-400">Depth</dt>
                     <dd class="mt-1 text-sm text-gray-200">{{.Data.Session.Session.Depth}}</dd>
                 </div>
@@ -187,7 +189,7 @@
                     <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16l-4-4m0 0l4-4m-4 4h18"></path>
                     </svg>
-                    {{.Data.Session.ParentSession.UserID}}
+                    <span class="font-mono">{{slice .Data.Session.ParentSession.ID.String 0 8}}</span>
                 </a>
             </div>
             {{end}}
@@ -201,7 +203,7 @@
                             <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"></path>
                             </svg>
-                            {{.UserID}}
+                            <span class="font-mono">{{slice .ID.String 0 8}}</span>
                         </a>
                         <span class="text-sm text-gray-400">{{.RunCount}} runs</span>
                     </li>

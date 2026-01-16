@@ -4,8 +4,13 @@
     <a href="{{$.BasePath}}/sessions/{{.ID}}" class="block p-4 bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700 hover:bg-gray-700/50 transition-colors">
         <div class="flex items-center justify-between">
             <div class="flex items-center space-x-3">
-                <span class="font-medium text-gray-100">{{.UserID}}</span>
-                <span class="text-xs text-gray-400 bg-gray-700 px-2 py-1 rounded">{{.TenantID}}</span>
+                <span class="font-medium text-gray-100 font-mono">{{slice .ID.String 0 8}}</span>
+                {{if .AgentName}}
+                <span class="text-xs text-cyan-400 bg-cyan-500/20 px-2 py-1 rounded">{{.AgentName}}</span>
+                {{end}}
+                {{range $key, $value := .Metadata}}
+                <span class="text-xs text-gray-400 bg-gray-700 px-2 py-1 rounded">{{$key}}: {{$value}}</span>
+                {{end}}
             </div>
             <span class="text-sm text-gray-500">{{formatTimeAgo .LastActivityAt}}</span>
         </div>

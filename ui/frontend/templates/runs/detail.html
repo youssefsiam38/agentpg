@@ -58,8 +58,8 @@
                 <div>
                     <dt class="text-sm font-medium text-gray-400">Session</dt>
                     <dd class="mt-1 text-sm">
-                        <a href="{{$.BasePath}}/sessions/{{.Data.Run.Run.SessionID}}" class="text-cyan-400 hover:text-cyan-300">
-                            {{.Data.Run.Session.UserID}}
+                        <a href="{{$.BasePath}}/sessions/{{.Data.Run.Run.SessionID}}" class="text-cyan-400 hover:text-cyan-300 font-mono">
+                            {{slice .Data.Run.Run.SessionID.String 0 8}}
                         </a>
                     </dd>
                 </div>

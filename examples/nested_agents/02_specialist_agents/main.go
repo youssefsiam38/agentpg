@@ -321,7 +321,7 @@ Synthesize their responses into a cohesive answer for the user.`,
 	fmt.Println()
 
 	// Create session
-	sessionID, err := client.NewSession(ctx, "1", "specialist-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{
 		"description": "Specialist agents demonstration",
 	})
 	if err != nil {

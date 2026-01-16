@@ -184,27 +184,29 @@ Messages are categorized for compaction:
 
 ## UI Config
 
-Configures the admin UI and REST API handlers.
+Configures the web UI handlers.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `BasePath` | `string` | `""` | URL prefix where UI is mounted. E.g., "/ui". |
-| `TenantID` | `string` | `""` | Filters data to single tenant. Empty = admin mode (all tenants). |
+| `MetadataFilter` | `map[string]any` | `nil` | Filters sessions by metadata key-value pairs. |
+| `MetadataDisplayKeys` | `[]string` | `nil` | Metadata keys to show in session lists. |
+| `MetadataFilterKeys` | `[]string` | `nil` | Metadata keys to show filter dropdowns for. |
 | `ReadOnly` | `bool` | `false` | Disables write operations (chat, session creation). |
 | `RefreshInterval` | `time.Duration` | `5s` | For SSE updates and auto-refresh. |
 | `PageSize` | `int` | `25` | Items per page for pagination. |
 | `Logger` | `Logger` | `nil` | For structured logging. |
 
-### Modes
+### Filtering Options
 
-**Admin Mode (`TenantID = ""`):**
-- Shows all tenants with dropdown selector
+**Show All Sessions with Filter Dropdowns:**
+- Set `MetadataFilterKeys` to enable filter dropdowns
+- Users can filter by metadata fields in the UI
 - Full read-write access (if `ReadOnly=false`)
-- Chat enabled
 
-**Single-Tenant Mode (`TenantID = "tenant-123"`):**
-- Filters to specific tenant only
-- Hidden tenant selector
+**Pre-filter by Metadata:**
+- Set `MetadataFilter` to restrict to specific metadata values
+- Pre-configured filters cannot be overridden by query params
 - Full read-write access (if `ReadOnly=false`)
 
 **Read-Only Monitoring (`ReadOnly = true`):**
@@ -341,12 +343,14 @@ uiConfig := &ui.Config{
 http.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(store, client, uiConfig)))
 ```
 
-### UI Configuration - Single Tenant
+### UI Configuration - Filtered by Metadata
 
 ```go
 uiConfig := &ui.Config{
     BasePath: "/tenant/ui",
-    TenantID: "tenant-123",
+    MetadataFilter: map[string]any{
+        "tenant_id": "tenant-123",
+    },
     PageSize: 50,
 }
 ```

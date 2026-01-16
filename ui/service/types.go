@@ -105,8 +105,8 @@ type DashboardStats struct {
 	RecentRuns       []*RunSummary           `json:"recent_runs"`
 	RecentToolErrors []*ToolExecutionSummary `json:"recent_tool_errors"`
 
-	// Tenant breakdown (for admin mode)
-	TenantCounts map[string]int `json:"tenant_counts,omitempty"`
+	// Metadata breakdown (e.g., by tenant_id)
+	MetadataCounts map[string]map[string]int `json:"metadata_counts,omitempty"`
 
 	// Token usage insights
 	TotalTokens24h       int `json:"total_tokens_24h"`
@@ -151,11 +151,11 @@ type ToolStats struct {
 
 // SessionListParams contains parameters for listing sessions.
 type SessionListParams struct {
-	TenantID string
-	Limit    int
-	Offset   int
-	OrderBy  string // "created_at", "updated_at"
-	OrderDir string // "asc", "desc"
+	MetadataFilter map[string]any // Filter by metadata key-value pairs (uses @> operator)
+	Limit          int
+	Offset         int
+	OrderBy        string // "created_at", "updated_at"
+	OrderDir       string // "asc", "desc"
 }
 
 // SessionList contains a paginated list of sessions.
@@ -167,16 +167,15 @@ type SessionList struct {
 
 // SessionSummary contains summary information about a session.
 type SessionSummary struct {
-	ID              uuid.UUID `json:"id"`
-	TenantID        string    `json:"tenant_id"`
-	UserID          string    `json:"user_id"`
-	AgentName       string    `json:"agent_name,omitempty"` // Agent from first run
-	Depth           int       `json:"depth"`
-	RunCount        int       `json:"run_count"`
-	MessageCount    int       `json:"message_count"`
-	CompactionCount int       `json:"compaction_count"`
-	LastActivityAt  time.Time `json:"last_activity_at"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID              uuid.UUID      `json:"id"`
+	Metadata        map[string]any `json:"metadata,omitempty"` // All app-specific fields (tenant_id, user_id, etc.)
+	AgentName       string         `json:"agent_name,omitempty"` // Agent from first run
+	Depth           int            `json:"depth"`
+	RunCount        int            `json:"run_count"`
+	MessageCount    int            `json:"message_count"`
+	CompactionCount int            `json:"compaction_count"`
+	LastActivityAt  time.Time      `json:"last_activity_at"`
+	CreatedAt       time.Time      `json:"created_at"`
 }
 
 // SessionDetail contains detailed information about a session.
@@ -194,15 +193,15 @@ type SessionDetail struct {
 
 // RunListParams contains parameters for listing runs.
 type RunListParams struct {
-	SessionID *uuid.UUID
-	TenantID  string
-	AgentName string
-	State     string
-	RunMode   string // "batch", "streaming"
-	Limit     int
-	Offset    int
-	OrderBy   string // "created_at", "finalized_at"
-	OrderDir  string // "asc", "desc"
+	SessionID      *uuid.UUID
+	MetadataFilter map[string]any // Filter sessions by metadata key-value pairs
+	AgentName      string
+	State          string
+	RunMode        string // "batch", "streaming"
+	Limit          int
+	Offset         int
+	OrderBy        string // "created_at", "finalized_at"
+	OrderDir       string // "asc", "desc"
 }
 
 // RunList contains a paginated list of runs.
@@ -440,10 +439,8 @@ type TokenUsageSummary struct {
 
 // CreateSessionRequest contains parameters for creating a new session.
 type CreateSessionRequest struct {
-	TenantID  string         `json:"tenant_id"`
-	UserID    string         `json:"user_id"`
 	AgentName string         `json:"agent_name"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"` // All app-specific fields (tenant_id, user_id, etc.)
 }
 
 // SendMessageRequest contains parameters for sending a chat message.
@@ -461,11 +458,11 @@ type SendMessageResponse struct {
 	StopReason string    `json:"stop_reason,omitempty"`
 }
 
-// TenantInfo contains information about a tenant.
-type TenantInfo struct {
-	TenantID     string `json:"tenant_id"`
+// MetadataFilterOption contains a metadata value with its session count.
+// Used for building filter dropdowns in the UI.
+type MetadataFilterOption struct {
+	Value        string `json:"value"`
 	SessionCount int    `json:"session_count"`
-	RunCount     int    `json:"run_count"`
 }
 
 // ContentBlockView is a view-friendly content block.

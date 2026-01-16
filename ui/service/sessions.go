@@ -21,11 +21,11 @@ func (s *Service[TTx]) ListSessions(ctx context.Context, params SessionListParam
 
 	// Use the driver's ListSessions method with filtering and pagination
 	driverSessions, total, err := s.store.ListSessions(ctx, driver.ListSessionsParams{
-		TenantID: params.TenantID,
-		Limit:    params.Limit,
-		Offset:   params.Offset,
-		OrderBy:  params.OrderBy,
-		OrderDir: params.OrderDir,
+		MetadataFilter: params.MetadataFilter,
+		Limit:          params.Limit,
+		Offset:         params.Offset,
+		OrderBy:        params.OrderBy,
+		OrderDir:       params.OrderDir,
 	})
 	if err != nil {
 		return nil, err
@@ -36,8 +36,7 @@ func (s *Service[TTx]) ListSessions(ctx context.Context, params SessionListParam
 	for _, session := range driverSessions {
 		summary := &SessionSummary{
 			ID:              session.ID,
-			TenantID:        session.TenantID,
-			UserID:          session.UserID,
+			Metadata:        session.Metadata,
 			Depth:           session.Depth,
 			CompactionCount: session.CompactionCount,
 			CreatedAt:       session.CreatedAt,
@@ -199,8 +198,7 @@ func (s *Service[TTx]) GetSessionDetail(ctx context.Context, id uuid.UUID) (*Ses
 		if parentErr == nil {
 			detail.ParentSession = &SessionSummary{
 				ID:              parent.ID,
-				TenantID:        parent.TenantID,
-				UserID:          parent.UserID,
+				Metadata:        parent.Metadata,
 				Depth:           parent.Depth,
 				CompactionCount: parent.CompactionCount,
 				CreatedAt:       parent.CreatedAt,
@@ -220,38 +218,25 @@ func (s *Service[TTx]) GetSessionDetail(ctx context.Context, id uuid.UUID) (*Ses
 // CreateSession creates a new session.
 func (s *Service[TTx]) CreateSession(ctx context.Context, req CreateSessionRequest) (*driver.Session, error) {
 	return s.store.CreateSession(ctx, driver.CreateSessionParams{
-		TenantID: req.TenantID,
-		UserID:   req.UserID,
 		Metadata: req.Metadata,
 	})
 }
 
-// ListTenants returns a list of all tenants with session counts.
-func (s *Service[TTx]) ListTenants(ctx context.Context) ([]*TenantInfo, error) {
-	driverTenants, err := s.store.ListTenants(ctx)
+// GetMetadataValues returns all unique values for a metadata key with session counts.
+// Used for building filter dropdowns in the UI.
+func (s *Service[TTx]) GetMetadataValues(ctx context.Context, key string) ([]*MetadataFilterOption, error) {
+	driverValues, err := s.store.GetMetadataValues(ctx, key)
 	if err != nil {
 		return nil, err
 	}
 
-	tenants := make([]*TenantInfo, 0, len(driverTenants))
-	for _, t := range driverTenants {
-		tenant := &TenantInfo{
-			TenantID:     t.TenantID,
-			SessionCount: t.SessionCount,
-		}
-
-		// Get run count for this tenant using ListRuns
-		runs, total, err := s.store.ListRuns(ctx, driver.ListRunsParams{
-			TenantID: t.TenantID,
-			Limit:    1, // We only need the count
+	options := make([]*MetadataFilterOption, 0, len(driverValues))
+	for _, v := range driverValues {
+		options = append(options, &MetadataFilterOption{
+			Value:        v.Value,
+			SessionCount: v.SessionCount,
 		})
-		if err == nil {
-			_ = runs // Not used, just need total
-			tenant.RunCount = total
-		}
-
-		tenants = append(tenants, tenant)
 	}
 
-	return tenants, nil
+	return options, nil
 }

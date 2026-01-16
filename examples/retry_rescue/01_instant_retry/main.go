@@ -128,7 +128,7 @@ func main() {
 	log.Println("")
 
 	// Create session and run
-	sessionID, err := client.NewSession(ctx, "tenant1", "retry-demo", nil, nil)
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{"demo": "retry"})
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}

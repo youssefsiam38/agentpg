@@ -140,7 +140,7 @@ func main() {
 	fmt.Println("(Prunes tool outputs first, then summarizes if needed)")
 	fmt.Println(strings.Repeat("-", 70))
 
-	sessionID1, err := client.NewSession(ctx, "1", "hybrid-strategy-demo", nil, nil)
+	sessionID1, err := client.NewSession(ctx, nil, map[string]any{"strategy": "hybrid"})
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
@@ -158,7 +158,7 @@ func main() {
 	fmt.Println("(Summarizes all compactable messages directly)")
 	fmt.Println(strings.Repeat("-", 70))
 
-	sessionID2, err := client.NewSession(ctx, "1", "summarization-strategy-demo", nil, nil)
+	sessionID2, err := client.NewSession(ctx, nil, map[string]any{"strategy": "summarization"})
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}

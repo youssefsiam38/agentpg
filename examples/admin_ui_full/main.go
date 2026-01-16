@@ -92,14 +92,14 @@ func main() {
 	// Create HTTP server
 	mux := http.NewServeMux()
 
-	// Full admin UI with chat capabilities
+	// Full UI with chat capabilities
 	fullUIConfig := &ui.Config{
-		BasePath:        "/ui",
-		PageSize:        25,
-		RefreshInterval: 5 * time.Second,
-		Logger:          slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		// TenantID:        "default", // Set to specific tenant ID for single-tenant mode
-		// TenantID: "", // Empty = admin mode (shows all tenants)
+		BasePath:           "/ui",
+		PageSize:           25,
+		RefreshInterval:    5 * time.Second,
+		MetadataFilterKeys: []string{"tenant_id", "user_id"}, // Enable filter dropdowns
+		Logger:             slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		// MetadataFilter: map[string]any{"tenant_id": "default"}, // Uncomment to pre-filter
 	}
 
 	// Mount full UI at /ui/ (with chat enabled)
@@ -519,9 +519,11 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 func handleCreateDemoSession(w http.ResponseWriter, r *http.Request, client *agentpg.Client[pgx.Tx]) {
 	ctx := r.Context()
 
-	// Create a demo session
+	// Create a demo session with metadata
 	tenantID := fmt.Sprintf("demo-tenant-%d", time.Now().Unix()%1000)
-	sessionID, err := client.NewSession(ctx, tenantID, "demo-session", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{
+		"tenant_id":  tenantID,
+		"user_id":    "demo-session",
 		"created_by": "admin_ui_full_example",
 		"demo":       true,
 	})

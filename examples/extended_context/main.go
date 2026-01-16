@@ -167,7 +167,7 @@ func main() {
 	fmt.Println()
 
 	// Create session
-	sessionID, err := client.NewSession(ctx, "1", "extended-context-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{
 		"description": "Extended context demonstration",
 	})
 	if err != nil {

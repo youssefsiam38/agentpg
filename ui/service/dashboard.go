@@ -7,22 +7,29 @@ import (
 )
 
 // GetDashboardStats returns aggregated statistics for the dashboard.
-func (s *Service[TTx]) GetDashboardStats(ctx context.Context, tenantID string) (*DashboardStats, error) {
+// metadataFilter filters sessions/runs by metadata key-value pairs.
+// metadataCountKeys specifies which metadata keys to show in the breakdown (e.g., by tenant_id).
+func (s *Service[TTx]) GetDashboardStats(ctx context.Context, metadataFilter map[string]any, metadataCountKeys []string) (*DashboardStats, error) {
 	stats := &DashboardStats{
-		RunsByState:  make(map[string]int),
-		ToolsByState: make(map[string]int),
-		TenantCounts: make(map[string]int),
-		RunsByAgent:  make(map[string]int),
+		RunsByState:    make(map[string]int),
+		ToolsByState:   make(map[string]int),
+		MetadataCounts: make(map[string]map[string]int),
+		RunsByAgent:    make(map[string]int),
+	}
+
+	// Initialize metadata count maps
+	for _, key := range metadataCountKeys {
+		stats.MetadataCounts[key] = make(map[string]int)
 	}
 
 	now := time.Now()
 
 	// Get sessions
 	sessions, err := s.ListSessions(ctx, SessionListParams{
-		TenantID: tenantID,
-		Limit:    1000,
-		OrderBy:  "updated_at",
-		OrderDir: "desc",
+		MetadataFilter: metadataFilter,
+		Limit:          1000,
+		OrderBy:        "updated_at",
+		OrderDir:       "desc",
 	})
 	if err != nil {
 		return nil, err
@@ -37,8 +44,16 @@ func (s *Service[TTx]) GetDashboardStats(ctx context.Context, tenantID string) (
 		if now.Sub(sess.CreatedAt) < 24*time.Hour {
 			stats.SessionsToday++
 		}
-		// Track tenant counts
-		stats.TenantCounts[sess.TenantID]++
+		// Track metadata counts for specified keys
+		for _, key := range metadataCountKeys {
+			if sess.Metadata != nil {
+				if val, ok := sess.Metadata[key]; ok {
+					if strVal, ok := val.(string); ok {
+						stats.MetadataCounts[key][strVal]++
+					}
+				}
+			}
+		}
 
 		// Collect top 5 recent sessions
 		if i < 5 {
@@ -48,8 +63,8 @@ func (s *Service[TTx]) GetDashboardStats(ctx context.Context, tenantID string) (
 
 	// Get runs
 	runs, err := s.ListRuns(ctx, RunListParams{
-		TenantID: tenantID,
-		Limit:    1000,
+		MetadataFilter: metadataFilter,
+		Limit:          1000,
 	})
 	if err != nil {
 		return nil, err
@@ -227,10 +242,10 @@ func (s *Service[TTx]) GetDashboardStats(ctx context.Context, tenantID string) (
 
 	// Get recent runs
 	recentRuns, err := s.ListRuns(ctx, RunListParams{
-		TenantID: tenantID,
-		Limit:    10,
-		OrderBy:  "created_at",
-		OrderDir: "desc",
+		MetadataFilter: metadataFilter,
+		Limit:          10,
+		OrderBy:        "created_at",
+		OrderDir:       "desc",
 	})
 	if err == nil {
 		stats.RecentRuns = recentRuns.Runs

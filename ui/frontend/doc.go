@@ -1,4 +1,4 @@
-// Package frontend provides SSR frontend handlers for the AgentPG admin UI.
+// Package frontend provides SSR frontend handlers for the AgentPG web UI.
 //
 // The frontend uses HTMX for interactivity and Tailwind CSS for styling,
 // both loaded via CDN for simplicity.

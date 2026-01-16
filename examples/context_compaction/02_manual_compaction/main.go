@@ -137,7 +137,7 @@ func main() {
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
 	// Create session using client API
-	sessionID, err := client.NewSession(ctx, "1", "manual-compaction-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{
 		"description": "Manual compaction demonstration",
 	})
 	if err != nil {

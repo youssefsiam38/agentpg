@@ -23,9 +23,18 @@ type Config struct {
 	// All navigation links will be prefixed with this path.
 	BasePath string
 
-	// TenantID filters data to a single tenant.
-	// If empty, shows all tenants (admin mode).
-	TenantID string
+	// MetadataFilter filters all data to sessions matching these metadata key-value pairs.
+	// Example: map[string]any{"tenant_id": "my-tenant"} to show only matching sessions.
+	// If empty, shows all sessions.
+	MetadataFilter map[string]any
+
+	// MetadataDisplayKeys specifies which metadata keys to show in session lists.
+	// Example: []string{"tenant_id", "user_id", "environment"}
+	MetadataDisplayKeys []string
+
+	// MetadataFilterKeys specifies which metadata keys to show filter dropdowns for.
+	// Enables users to filter sessions by these metadata fields in the UI.
+	MetadataFilterKeys []string
 
 	// ReadOnly disables write operations (chat, session creation).
 	ReadOnly bool

@@ -213,7 +213,7 @@ func main() {
 	tokenTracker := NewTokenTracker()
 
 	// Create session
-	sessionID, err := client.NewSession(ctx, "1", "monitoring-demo", nil, nil)
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{"demo": "monitoring"})
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}

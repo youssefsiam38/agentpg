@@ -163,12 +163,13 @@ CREATE TYPE agentpg_message_role AS ENUM(
 -- =============================================================================
 -- SESSIONS TABLE
 -- =============================================================================
--- Conversation context with multi-tenant isolation and hierarchical support.
+-- Conversation context with hierarchical support for nested agents.
 --
 -- ARCHITECTURE ROLE:
--- - Each session is a conversation thread
+-- - Each session is a conversation thread identified by UUID
 -- - Sessions can be nested (parent_session_id) for agent-as-tool scenarios
--- - Multi-tenant via tenant_id (never query across tenants)
+-- - App-specific fields (tenant_id, user_id, etc.) stored in metadata JSONB
+-- - Filtering via JSONB containment operator (@>) with GIN index
 --
 -- HIERARCHICAL SESSIONS:
 -- When Agent A calls Agent B as a tool:
@@ -184,14 +185,6 @@ CREATE TABLE agentpg_sessions (
     -- Primary key
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
--- Multi-tenant isolation
--- All queries MUST filter by tenant_id
-tenant_id TEXT NOT NULL,
-
--- User ID - identifies who owns the session
--- NOT unique: a user can have multiple sessions within the same tenant
-user_id TEXT NOT NULL,
-
 -- Hierarchical session support for nested agents
 -- NULL for root sessions, set when agent-as-tool creates child session
 parent_session_id UUID REFERENCES agentpg_sessions (id) ON DELETE CASCADE,
@@ -200,8 +193,9 @@ parent_session_id UUID REFERENCES agentpg_sessions (id) ON DELETE CASCADE,
 -- Used for query optimization and preventing infinite nesting
 depth INTEGER NOT NULL DEFAULT 0,
 
--- Arbitrary metadata (JSON)
--- Stores user-defined data like description, tags, etc.
+-- Flexible metadata (JSONB)
+-- Store any app-specific fields: tenant_id, user_id, tags, environment, etc.
+-- Use GIN index for efficient filtering via @> containment operator
 metadata JSONB NOT NULL DEFAULT '{}',
 
 -- Context compaction tracking
@@ -213,18 +207,22 @@ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON TABLE agentpg_sessions IS 'Conversation sessions with multi-tenant isolation and hierarchical support for nested agents.';
+COMMENT ON TABLE agentpg_sessions IS 'Conversation sessions with hierarchical support for nested agents. App-specific fields stored in metadata.';
 
-COMMENT ON COLUMN agentpg_sessions.tenant_id IS 'Tenant identifier for multi-tenant isolation. All queries must filter by this.';
+COMMENT ON COLUMN agentpg_sessions.metadata IS 'Flexible JSONB storage for app-specific fields (tenant_id, user_id, tags, etc.). Use GIN index for efficient filtering.';
 
 COMMENT ON COLUMN agentpg_sessions.parent_session_id IS 'Links child sessions to parent when agent-as-tool creates nested conversation context.';
 
 COMMENT ON COLUMN agentpg_sessions.depth IS 'Hierarchy depth (0=root). Used for optimization and preventing infinite nesting.';
 
 -- Indexes
-CREATE INDEX agentpg_idx_sessions_tenant_user_id ON agentpg_sessions (tenant_id, user_id);
+-- GIN index for metadata filtering via @> containment operator
+CREATE INDEX agentpg_idx_sessions_metadata ON agentpg_sessions USING GIN (metadata);
 
-CREATE INDEX agentpg_idx_sessions_tenant_updated ON agentpg_sessions (tenant_id, updated_at DESC);
+-- Simple ordering indexes
+CREATE INDEX agentpg_idx_sessions_updated ON agentpg_sessions (updated_at DESC);
+
+CREATE INDEX agentpg_idx_sessions_created ON agentpg_sessions (created_at DESC);
 
 CREATE INDEX agentpg_idx_sessions_parent ON agentpg_sessions (parent_session_id)
 WHERE

@@ -21,13 +21,13 @@ func (s *Service[TTx]) ListRuns(ctx context.Context, params RunListParams) (*Run
 
 	// Use the driver's ListRuns method with filtering and pagination
 	runs, total, err := s.store.ListRuns(ctx, driver.ListRunsParams{
-		TenantID:  params.TenantID,
-		SessionID: params.SessionID,
-		AgentName: params.AgentName,
-		State:     params.State,
-		RunMode:   params.RunMode,
-		Limit:     params.Limit,
-		Offset:    params.Offset,
+		MetadataFilter: params.MetadataFilter,
+		SessionID:      params.SessionID,
+		AgentName:      params.AgentName,
+		State:          params.State,
+		RunMode:        params.RunMode,
+		Limit:          params.Limit,
+		Offset:         params.Offset,
 	})
 	if err != nil {
 		return nil, err
@@ -88,8 +88,7 @@ func (s *Service[TTx]) GetRunDetail(ctx context.Context, id uuid.UUID) (*RunDeta
 	if err == nil {
 		detail.Session = &SessionSummary{
 			ID:              session.ID,
-			TenantID:        session.TenantID,
-			UserID:          session.UserID,
+			Metadata:        session.Metadata,
 			Depth:           session.Depth,
 			CompactionCount: session.CompactionCount,
 			CreatedAt:       session.CreatedAt,

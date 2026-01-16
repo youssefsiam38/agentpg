@@ -91,7 +91,7 @@ func main() {
 	log.Println("Auto-compaction is ENABLED")
 
 	// Create session
-	sessionID, err := client.NewSession(ctx, "1", "auto-compaction-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{
 		"description": "Auto compaction demonstration",
 	})
 	if err != nil {

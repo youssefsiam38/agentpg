@@ -33,12 +33,14 @@ func UIHandler[TTx any](store driver.Store[TTx], client *agentpg.Client[TTx], cf
 
 	svc := service.New(store)
 	handler := frontend.NewRouter(svc, client, &frontend.Config{
-		BasePath:        cfg.BasePath,
-		TenantID:        cfg.TenantID,
-		ReadOnly:        cfg.ReadOnly,
-		PageSize:        cfg.PageSize,
-		RefreshInterval: cfg.RefreshInterval,
-		Logger:          cfg.Logger,
+		BasePath:            cfg.BasePath,
+		MetadataFilter:      cfg.MetadataFilter,
+		MetadataDisplayKeys: cfg.MetadataDisplayKeys,
+		MetadataFilterKeys:  cfg.MetadataFilterKeys,
+		ReadOnly:            cfg.ReadOnly,
+		PageSize:            cfg.PageSize,
+		RefreshInterval:     cfg.RefreshInterval,
+		Logger:              cfg.Logger,
 	})
 
 	return handler

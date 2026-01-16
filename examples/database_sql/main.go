@@ -105,7 +105,7 @@ func main() {
 	// Create session
 	// ==========================================================
 
-	sessionID, err := client.NewSession(ctx, "tenant-1", "database-sql-demo", nil, map[string]any{
+	sessionID, err := client.NewSession(ctx, nil, map[string]any{
 		"driver": "database/sql",
 	})
 	if err != nil {
@@ -159,7 +159,7 @@ func main() {
 	}
 
 	// Create a new session within the transaction
-	sessionID2, err := client.NewSessionTx(ctx, tx, "tenant-1", "tx-demo", nil, map[string]any{
+	sessionID2, err := client.NewSessionTx(ctx, tx, nil, map[string]any{
 		"description": "Transaction demo session",
 	})
 	if err != nil {
