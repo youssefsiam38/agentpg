@@ -88,7 +88,7 @@ AgentPG is a fully event-driven Go framework for building async AI agents using 
 | **Event-Driven with Polling Fallback** | Uses LISTEN/NOTIFY for real-time events, with polling as fallback for reliability. |
 | **Race-Safe Distribution** | Uses `SELECT FOR UPDATE SKIP LOCKED` for safe work claiming across distributed workers. |
 | **Transaction-First** | `RunTx()` accepts user transactions for atomic operations. |
-| **Per-Client Registration** | No global state. All agents/tools registered on client instances. |
+| **Database-Driven Agents** | Agents are database entities with UUID primary keys. Tools registered per-client. |
 | **Multi-Level Agent Hierarchies** | Agents can be tools for other agents (PM → Lead → Worker pattern). |
 
 ---
@@ -171,8 +171,7 @@ type Client[TTx any] struct {
     config           *ClientConfig          // Configuration
     anthropic        anthropic.Client       // Claude API client
 
-    agents map[string]*AgentDefinition      // Registered agents
-    tools  map[string]tool.Tool             // Registered tools
+    tools  map[string]tool.Tool             // Per-client tool registry
 
     runWorker        *runWorker[TTx]        // Batch processor
     streamingWorker  *streamingWorker[TTx]  // Streaming processor
@@ -186,8 +185,8 @@ type Client[TTx any] struct {
 ```
 
 **Key Responsibilities:**
-- Register agents and tools (pre-Start)
-- Create sessions and initiate runs
+- Register tools (pre-Start) and create/get agents via database (post-Start)
+- Create sessions and initiate runs using agent UUIDs
 - Coordinate background workers
 - Handle run completion waiting and signaling
 - Leadership tracking for maintenance tasks
@@ -453,14 +452,24 @@ Instances only claim work they can handle:
 
 ```go
 // Code-specialized worker
-codeWorker.RegisterAgent(&AgentDefinition{Name: "code-assistant", ...})
 codeWorker.RegisterTool(&LintTool{})
 codeWorker.RegisterTool(&TestTool{})
+codeWorker.Start(ctx)
+codeAgent, _ := codeWorker.GetOrCreateAgent(ctx, &AgentDefinition{
+    Name:  "code-assistant",
+    Model: "claude-sonnet-4-5-20250929",
+    Tools: []string{"lint", "test"},
+})
 // Only claims runs for "code-assistant" and tools "lint"/"test"
 
 // General worker
-generalWorker.RegisterAgent(&AgentDefinition{Name: "assistant", ...})
 generalWorker.RegisterTool(&WeatherTool{})
+generalWorker.Start(ctx)
+assistant, _ := generalWorker.GetOrCreateAgent(ctx, &AgentDefinition{
+    Name:  "assistant",
+    Model: "claude-sonnet-4-5-20250929",
+    Tools: []string{"get_weather"},
+})
 // Claims different work
 ```
 

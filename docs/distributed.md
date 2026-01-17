@@ -71,15 +71,18 @@ client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
     ID:     "pod-abc-123",      // Unique identifier
 })
 
-// Register capabilities
-client.RegisterAgent(&agentpg.AgentDefinition{
-    Name:  "assistant",
-    Model: "claude-sonnet-4-5-20250929",
-})
+// Register tools on client (before Start)
 client.RegisterTool(&MyTool{})
 
 // Start (registers instance and begins processing)
 client.Start(ctx)
+
+// Create or get agent (idempotent - safe to call on every startup)
+agent, _ := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
+    Name:  "assistant",
+    Model: "claude-sonnet-4-5-20250929",
+})
+// Use agent.ID (uuid.UUID) when creating runs
 ```
 
 ### Instance Tables
@@ -183,14 +186,24 @@ WHERE EXISTS (
 
 ```go
 // Code worker - only handles code-related work
-codeWorker.RegisterAgent(&agentpg.AgentDefinition{Name: "code-assistant"})
 codeWorker.RegisterTool(&LintTool{})
 codeWorker.RegisterTool(&TestTool{})
+codeWorker.Start(ctx)
+codeAgent, _ := codeWorker.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
+    Name:  "code-assistant",
+    Model: "claude-sonnet-4-5-20250929",
+    Tools: []string{"lint", "test"},
+})
 // Only claims: runs for "code-assistant", tools "lint" and "test"
 
 // General worker - handles everything else
-generalWorker.RegisterAgent(&agentpg.AgentDefinition{Name: "assistant"})
 generalWorker.RegisterTool(&WeatherTool{})
+generalWorker.Start(ctx)
+assistant, _ := generalWorker.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
+    Name:  "assistant",
+    Model: "claude-sonnet-4-5-20250929",
+    Tools: []string{"get_weather"},
+})
 // Only claims: runs for "assistant", tool "get_weather"
 ```
 

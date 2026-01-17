@@ -13,9 +13,9 @@
 //	DATABASE_URL=postgres://user:pass@localhost/agentpg ANTHROPIC_API_KEY=sk-... go run main.go
 //
 // Then open:
-// - http://localhost:8080/         - Application home
-// - http://localhost:8080/ui/      - Admin UI (full access)
-// - http://localhost:8080/monitor/ - Read-only monitoring
+// - http://localhost:8090/         - Application home
+// - http://localhost:8090/ui/      - Admin UI (full access)
+// - http://localhost:8090/monitor/ - Read-only monitoring
 package main
 
 import (
@@ -140,7 +140,7 @@ func main() {
 		log.Println("AgentPG Admin UI Full Example")
 		log.Println("===========================================")
 		log.Println("")
-		log.Println("Server starting on http://localhost:8080")
+		log.Println("Server starting on http://localhost:8090")
 		log.Println("")
 		log.Println("Endpoints:")
 		log.Println("  /         - Home page with links")

@@ -217,7 +217,6 @@ agents, err := client.ListAgents(ctx, map[string]any{"tenant_id": "t1"}, 100, 0)
 agent, err := client.GetAgentByID(ctx, agentID)
 agent, err := client.GetAgentByName(ctx, "assistant", nil)  // nil = no metadata filter
 ```
-```
 
 ### Model Selection
 ```go
@@ -672,7 +671,7 @@ http.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(drv.Store(), client, ui
 | `/runs`, `/runs/{id}` | Run list and detail with iterations, tool executions |
 | `/runs/{id}/conversation` | Full conversation view |
 | `/tool-executions`, `/tool-executions/{id}` | Tool execution list and detail |
-| `/agents` | Registered agents across instances |
+| `/agents` | Database agents with capable instances |
 | `/instances` | Active worker instances with health status |
 | `/compaction` | Compaction events history |
 | `/chat`, `/chat/session/{id}` | Interactive chat interface |

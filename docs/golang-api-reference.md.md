@@ -32,7 +32,7 @@ Generic client type with database transaction support. The type parameter `TTx` 
 func NewClient[TTx any](drv driver.Driver[TTx], config *ClientConfig) (*Client[TTx], error)
 ```
 
-Creates a new AgentPG client. Agents and tools must be registered before calling `Start()`.
+Creates a new AgentPG client. Tools must be registered before calling `Start()`. Agents are created via `GetOrCreateAgent()` after `Start()`.
 
 #### Start
 
@@ -74,15 +74,7 @@ Returns the client configuration.
 
 ---
 
-### Agent and Tool Registration
-
-#### RegisterAgent
-
-```go
-func (c *Client[TTx]) RegisterAgent(def *AgentDefinition) error
-```
-
-Registers an agent definition. Must be called before `Start()`.
+### Tool Registration and Agent Management
 
 #### RegisterTool
 
@@ -92,13 +84,39 @@ func (c *Client[TTx]) RegisterTool(t tool.Tool) error
 
 Registers a tool with the client. Must be called before `Start()`.
 
+#### GetOrCreateAgent
+
+```go
+func (c *Client[TTx]) GetOrCreateAgent(ctx context.Context, def *AgentDefinition) (*Agent, error)
+```
+
+Creates a new agent in the database or returns existing agent if one with the same name already exists. Must be called after `Start()`. This operation is idempotent and safe to call on every startup.
+
+Returns an `*Agent` with the database UUID that should be used when creating runs.
+
+#### CreateAgent
+
+```go
+func (c *Client[TTx]) CreateAgent(ctx context.Context, def *AgentDefinition) (*Agent, error)
+```
+
+Creates a new agent in the database. Returns error if agent with same name already exists. Must be called after `Start()`.
+
 #### GetAgent
 
 ```go
-func (c *Client[TTx]) GetAgent(name string) *AgentDefinition
+func (c *Client[TTx]) GetAgent(ctx context.Context, id uuid.UUID) (*Agent, error)
 ```
 
-Returns registered agent definition by name, or nil if not found.
+Returns agent by UUID from the database.
+
+#### GetAgentByName
+
+```go
+func (c *Client[TTx]) GetAgentByName(ctx context.Context, name string) (*Agent, error)
+```
+
+Returns agent by name from the database.
 
 #### GetTool
 
@@ -115,22 +133,28 @@ Returns registered tool by name, or nil if not found.
 #### NewSession
 
 ```go
-func (c *Client[TTx]) NewSession(ctx context.Context, tenantID, userID string, parentSessionID *uuid.UUID, metadata map[string]any) (uuid.UUID, error)
+func (c *Client[TTx]) NewSession(ctx context.Context, parentSessionID *uuid.UUID, metadata map[string]any) (uuid.UUID, error)
 ```
 
 Creates a new conversation session.
 
 | Parameter | Description |
 |-----------|-------------|
-| `tenantID` | Multi-tenant identifier |
-| `userID` | Conversation owner |
 | `parentSessionID` | For nested/child sessions (optional) |
-| `metadata` | Arbitrary JSON metadata (optional) |
+| `metadata` | Arbitrary JSON metadata for app-specific fields (tenant_id, user_id, etc.) |
+
+**Example:**
+```go
+sessionID, _ := client.NewSession(ctx, nil, map[string]any{
+    "tenant_id": "tenant-123",
+    "user_id":   "user-456",
+})
+```
 
 #### NewSessionTx
 
 ```go
-func (c *Client[TTx]) NewSessionTx(ctx context.Context, tx TTx, tenantID, userID string, parentSessionID *uuid.UUID, metadata map[string]any) (uuid.UUID, error)
+func (c *Client[TTx]) NewSessionTx(ctx context.Context, tx TTx, parentSessionID *uuid.UUID, metadata map[string]any) (uuid.UUID, error)
 ```
 
 Creates session within existing transaction. Session not visible until transaction commits.
@@ -152,15 +176,21 @@ Retrieves session by ID.
 #### Run
 
 ```go
-func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentName, prompt string) (uuid.UUID, error)
+func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error)
 ```
 
 Creates async run using Claude Batch API. Returns immediately with run ID.
 
+| Parameter | Description |
+|-----------|-------------|
+| `sessionID` | Session UUID |
+| `agentID` | Agent UUID (from `GetOrCreateAgent`) |
+| `prompt` | User message |
+
 #### RunTx
 
 ```go
-func (c *Client[TTx]) RunTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentName, prompt string) (uuid.UUID, error)
+func (c *Client[TTx]) RunTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error)
 ```
 
 Creates run within transaction. Run not visible to workers until transaction commits.
@@ -168,7 +198,7 @@ Creates run within transaction. Run not visible to workers until transaction com
 #### RunSync
 
 ```go
-func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentName, prompt string) (*Response, error)
+func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (*Response, error)
 ```
 
 Convenience wrapper: creates run and waits for completion. **Do NOT use inside transaction (deadlock risk).**
@@ -182,7 +212,7 @@ Real-time responses, standard pricing. Best for interactive applications.
 #### RunFast
 
 ```go
-func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentName, prompt string) (uuid.UUID, error)
+func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error)
 ```
 
 Creates async run using Claude Streaming API. Returns immediately with run ID.
@@ -190,7 +220,7 @@ Creates async run using Claude Streaming API. Returns immediately with run ID.
 #### RunFastTx
 
 ```go
-func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentName, prompt string) (uuid.UUID, error)
+func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error)
 ```
 
 Creates streaming run within transaction.
@@ -198,7 +228,7 @@ Creates streaming run within transaction.
 #### RunFastSync
 
 ```go
-func (c *Client[TTx]) RunFastSync(ctx context.Context, sessionID uuid.UUID, agentName, prompt string) (*Response, error)
+func (c *Client[TTx]) RunFastSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (*Response, error)
 ```
 
 Convenience wrapper for streaming. Recommended for interactive applications.
@@ -357,6 +387,8 @@ type RunRescueConfig struct {
 
 ### AgentDefinition
 
+Used to define an agent when calling `GetOrCreateAgent()` or `CreateAgent()`.
+
 ```go
 type AgentDefinition struct {
     Name         string          // Unique identifier (required)
@@ -364,7 +396,28 @@ type AgentDefinition struct {
     Model        string          // Claude model ID (required)
     SystemPrompt string          // Agent behavior instructions
     Tools        []string        // Tool names agent can use
-    Agents       []string        // Agent names for delegation (agent-as-tool)
+    AgentIDs     []uuid.UUID     // Agent UUIDs for delegation (agent-as-tool)
+    MaxTokens    *int            // Response length limit
+    Temperature  *float64        // Randomness 0.0-1.0
+    TopK         *int            // Token selection limit
+    TopP         *float64        // Nucleus sampling probability
+    Config       map[string]any  // Additional settings
+}
+```
+
+### Agent
+
+Represents a database agent entity returned from `GetOrCreateAgent()`.
+
+```go
+type Agent struct {
+    ID           uuid.UUID       // Database primary key (use this for runs)
+    Name         string          // Unique identifier
+    Description  string          // Description (shown when used as tool)
+    Model        string          // Claude model ID
+    SystemPrompt string          // Agent behavior instructions
+    Tools        []string        // Tool names agent can use
+    AgentIDs     []uuid.UUID     // Agent UUIDs for delegation
     MaxTokens    *int            // Response length limit
     Temperature  *float64        // Randomness 0.0-1.0
     TopK         *int            // Token selection limit
@@ -378,7 +431,7 @@ type AgentDefinition struct {
 #### AllToolNames
 
 ```go
-func (a *AgentDefinition) AllToolNames() []string
+func (a *Agent) AllToolNames() []string
 ```
 
 Returns all tool names (both regular and agent-as-tool).
@@ -403,7 +456,7 @@ type Session struct {
 type Run struct {
     ID                      uuid.UUID
     SessionID               uuid.UUID
-    AgentName               string
+    AgentID                 uuid.UUID        // Agent UUID (foreign key)
     RunMode                 RunMode          // "batch" or "streaming"
     ParentRunID             *uuid.UUID
     ParentToolExecutionID   *uuid.UUID
@@ -558,7 +611,7 @@ type ToolExecution struct {
     ToolName            string
     ToolInput           json.RawMessage
     IsAgentTool         bool
-    AgentName           *string
+    AgentID             *uuid.UUID          // Agent UUID for agent-as-tool
     ChildRunID          *uuid.UUID
     ToolOutput          *string
     IsError             bool

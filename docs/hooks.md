@@ -206,7 +206,9 @@ Multiple entity types support arbitrary JSON metadata.
 
 ```go
 // Session metadata
-session, _ := client.NewSession(ctx, "tenant", "user", nil, map[string]any{
+session, _ := client.NewSession(ctx, nil, map[string]any{
+    "tenant_id":    "tenant-123",
+    "user_id":      "user-456",
     "request_id":   "req-123",
     "user_tier":    "premium",
     "source":       "web",
@@ -482,7 +484,9 @@ client.CompactWithConfig(ctx, sessionID, &compaction.Config{
 Use metadata fields on sessions, runs, and messages:
 
 ```go
-client.NewSession(ctx, "tenant", "user", nil, map[string]any{
+client.NewSession(ctx, nil, map[string]any{
+    "tenant_id":      "my-tenant",
+    "user_id":        "my-user",
     "correlation_id": requestID,
     "user_metadata":  userInfo,
 })

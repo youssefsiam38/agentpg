@@ -82,8 +82,14 @@ func main() {
         log.Fatal(err)
     }
 
-    // 3. Register an agent
-    err = client.RegisterAgent(&agentpg.AgentDefinition{
+    // 3. Start the client (begins background processing)
+    if err := client.Start(ctx); err != nil {
+        log.Fatal(err)
+    }
+    defer client.Stop(context.Background())
+
+    // 4. Create or get agent (idempotent - safe to call on every startup)
+    agent, err := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
         Name:         "assistant",
         Model:        "claude-sonnet-4-5-20250929",
         SystemPrompt: "You are a helpful assistant. Be concise.",
@@ -92,20 +98,17 @@ func main() {
         log.Fatal(err)
     }
 
-    // 4. Start the client (begins background processing)
-    if err := client.Start(ctx); err != nil {
-        log.Fatal(err)
-    }
-    defer client.Stop(context.Background())
-
     // 5. Create a session
-    sessionID, err := client.NewSession(ctx, "tenant-1", "user-123", nil, nil)
+    sessionID, err := client.NewSession(ctx, nil, map[string]any{
+        "tenant_id": "tenant-1",
+        "user_id":   "user-123",
+    })
     if err != nil {
         log.Fatal(err)
     }
 
-    // 6. Run the agent
-    response, err := client.RunSync(ctx, sessionID, "assistant", "What is 2+2?")
+    // 6. Run the agent (using agent UUID)
+    response, err := client.RunSync(ctx, sessionID, agent.ID, "What is 2+2?")
     if err != nil {
         log.Fatal(err)
     }
@@ -206,14 +209,17 @@ func (t *CalculatorTool) Execute(ctx context.Context, input json.RawMessage) (st
 }
 ```
 
-Register the tool and assign it to an agent:
+Register the tool and create an agent with tool access:
 
 ```go
-// Register tool on client
+// Register tool on client (before Start)
 client.RegisterTool(&CalculatorTool{})
 
-// Register agent with tool access
-client.RegisterAgent(&agentpg.AgentDefinition{
+// Start client
+client.Start(ctx)
+
+// Create agent with tool access (after Start)
+mathAgent, _ := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
     Name:         "math-assistant",
     Model:        "claude-sonnet-4-5-20250929",
     SystemPrompt: "You are a math assistant. Use the calculator tool for calculations.",
@@ -224,7 +230,7 @@ client.RegisterAgent(&agentpg.AgentDefinition{
 Now the agent can use the calculator:
 
 ```go
-response, _ := client.RunSync(ctx, sessionID, "math-assistant", "What is 15 * 7?")
+response, _ := client.RunSync(ctx, sessionID, mathAgent.ID, "What is 15 * 7?")
 // Agent will call calculator(operation="multiply", a=15, b=7)
 // Response: "15 * 7 = 105"
 ```
@@ -238,13 +244,13 @@ AgentPG supports two API modes for different use cases:
 Uses Claude's Batch API with 50% cost savings. Best for background processing.
 
 ```go
-// Async - returns immediately
-runID, _ := client.Run(ctx, sessionID, "assistant", "Analyze this data...")
+// Async - returns immediately (uses agent UUID)
+runID, _ := client.Run(ctx, sessionID, agent.ID, "Analyze this data...")
 // Do other work...
 response, _ := client.WaitForRun(ctx, runID)
 
 // Sync - waits for completion
-response, _ := client.RunSync(ctx, sessionID, "assistant", "Hello!")
+response, _ := client.RunSync(ctx, sessionID, agent.ID, "Hello!")
 ```
 
 ### Streaming API (Real-Time)
@@ -252,12 +258,12 @@ response, _ := client.RunSync(ctx, sessionID, "assistant", "Hello!")
 Uses Claude's Streaming API for lower latency. Best for interactive applications.
 
 ```go
-// Async
-runID, _ := client.RunFast(ctx, sessionID, "assistant", "Quick question...")
+// Async (uses agent UUID)
+runID, _ := client.RunFast(ctx, sessionID, agent.ID, "Quick question...")
 response, _ := client.WaitForRun(ctx, runID)
 
 // Sync (recommended for chat UIs)
-response, _ := client.RunFastSync(ctx, sessionID, "assistant", "Hello!")
+response, _ := client.RunFastSync(ctx, sessionID, agent.ID, "Hello!")
 ```
 
 | Feature | Batch API | Streaming API |
@@ -316,9 +322,9 @@ For atomic operations across your app and AgentPG:
 // Begin transaction
 tx, _ := pool.Begin(ctx)
 
-// Create session and run in same transaction
-sessionID, _ := client.NewSessionTx(ctx, tx, "tenant", "user", nil, nil)
-runID, _ := client.RunTx(ctx, tx, sessionID, "assistant", "Process this order")
+// Create session and run in same transaction (uses agent UUID)
+sessionID, _ := client.NewSessionTx(ctx, tx, nil, map[string]any{"tenant_id": "t1"})
+runID, _ := client.RunTx(ctx, tx, sessionID, agent.ID, "Process this order")
 
 // Commit - run becomes visible to workers
 tx.Commit(ctx)

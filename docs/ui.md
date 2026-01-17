@@ -118,7 +118,7 @@ http.Handle("/monitor/", http.StripPrefix("/monitor", ui.UIHandler(store, nil, m
 | `/runs/{id}/conversation` | Full conversation view for a run |
 | `/tool-executions` | Tool execution list with state filtering |
 | `/tool-executions/{id}` | Tool execution detail with input/output |
-| `/agents` | Registered agents across all instances |
+| `/agents` | Database agents with capable instances |
 | `/instances` | Active worker instances with health status |
 | `/compaction` | Compaction events history |
 | `/chat` | Interactive chat interface |
@@ -220,15 +220,16 @@ func main() {
         APIKey: os.Getenv("ANTHROPIC_API_KEY"),
     })
 
-    // Register agents
-    client.RegisterAgent(&agentpg.AgentDefinition{
+    // Start client (begins background services)
+    client.Start(ctx)
+    defer client.Stop(context.Background())
+
+    // Create or get agent (idempotent - safe to call on every startup)
+    client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
         Name:         "assistant",
         Model:        "claude-sonnet-4-5-20250929",
         SystemPrompt: "You are a helpful assistant.",
     })
-
-    client.Start(ctx)
-    defer client.Stop(context.Background())
 
     mux := http.NewServeMux()
 

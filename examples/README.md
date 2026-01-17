@@ -4,9 +4,10 @@ This directory contains comprehensive examples demonstrating various features of
 
 ## Client API
 
-AgentPG provides a **Client API** for multi-instance deployment with per-client registration:
+AgentPG provides a **Client API** for multi-instance deployment:
 
-- **Per-Client Registration**: Register agents and tools on each client instance
+- **Database-Driven Agents**: Agents are database entities with UUID primary keys, not per-client registrations
+- **Per-Client Tool Registration**: Tools are registered on each client instance
 - **Instance Management**: Automatic heartbeats and instance tracking
 - **Leader Election**: Coordinated cleanup via single leader
 - **Multi-Instance**: Run multiple instances for high availability
@@ -20,23 +21,23 @@ func main() {
         APIKey: apiKey,
     })
 
-    // Register agents on client (no global state)
-    client.RegisterAgent(&agentpg.AgentDefinition{
-        Name:         "chat",
-        Model:        "claude-sonnet-4-5-20250929",
-        SystemPrompt: "You are a helpful assistant",
-    })
-
-    // Register tools on client
+    // Register tools on client (before Start)
     client.RegisterTool(&CalculatorTool{})
 
     // Start client (begins background services)
     client.Start(ctx)
     defer client.Stop(ctx)
 
-    // Create session and run
+    // Create or get agent (idempotent - safe to call on every startup)
+    agent, _ := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
+        Name:         "chat",
+        Model:        "claude-sonnet-4-5-20250929",
+        SystemPrompt: "You are a helpful assistant",
+    })
+
+    // Create session and run (uses agent UUID)
     sessionID, _ := client.NewSession(ctx, nil, nil)
-    response, _ := client.RunSync(ctx, sessionID, "chat", "Hello!")
+    response, _ := client.RunSync(ctx, sessionID, agent.ID, "Hello!")
 }
 ```
 
@@ -64,9 +65,9 @@ export DATABASE_URL="postgresql://user:password@localhost:5432/agentpg"
 **Location**: `examples/basic/`
 
 **Client API** - The recommended pattern for new projects:
-- Per-client agent registration with `client.RegisterAgent()`
-- Per-client tool registration with `client.RegisterTool()`
-- Session and run management via client methods
+- Database-driven agents with `client.GetOrCreateAgent()` (after Start)
+- Per-client tool registration with `client.RegisterTool()` (before Start)
+- Session and run management via client methods using agent UUIDs
 
 ```bash
 go run examples/basic/01_simple_chat/main.go
@@ -223,7 +224,8 @@ go run examples/advanced/08_error_recovery/main.go
 
 | Feature | Example Location |
 |---------|------------------|
-| **Per-Client Registration** | all examples |
+| **Database-driven agents** | all examples |
+| **Per-client tool registration** | all examples |
 | **Multi-instance** | distributed/ |
 | **Leader election** | distributed/ |
 | Agent creation & config | all examples |
@@ -281,7 +283,8 @@ client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
 ### Agent Definition
 
 ```go
-client.RegisterAgent(&agentpg.AgentDefinition{
+// Create agent after client.Start()
+agent, _ := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
     Name:         "chat",
     Description:  "A helpful chat agent",
     Model:        "claude-sonnet-4-5-20250929",
@@ -293,26 +296,25 @@ client.RegisterAgent(&agentpg.AgentDefinition{
         "extended_context": true,
     },
 })
+// Use agent.ID (uuid.UUID) when running
 ```
 
 ### Agent-as-Tool (Hierarchies)
 
 ```go
-// Register child agent first
-client.RegisterAgent(&agentpg.AgentDefinition{
+// Create child agent first
+worker, _ := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
     Name:         "worker",
     Model:        "claude-sonnet-4-5-20250929",
     SystemPrompt: "You are a worker agent...",
-    // ... other config
 })
 
-// Register parent agent with Agents field to delegate to child
-client.RegisterAgent(&agentpg.AgentDefinition{
+// Create parent agent with AgentIDs field to delegate to child
+manager, _ := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
     Name:         "manager",
     Model:        "claude-sonnet-4-5-20250929",
     SystemPrompt: "You are a manager agent...",
-    Agents:       []string{"worker"},  // worker becomes a callable tool for manager
-    // ... other config
+    AgentIDs:     []uuid.UUID{worker.ID},  // worker becomes a callable tool for manager
 })
 ```
 

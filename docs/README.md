@@ -91,19 +91,20 @@ func main() {
         APIKey: os.Getenv("ANTHROPIC_API_KEY"),
     })
 
-    // Register agent
-    client.RegisterAgent(&agentpg.AgentDefinition{
+    // Start client
+    client.Start(ctx)
+    defer client.Stop(context.Background())
+
+    // Create or get agent (idempotent - safe to call on every startup)
+    agent, _ := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
         Name:         "assistant",
         Model:        "claude-sonnet-4-5-20250929",
         SystemPrompt: "You are a helpful assistant.",
     })
 
-    // Start and run
-    client.Start(ctx)
-    defer client.Stop(context.Background())
-
-    sessionID, _ := client.NewSession(ctx, "tenant-1", "user-1", nil, nil)
-    response, _ := client.RunSync(ctx, sessionID, "assistant", "Hello!")
+    // Create session and run (uses agent UUID)
+    sessionID, _ := client.NewSession(ctx, nil, nil)
+    response, _ := client.RunSync(ctx, sessionID, agent.ID, "Hello!")
     fmt.Println(response.Text)
 }
 ```
