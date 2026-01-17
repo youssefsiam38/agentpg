@@ -231,22 +231,27 @@ WHERE
 -- =============================================================================
 -- AGENTS TABLE
 -- =============================================================================
--- Agent definitions (schema registry).
+-- Agent definitions stored in database.
 --
 -- ARCHITECTURE ROLE:
 -- - Defines agent capabilities (model, system prompt, tools, config)
--- - Referenced by runs to know how to process them
--- - Registered per-instance via agentpg_instance_agents
+-- - Agents are persistent database records, not instance-bound
+-- - UUID primary key enables stable references
+-- - Metadata JSONB enables multi-tenant filtering (tenant_id, user_id, etc.)
+-- - Uniqueness by (name + metadata) allows same-named agents for different contexts
 --
 -- AGENT-AS-TOOL:
--- - When agent A uses agent B as tool, a tool entry is created in agentpg_tools
--- - The tool's agent_name references this table
+-- - agent_ids array references other agents for delegation
+-- - When agent A has agent B in agent_ids, A can delegate tasks to B
 -- =============================================================================
 CREATE TABLE agentpg_agents (
-    -- Agent name (primary key, must be unique)
-    name TEXT PRIMARY KEY,
+    -- Primary key (UUID for stable references)
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
--- Human-readable description
+-- Agent name (required, display identifier)
+name TEXT NOT NULL,
+
+-- Human-readable description (shown when agent is used as tool)
 description TEXT,
 
 -- Claude model to use (e.g., "claude-sonnet-4-5-20250929")
@@ -259,27 +264,54 @@ system_prompt TEXT,
 max_tokens INTEGER, temperature REAL, top_k INTEGER, top_p REAL,
 
 -- Tool names this agent can use (references agentpg_tools.name)
--- Includes both regular tools and agent-as-tool names
 tool_names TEXT [] NOT NULL DEFAULT '{}',
+
+-- Agent IDs for agent-as-tool delegation (references other agents by UUID)
+-- When this agent calls another agent as a tool, the target agent's ID is here
+agent_ids UUID [] NOT NULL DEFAULT '{}',
+
+-- Flexible metadata (JSONB) for multi-tenancy and app-specific organization
+-- Store: tenant_id, user_id, environment, tags, etc.
+-- Use GIN index for efficient filtering via @> containment operator
+metadata JSONB NOT NULL DEFAULT '{}',
 
 -- Additional configuration (JSON)
 -- Examples: auto_compaction, compaction_trigger, extended_context
 config JSONB NOT NULL DEFAULT '{}',
 
 -- Timestamps
-
-
 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT agent_name_valid CHECK (char_length(name) > 0 AND char_length(name) < 256)
+-- Constraints
+CONSTRAINT agent_name_valid CHECK (char_length(name) > 0 AND char_length(name) < 256),
+-- Uniqueness by name + metadata (allows same name for different tenants/contexts)
+CONSTRAINT agent_unique_name_metadata UNIQUE (name, metadata)
 );
 
-COMMENT ON TABLE agentpg_agents IS 'Agent definitions including model config, system prompt, and available tools.';
+COMMENT ON TABLE agentpg_agents IS 'Agent definitions with UUID primary key and metadata for multi-tenant filtering.';
 
-COMMENT ON COLUMN agentpg_agents.tool_names IS 'Array of tool names this agent can invoke. Includes both regular tools and agent-as-tool names.';
+COMMENT ON COLUMN agentpg_agents.id IS 'UUID primary key. Use this to reference agents in runs and tool executions.';
+
+COMMENT ON COLUMN agentpg_agents.name IS 'Display name. Must be unique within same metadata context.';
+
+COMMENT ON COLUMN agentpg_agents.tool_names IS 'Array of tool names this agent can invoke.';
+
+COMMENT ON COLUMN agentpg_agents.agent_ids IS 'UUIDs of agents this agent can delegate to (agent-as-tool pattern).';
+
+COMMENT ON COLUMN agentpg_agents.metadata IS 'Flexible JSONB storage for multi-tenancy (tenant_id, user_id, etc.). Use GIN index for filtering.';
 
 COMMENT ON COLUMN agentpg_agents.config IS 'Additional configuration like auto_compaction, compaction_trigger, extended_context, etc.';
+
+-- Indexes for agents
+-- GIN index for metadata filtering via @> containment operator
+CREATE INDEX agentpg_idx_agents_metadata ON agentpg_agents USING GIN (metadata);
+
+-- Index for name lookups (partial name queries)
+CREATE INDEX agentpg_idx_agents_name ON agentpg_agents (name);
+
+-- Index for updated_at ordering
+CREATE INDEX agentpg_idx_agents_updated ON agentpg_agents (updated_at DESC);
 
 -- =============================================================================
 -- TOOLS TABLE
@@ -292,8 +324,8 @@ COMMENT ON COLUMN agentpg_agents.config IS 'Additional configuration like auto_c
 -- - agent_name is set for agent-as-tool entries
 --
 -- AGENT-AS-TOOL PATTERN:
--- When AgentB.AsToolFor(AgentA) is called:
--- 1. A tool entry is created with is_agent_tool=true, agent_name='AgentB'
+-- When AgentB is set as a tool for AgentA:
+-- 1. A tool entry is created with is_agent_tool=true, agent_id=AgentB's UUID
 -- 2. AgentA's tool_names includes this tool
 -- 3. When AgentA calls this tool, system creates a child run for AgentB
 -- =============================================================================
@@ -311,8 +343,8 @@ input_schema JSONB NOT NULL,
 -- When true, calling this tool creates a child run for the specified agent
 is_agent_tool BOOLEAN NOT NULL DEFAULT FALSE,
 
--- For agent-as-tool: the name of the agent to invoke
-agent_name TEXT REFERENCES agentpg_agents (name) ON DELETE CASCADE,
+-- For agent-as-tool: the UUID of the agent to invoke
+agent_id UUID REFERENCES agentpg_agents (id) ON DELETE CASCADE,
 
 -- Additional metadata
 metadata JSONB NOT NULL DEFAULT '{}',
@@ -325,8 +357,8 @@ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT tool_name_valid CHECK (char_length(name) > 0 AND char_length(name) < 128),
     CONSTRAINT agent_tool_consistency CHECK (
-        (is_agent_tool = TRUE AND agent_name IS NOT NULL) OR
-        (is_agent_tool = FALSE AND agent_name IS NULL)
+        (is_agent_tool = TRUE AND agent_id IS NOT NULL) OR
+        (is_agent_tool = FALSE AND agent_id IS NULL)
     )
 );
 
@@ -334,10 +366,10 @@ COMMENT ON TABLE agentpg_tools IS 'Tool definitions including input schema. Agen
 
 COMMENT ON COLUMN agentpg_tools.is_agent_tool IS 'TRUE if this tool invokes another agent. When called, creates a child run.';
 
-COMMENT ON COLUMN agentpg_tools.agent_name IS 'For agent-as-tool entries, the name of the agent to invoke.';
+COMMENT ON COLUMN agentpg_tools.agent_id IS 'For agent-as-tool entries, the UUID of the agent to invoke.';
 
 -- Index for agent-as-tool lookups
-CREATE INDEX agentpg_idx_tools_agent ON agentpg_tools (agent_name)
+CREATE INDEX agentpg_idx_tools_agent ON agentpg_tools (agent_id)
 WHERE
     is_agent_tool = TRUE;
 
@@ -376,8 +408,8 @@ CREATE TABLE agentpg_runs (
 -- Session this run belongs to
 session_id UUID NOT NULL REFERENCES agentpg_sessions (id) ON DELETE CASCADE,
 
--- Agent executing this run
-agent_name TEXT NOT NULL REFERENCES agentpg_agents (name),
+-- Agent executing this run (by UUID for stable reference)
+agent_id UUID NOT NULL REFERENCES agentpg_agents (id),
 
 -- ==========================================================================
 -- RUN MODE (Batch vs Streaming API)
@@ -541,6 +573,8 @@ CONSTRAINT run_depth_consistency CHECK (
 
 COMMENT ON TABLE agentpg_runs IS 'Agent run executions with hierarchical support for nested agent-as-tool calls. Supports both Batch and Streaming API modes.';
 
+COMMENT ON COLUMN agentpg_runs.agent_id IS 'UUID of the agent executing this run. References agentpg_agents(id).';
+
 COMMENT ON COLUMN agentpg_runs.run_mode IS 'Which Claude API to use: batch (24h async, cost-effective) or streaming (real-time, low latency).';
 
 COMMENT ON COLUMN agentpg_runs.parent_run_id IS 'For agent-as-tool invocations, links to the parent run that called this agent.';
@@ -588,6 +622,8 @@ WHERE
     );
 
 CREATE INDEX agentpg_idx_runs_session ON agentpg_runs (session_id, created_at DESC);
+
+CREATE INDEX agentpg_idx_runs_agent ON agentpg_runs (agent_id);
 
 CREATE INDEX agentpg_idx_runs_parent ON agentpg_runs (parent_run_id)
 WHERE
@@ -943,8 +979,8 @@ tool_input JSONB NOT NULL,
 -- Is this executing an agent-as-tool?
 is_agent_tool BOOLEAN NOT NULL DEFAULT FALSE,
 
--- For agent-as-tool: the agent being invoked
-agent_name TEXT REFERENCES agentpg_agents (name),
+-- For agent-as-tool: the UUID of the agent being invoked
+agent_id UUID REFERENCES agentpg_agents (id),
 
 -- For agent-as-tool: the child run created to execute the agent
 child_run_id UUID REFERENCES agentpg_runs (id) ON DELETE SET NULL,
@@ -1016,16 +1052,18 @@ CONSTRAINT tool_exec_state_consistency CHECK (
     )
 ),
 
--- Agent tool must have agent_name, non-agent tool must not
+-- Agent tool must have agent_id, non-agent tool must not
 CONSTRAINT tool_exec_agent_consistency CHECK (
-        (is_agent_tool = TRUE AND agent_name IS NOT NULL)
-        OR (is_agent_tool = FALSE AND agent_name IS NULL)
+        (is_agent_tool = TRUE AND agent_id IS NOT NULL)
+        OR (is_agent_tool = FALSE AND agent_id IS NULL)
     )
 );
 
 COMMENT ON TABLE agentpg_tool_executions IS 'Tool execution tracking. For agent-as-tool, creates child runs.';
 
 COMMENT ON COLUMN agentpg_tool_executions.is_agent_tool IS 'TRUE if this executes another agent. Creates child_run_id when claimed.';
+
+COMMENT ON COLUMN agentpg_tool_executions.agent_id IS 'For agent-as-tool: the UUID of the agent being invoked.';
 
 COMMENT ON COLUMN agentpg_tool_executions.child_run_id IS 'For agent-as-tool: the child run created to execute the agent.';
 
@@ -1125,25 +1163,14 @@ CREATE INDEX agentpg_idx_instances_heartbeat ON agentpg_instances (last_heartbea
 -- =============================================================================
 -- INSTANCE CAPABILITY TABLES (UNLOGGED)
 -- =============================================================================
--- Track which agents/tools each instance can handle.
+-- Track which tools each instance can handle.
 --
 -- ARCHITECTURE ROLE:
 -- - Enables "route to capable instance" pattern
 -- - Instance only sees work it can handle via claiming functions
+-- - Runs are routed based on agent's required tools being available
 -- - Allows specialized workers (e.g., one instance for code tools)
 -- =============================================================================
-
--- Instance-Agent capabilities
-CREATE UNLOGGED TABLE agentpg_instance_agents (
-    instance_id TEXT NOT NULL REFERENCES agentpg_instances (id) ON DELETE CASCADE,
-    agent_name TEXT NOT NULL REFERENCES agentpg_agents (name) ON DELETE CASCADE,
-    registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (instance_id, agent_name)
-);
-
-COMMENT ON TABLE agentpg_instance_agents IS 'Which agents each instance can process. Enables specialized workers.';
-
-CREATE INDEX agentpg_idx_instance_agents_by_agent ON agentpg_instance_agents (agent_name);
 
 -- Instance-Tool capabilities
 CREATE UNLOGGED TABLE agentpg_instance_tools (
@@ -1264,8 +1291,13 @@ CREATE INDEX agentpg_idx_archive_session ON agentpg_message_archive (session_id,
 -- -----------------------------------------------------------------------------
 -- Claim pending runs (race-safe with SKIP LOCKED)
 -- -----------------------------------------------------------------------------
--- Returns runs that the instance can process (has agent capability).
+-- Returns runs that the instance can process based on tool availability.
 -- Uses SELECT FOR UPDATE SKIP LOCKED for race safety across workers.
+--
+-- ROUTING LOGIC (tool-based):
+-- - An instance can process a run if it has ALL the tools that the agent requires
+-- - Agents with no tools (tool_names = '{}') can be processed by any instance
+-- - This allows specialized workers (e.g., code tools on specific instances)
 --
 -- p_run_mode: Optional filter for run mode ('batch', 'streaming', or NULL for any)
 --
@@ -1288,15 +1320,24 @@ BEGIN
     WITH claimable AS (
         SELECT r.id
         FROM agentpg_runs r
+        JOIN agentpg_agents a ON a.id = r.agent_id
         WHERE r.state = 'pending'
           AND r.claimed_by_instance_id IS NULL
           -- Filter by run mode if specified
           AND (p_run_mode IS NULL OR r.run_mode = p_run_mode)
-          -- Only claim if instance has capability for this agent
-          AND EXISTS (
-              SELECT 1 FROM agentpg_instance_agents ia
-              WHERE ia.instance_id = p_instance_id
-                AND ia.agent_name = r.agent_name
+          -- Only claim if instance has ALL tools required by this agent
+          -- Agents with no tools (empty array) can be processed by any instance
+          AND (
+              a.tool_names = '{}'
+              OR NOT EXISTS (
+                  -- Find any tool required by agent that instance doesn't have
+                  SELECT 1 FROM unnest(a.tool_names) AS required_tool
+                  WHERE NOT EXISTS (
+                      SELECT 1 FROM agentpg_instance_tools it
+                      WHERE it.instance_id = p_instance_id
+                        AND it.tool_name = required_tool
+                  )
+              )
           )
         ORDER BY r.created_at ASC
         LIMIT p_max_count
@@ -1321,13 +1362,14 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION agentpg_claim_runs IS 'Race-safe run claiming with optional run mode filter. Transitions to batch_submitting or streaming based on run mode.';
+COMMENT ON FUNCTION agentpg_claim_runs IS 'Race-safe run claiming based on tool availability. Instance must have ALL tools required by the agent.';
 
 -- -----------------------------------------------------------------------------
 -- Claim pending tool executions (race-safe with SKIP LOCKED)
 -- -----------------------------------------------------------------------------
 -- Returns tool executions that the instance can process.
--- For agent-tools, checks instance_agents; for regular tools, checks instance_tools.
+-- For regular tools: checks instance_tools
+-- For agent-tools: checks if instance has ALL tools required by the target agent
 --
 -- USAGE:
 --   SELECT * FROM agentpg_claim_tool_executions('instance-123', 10);
@@ -1341,6 +1383,7 @@ BEGIN
     WITH claimable AS (
         SELECT te.id
         FROM agentpg_tool_executions te
+        LEFT JOIN agentpg_agents a ON te.is_agent_tool = TRUE AND a.id = te.agent_id
         WHERE te.state = 'pending'
           AND te.claimed_by_instance_id IS NULL
           -- Only claim if scheduled time has passed (for retry delays and snoozing)
@@ -1354,11 +1397,18 @@ BEGIN
                     AND it.tool_name = te.tool_name
               ))
               OR
-              -- Agent tools: check instance_agents for the target agent
-              (te.is_agent_tool = TRUE AND EXISTS (
-                  SELECT 1 FROM agentpg_instance_agents ia
-                  WHERE ia.instance_id = p_instance_id
-                    AND ia.agent_name = te.agent_name
+              -- Agent tools: check if instance has ALL tools required by the target agent
+              (te.is_agent_tool = TRUE AND (
+                  a.tool_names = '{}'
+                  OR NOT EXISTS (
+                      -- Find any tool required by target agent that instance doesn't have
+                      SELECT 1 FROM unnest(a.tool_names) AS required_tool
+                      WHERE NOT EXISTS (
+                          SELECT 1 FROM agentpg_instance_tools it
+                          WHERE it.instance_id = p_instance_id
+                            AND it.tool_name = required_tool
+                      )
+                  )
               ))
           )
         ORDER BY te.scheduled_at ASC, te.created_at ASC
@@ -1377,7 +1427,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION agentpg_claim_tool_executions IS 'Race-safe tool claiming. Routes agent-tools to capable instances. Respects scheduled_at for retry delays.';
+COMMENT ON FUNCTION agentpg_claim_tool_executions IS 'Race-safe tool claiming. Routes agent-tools based on target agent tool requirements. Respects scheduled_at for retry delays.';
 
 -- -----------------------------------------------------------------------------
 -- Get iterations needing batch polling
@@ -1466,7 +1516,7 @@ BEGIN
         PERFORM pg_notify('agentpg_run_created', json_build_object(
             'run_id', NEW.id,
             'session_id', NEW.session_id,
-            'agent_name', NEW.agent_name,
+            'agent_id', NEW.agent_id,
             'run_mode', NEW.run_mode,
             'parent_run_id', NEW.parent_run_id,
             'depth', NEW.depth
@@ -1494,7 +1544,7 @@ BEGIN
         PERFORM pg_notify('agentpg_run_state', json_build_object(
             'run_id', NEW.id,
             'session_id', NEW.session_id,
-            'agent_name', NEW.agent_name,
+            'agent_id', NEW.agent_id,
             'state', NEW.state,
             'previous_state', OLD.state,
             'parent_run_id', NEW.parent_run_id
@@ -1535,7 +1585,7 @@ BEGIN
             'run_id', NEW.run_id,
             'tool_name', NEW.tool_name,
             'is_agent_tool', NEW.is_agent_tool,
-            'agent_name', NEW.agent_name
+            'agent_id', NEW.agent_id
         )::text);
     END IF;
     RETURN NULL;
@@ -1667,33 +1717,10 @@ CREATE TRIGGER agentpg_trg_cleanup_orphaned_work
     FOR EACH ROW
     EXECUTE FUNCTION agentpg_cleanup_orphaned_work();
 
--- -----------------------------------------------------------------------------
--- Orphan agent cleanup
--- -----------------------------------------------------------------------------
--- When the last instance referencing an agent is removed, delete the orphan.
--- This keeps the agents table clean of unused definitions.
--- -----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION agentpg_cleanup_orphaned_agents()
-RETURNS TRIGGER AS $$
-BEGIN
-    DELETE FROM agentpg_agents
-    WHERE name = OLD.agent_name
-      AND NOT EXISTS (
-          SELECT 1 FROM agentpg_instance_agents
-          WHERE agent_name = OLD.agent_name
-      )
-      AND NOT EXISTS (
-          SELECT 1 FROM agentpg_runs
-          WHERE agent_name = OLD.agent_name
-      );
-    RETURN OLD;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER agentpg_trg_cleanup_orphaned_agents
-    AFTER DELETE ON agentpg_instance_agents
-    FOR EACH ROW
-    EXECUTE FUNCTION agentpg_cleanup_orphaned_agents();
+-- NOTE: Agents are now persistent database records, not instance-bound.
+-- No orphan cleanup is needed - agents remain in the database until explicitly deleted.
+-- This enables agents to be created before any workers register, and to persist
+-- across worker restarts.
 
 -- -----------------------------------------------------------------------------
 -- Orphan tool cleanup
@@ -1723,34 +1750,9 @@ CREATE TRIGGER agentpg_trg_cleanup_orphaned_tools
     FOR EACH ROW
     EXECUTE FUNCTION agentpg_cleanup_orphaned_tools();
 
--- -----------------------------------------------------------------------------
--- Validate agent is active before creating run
--- -----------------------------------------------------------------------------
--- Prevents creating runs for agents that have no registered instances.
--- This enforces atomicity at the database level, ensuring users cannot
--- create sessions/runs with agents that no active worker can process.
--- -----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION agentpg_validate_run_agent()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Check if agent is registered on at least one active instance
-    IF NOT EXISTS (
-        SELECT 1 FROM agentpg_instance_agents
-        WHERE agent_name = NEW.agent_name
-    ) THEN
-        RAISE EXCEPTION 'Agent "%" is not active (no instances registered)', NEW.agent_name
-            USING ERRCODE = 'check_violation';
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER agentpg_trg_validate_run_agent
-    BEFORE INSERT ON agentpg_runs
-    FOR EACH ROW
-    EXECUTE FUNCTION agentpg_validate_run_agent();
-
-COMMENT ON FUNCTION agentpg_validate_run_agent IS 'Prevents creating runs for inactive agents (no registered instances).';
+-- NOTE: Agent validation is now handled by the FK constraint on agent_id.
+-- Agents are persistent database records, not instance-bound registrations.
+-- The FK to agentpg_agents(id) ensures the agent exists before creating a run.
 
 -- =============================================================================
 -- ATOMIC OPERATIONS
@@ -1788,7 +1790,7 @@ BEGIN
 
         INSERT INTO agentpg_tool_executions (
             run_id, iteration_id, tool_use_id, tool_name, tool_input,
-            is_agent_tool, agent_name, max_attempts
+            is_agent_tool, agent_id, max_attempts
         ) VALUES (
             (v_param->>'run_id')::UUID,
             (v_param->>'iteration_id')::UUID,
@@ -1796,7 +1798,7 @@ BEGIN
             v_param->>'tool_name',
             v_param->'tool_input',
             COALESCE((v_param->>'is_agent_tool')::BOOLEAN, FALSE),
-            v_param->>'agent_name',
+            (v_param->>'agent_id')::UUID,
             v_max_attempts
         )
         RETURNING * INTO v_exec;

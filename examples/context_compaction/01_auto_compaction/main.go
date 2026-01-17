@@ -65,21 +65,22 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Register agent
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+
+	// Create agent in the database (after client.Start)
 	maxTokens := 4096
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "auto-compaction-demo",
+	agent, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "agent.ID",
 		Description:  "Assistant with auto compaction enabled",
 		Model:        "claude-sonnet-4-5-20250929",
 		SystemPrompt: "You are a helpful assistant. Provide detailed, thorough responses to questions.",
 		MaxTokens:    &maxTokens,
-	}); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
-	}
-
-	// Start the client
-	if err := client.Start(ctx); err != nil {
-		log.Fatalf("Failed to start client: %v", err)
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
 	}
 	defer func() {
 		if err := client.Stop(context.Background()); err != nil {
@@ -116,7 +117,7 @@ func main() {
 		fmt.Printf("=== Question %d/%d ===\n", i+1, len(questions))
 		fmt.Printf("Q: %s\n\n", truncateString(question, 80))
 
-		response, err := client.RunFastSync(ctx, sessionID, "auto-compaction-demo", question)
+		response, err := client.RunFastSync(ctx, sessionID, agent.ID, question)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}

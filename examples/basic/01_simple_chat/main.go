@@ -1,8 +1,9 @@
 // Package main demonstrates the basic usage of AgentPG.
 //
-// This example shows the recommended Client API with per-client registration.
+// This example shows the recommended Client API with database-driven agents.
 // The Client API provides:
-// - Per-client agent/tool registration (no global state)
+// - Database-driven agent management (agents stored in PostgreSQL)
+// - Per-client tool registration
 // - Automatic instance management
 // - Multi-instance coordination
 package main
@@ -50,16 +51,6 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Register agent on the client (per-client registration, no global state)
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "assistant",
-		Description:  "A helpful coding assistant",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful coding assistant. Be concise and accurate.",
-	}); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
-	}
-
 	// Start the client (registers instance, starts background services)
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -67,6 +58,20 @@ func main() {
 	defer client.Stop(context.Background())
 
 	fmt.Printf("AgentPG client started (instance: %s)\n\n", client.InstanceID())
+
+	// Get or create agent in the database (idempotent - safe to run multiple times)
+	// Agents are database entities identified by UUID
+	agent, err := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "assistant",
+		Description:  "A helpful coding assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful coding assistant. Be concise and accurate.",
+	})
+	if err != nil {
+		log.Fatalf("Failed to get or create agent: %v", err)
+	}
+
+	fmt.Printf("Agent ready: %s (ID: %s)\n\n", agent.Name, agent.ID)
 
 	// Create a new session
 	// Parameters: parentSessionID, metadata
@@ -83,8 +88,8 @@ func main() {
 	fmt.Printf("Created session: %s\n\n", sessionID)
 
 	// Run the agent with a prompt
-	// Parameters: ctx, sessionID, agentName, prompt
-	response, err := client.RunSync(ctx, sessionID, "assistant", "Explain what the AgentPG package does in 3 sentences.")
+	// Parameters: ctx, sessionID, agentID, prompt
+	response, err := client.RunSync(ctx, sessionID, agent.ID, "Explain what the AgentPG package does in 3 sentences.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

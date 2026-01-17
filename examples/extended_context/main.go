@@ -131,22 +131,6 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Register agent with extended context enabled
-	maxTokens := 4096
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "extended-context-demo",
-		Description:  "Document analysis with extended context support",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a document analysis assistant. You can process very long documents and answer questions about them accurately.",
-		MaxTokens:    &maxTokens,
-		Config: map[string]any{
-			"extended_context": true,  // Enable 1M token support
-			"auto_compaction":  false, // Disable compaction - rely on extended context
-		},
-	}); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
-	}
-
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -159,6 +143,23 @@ func main() {
 
 	fmt.Printf("Client started (instance ID: %s)\n", client.InstanceID())
 	fmt.Println()
+
+	// Create agent with extended context enabled in the database
+	maxTokens := 4096
+	agent, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "extended-context-demo",
+		Description:  "Document analysis with extended context support",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a document analysis assistant. You can process very long documents and answer questions about them accurately.",
+		MaxTokens:    &maxTokens,
+		Config: map[string]any{
+			"extended_context": true,  // Enable 1M token support
+			"auto_compaction":  false, // Disable compaction - rely on extended context
+		},
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
+	}
 
 	fmt.Println("Configuration:")
 	fmt.Println("- Extended context: ENABLED")
@@ -201,7 +202,7 @@ Please confirm you've received the document and provide a brief summary of its s
 
 	fmt.Println("\nSubmitting document for analysis...")
 
-	response1, err := client.RunFastSync(ctx, sessionID, "extended-context-demo", prompt)
+	response1, err := client.RunFastSync(ctx, sessionID, agent.ID, prompt)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -238,7 +239,7 @@ Please confirm you've received the document and provide a brief summary of its s
 	for i, question := range questions {
 		fmt.Printf("Question %d: %s\n", i+1, question)
 
-		response, err := client.RunFastSync(ctx, sessionID, "extended-context-demo", question)
+		response, err := client.RunFastSync(ctx, sessionID, agent.ID, question)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}

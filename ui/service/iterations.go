@@ -67,10 +67,15 @@ func (s *Service[TTx]) GetIterationDetail(ctx context.Context, id uuid.UUID) (*I
 			d := run.FinalizedAt.Sub(*run.StartedAt)
 			duration = &d
 		}
+		// Look up agent name from ID
+		agentName := ""
+		if agent, err := s.store.GetAgent(ctx, run.AgentID); err == nil {
+			agentName = agent.Name
+		}
 		detail.Run = &RunSummary{
 			ID:             run.ID,
 			SessionID:      run.SessionID,
-			AgentName:      run.AgentName,
+			AgentName:      agentName,
 			RunMode:        run.RunMode,
 			State:          string(run.State),
 			Depth:          run.Depth,
@@ -90,6 +95,13 @@ func (s *Service[TTx]) GetIterationDetail(ctx context.Context, id uuid.UUID) (*I
 				d := exec.CompletedAt.Sub(*exec.StartedAt)
 				duration = &d
 			}
+			// Look up agent name from ID if this is an agent tool
+			var agentName *string
+			if exec.IsAgentTool && exec.AgentID != nil {
+				if agent, err := s.store.GetAgent(ctx, *exec.AgentID); err == nil {
+					agentName = &agent.Name
+				}
+			}
 			detail.ToolExecutions = append(detail.ToolExecutions, &ToolExecutionSummary{
 				ID:           exec.ID,
 				RunID:        exec.RunID,
@@ -97,7 +109,7 @@ func (s *Service[TTx]) GetIterationDetail(ctx context.Context, id uuid.UUID) (*I
 				ToolName:     exec.ToolName,
 				State:        string(exec.State),
 				IsAgentTool:  exec.IsAgentTool,
-				AgentName:    exec.AgentName,
+				AgentName:    agentName,
 				ChildRunID:   exec.ChildRunID,
 				IsError:      exec.IsError,
 				AttemptCount: exec.AttemptCount,
@@ -155,6 +167,13 @@ func (s *Service[TTx]) GetIterationTimeline(ctx context.Context, runID uuid.UUID
 					d := exec.CompletedAt.Sub(*exec.StartedAt)
 					execDuration = &d
 				}
+				// Look up agent name from ID if this is an agent tool
+				var agentName *string
+				if exec.IsAgentTool && exec.AgentID != nil {
+					if agent, err := s.store.GetAgent(ctx, *exec.AgentID); err == nil {
+						agentName = &agent.Name
+					}
+				}
 				item.ToolExecutions = append(item.ToolExecutions, &ToolExecutionSummary{
 					ID:           exec.ID,
 					RunID:        exec.RunID,
@@ -162,7 +181,7 @@ func (s *Service[TTx]) GetIterationTimeline(ctx context.Context, runID uuid.UUID
 					ToolName:     exec.ToolName,
 					State:        string(exec.State),
 					IsAgentTool:  exec.IsAgentTool,
-					AgentName:    exec.AgentName,
+					AgentName:    agentName,
 					ChildRunID:   exec.ChildRunID,
 					IsError:      exec.IsError,
 					AttemptCount: exec.AttemptCount,

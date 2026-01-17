@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
 	"github.com/youssefsiam38/agentpg/driver/pgxv5"
@@ -53,11 +54,21 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+	defer func() {
+		if err := client.Stop(context.Background()); err != nil {
+			log.Printf("Error stopping client: %v", err)
+		}
+	}()
+
 	maxTokensResearch := 10000
 	maxTokensMain := 10000
 
-	// Register the research specialist agent
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
+	// Create the research specialist agent first (child agent)
+	researchSpecialist, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
 		Name:        "research-specialist",
 		Description: "A research specialist for detailed analysis",
 		Model:       "claude-sonnet-4-5-20250929",
@@ -69,13 +80,14 @@ func main() {
 
 When given a task, respond with well-structured, informative content.`,
 		MaxTokens: &maxTokensResearch,
-	}); err != nil {
-		log.Fatalf("Failed to register research-specialist agent: %v", err)
+	})
+	if err != nil {
+		log.Fatalf("Failed to create research-specialist agent: %v", err)
 	}
 
-	// Register the main orchestrator agent with delegation to research-specialist
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:        "main-orchestrator",
+	// Create the main orchestrator agent with delegation to research-specialist
+	orchestrator, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:        "orchestrator.ID",
 		Description: "Main assistant that can delegate to specialists",
 		Model:       "claude-sonnet-4-5-20250929",
 		SystemPrompt: `You are a helpful assistant that can delegate research tasks to a specialist.
@@ -83,22 +95,13 @@ When users ask for detailed information or research on a topic, use the research
 Summarize the research findings in a user-friendly way.
 
 For simple questions, answer directly without delegation.`,
-		// Agents field enables delegation - research-specialist becomes a callable tool
-		Agents:    []string{"research-specialist"},
+		// AgentIDs field enables delegation - research-specialist becomes a callable tool
+		AgentIDs:  []uuid.UUID{researchSpecialist.ID},
 		MaxTokens: &maxTokensMain,
-	}); err != nil {
-		log.Fatalf("Failed to register main-orchestrator agent: %v", err)
+	})
+	if err != nil {
+		log.Fatalf("Failed to create orchestrator.ID agent: %v", err)
 	}
-
-	// Start the client
-	if err := client.Start(ctx); err != nil {
-		log.Fatalf("Failed to start client: %v", err)
-	}
-	defer func() {
-		if err := client.Stop(context.Background()); err != nil {
-			log.Printf("Error stopping client: %v", err)
-		}
-	}()
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
 
@@ -120,7 +123,7 @@ For simple questions, answer directly without delegation.`,
 	// Example 1: Simple question (no delegation needed)
 	// ==========================================================
 	fmt.Println("=== Example 1: Simple Question (No Delegation) ===")
-	response1, err := client.RunSync(ctx, sessionID, "main-orchestrator", "What is 2 + 2?")
+	response1, err := client.RunSync(ctx, sessionID, orchestrator.ID, "What is 2 + 2?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -135,7 +138,7 @@ For simple questions, answer directly without delegation.`,
 	// Example 2: Research question (triggers delegation)
 	// ==========================================================
 	fmt.Println("\n=== Example 2: Research Question (With Delegation) ===")
-	response2, err := client.RunSync(ctx, sessionID, "main-orchestrator", "Can you research and explain how neural networks learn? I'd like a detailed explanation.")
+	response2, err := client.RunSync(ctx, sessionID, orchestrator.ID, "Can you research and explain how neural networks learn? I'd like a detailed explanation.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -150,7 +153,7 @@ For simple questions, answer directly without delegation.`,
 	// Example 3: Another delegation with context
 	// ==========================================================
 	fmt.Println("\n=== Example 3: Research with Specific Context ===")
-	response3, err := client.RunSync(ctx, sessionID, "main-orchestrator", "Research the differences between SQL and NoSQL databases. Focus on when to use each one.")
+	response3, err := client.RunSync(ctx, sessionID, orchestrator.ID, "Research the differences between SQL and NoSQL databases. Focus on when to use each one.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

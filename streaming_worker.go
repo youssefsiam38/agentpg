@@ -76,14 +76,14 @@ func (w *streamingWorker[TTx]) processRun(ctx context.Context, run *driver.Run) 
 
 	log.Info("processing streaming run",
 		"run_id", run.ID,
-		"agent_name", run.AgentName,
+		"agent_id", run.AgentID,
 		"iteration", run.CurrentIteration,
 	)
 
-	// Get agent definition
-	agent := w.client.GetAgent(run.AgentName)
-	if agent == nil {
-		return fmt.Errorf("agent not found: %s", run.AgentName)
+	// Get agent definition from database
+	agent, err := w.client.GetAgentByID(ctx, run.AgentID)
+	if err != nil {
+		return fmt.Errorf("agent not found: %w", err)
 	}
 
 	// Determine trigger type
@@ -318,7 +318,7 @@ func (w *streamingWorker[TTx]) processResult(ctx context.Context, iter *driver.I
 		runUpdates["tool_iterations"] = run.ToolIterations + 1
 
 		// Build tool execution params
-		toolParams := w.buildToolParams(iter, run, msg.Content)
+		toolParams := w.buildToolParams(ctx, iter, run, msg.Content)
 
 		// Atomically create tool executions AND update run state
 		if len(toolParams) > 0 {
@@ -359,7 +359,7 @@ func (w *streamingWorker[TTx]) processResult(ctx context.Context, iter *driver.I
 	return nil
 }
 
-func (w *streamingWorker[TTx]) buildToolParams(iter *driver.Iteration, run *driver.Run, content []anthropic.ContentBlockUnion) []driver.CreateToolExecutionParams {
+func (w *streamingWorker[TTx]) buildToolParams(ctx context.Context, iter *driver.Iteration, run *driver.Run, content []anthropic.ContentBlockUnion) []driver.CreateToolExecutionParams {
 	params := make([]driver.CreateToolExecutionParams, 0, len(content))
 	for _, block := range content {
 		toolUse, ok := block.AsAny().(anthropic.ToolUseBlock)
@@ -367,13 +367,13 @@ func (w *streamingWorker[TTx]) buildToolParams(iter *driver.Iteration, run *driv
 			continue
 		}
 
-		// Check if this is an agent-as-tool
+		// Check if this is an agent-as-tool by looking up in database
 		isAgentTool := false
-		var agentName *string
-		agent := w.client.GetAgent(toolUse.Name)
+		var agentID *uuid.UUID
+		agent, _ := w.client.GetAgentByName(ctx, toolUse.Name, nil)
 		if agent != nil {
 			isAgentTool = true
-			agentName = &toolUse.Name
+			agentID = &agent.ID
 		}
 
 		// Convert input to JSON
@@ -386,7 +386,7 @@ func (w *streamingWorker[TTx]) buildToolParams(iter *driver.Iteration, run *driv
 			ToolName:    toolUse.Name,
 			ToolInput:   inputBytes,
 			IsAgentTool: isAgentTool,
-			AgentName:   agentName,
+			AgentID:     agentID,
 			MaxAttempts: w.client.toolMaxAttempts(),
 		})
 	}
@@ -452,11 +452,11 @@ func (w *streamingWorker[TTx]) buildMessages(ctx context.Context, run *driver.Ru
 }
 
 func (w *streamingWorker[TTx]) buildTools(ctx context.Context, agent *AgentDefinition) ([]anthropic.ToolUnionParam, error) {
-	if len(agent.Tools) == 0 && len(agent.Agents) == 0 {
+	if len(agent.Tools) == 0 && len(agent.AgentIDs) == 0 {
 		return nil, nil
 	}
 
-	tools := make([]anthropic.ToolUnionParam, 0, len(agent.Tools)+len(agent.Agents))
+	tools := make([]anthropic.ToolUnionParam, 0, len(agent.Tools)+len(agent.AgentIDs))
 
 	// Add regular tools
 	for _, toolName := range agent.Tools {
@@ -483,9 +483,9 @@ func (w *streamingWorker[TTx]) buildTools(ctx context.Context, agent *AgentDefin
 	}
 
 	// Add agent-as-tool entries
-	for _, agentName := range agent.Agents {
-		delegateAgent := w.client.GetAgent(agentName)
-		if delegateAgent == nil {
+	for _, delegateID := range agent.AgentIDs {
+		delegateAgent, err := w.client.GetAgentByID(ctx, delegateID)
+		if err != nil || delegateAgent == nil {
 			continue
 		}
 
@@ -501,7 +501,7 @@ func (w *streamingWorker[TTx]) buildTools(ctx context.Context, agent *AgentDefin
 		}
 
 		toolParam := anthropic.ToolParam{
-			Name:        agentName,
+			Name:        delegateAgent.Name,
 			Description: anthropic.String(delegateAgent.Description),
 			InputSchema: inputSchema,
 		}

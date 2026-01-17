@@ -100,7 +100,7 @@ type ContentBlock struct {
 type Run struct {
 	ID        uuid.UUID `json:"id"`
 	SessionID uuid.UUID `json:"session_id"`
-	AgentName string    `json:"agent_name"`
+	AgentID   uuid.UUID `json:"agent_id"`
 
 	// Run mode (batch or streaming API)
 	RunMode RunMode `json:"run_mode"`
@@ -181,7 +181,10 @@ type Session struct {
 
 // AgentDefinition defines an agent's configuration.
 type AgentDefinition struct {
-	// Name is the unique identifier (required).
+	// ID is the unique identifier (UUID primary key).
+	ID uuid.UUID `json:"id,omitempty"`
+
+	// Name is the human-readable identifier.
 	Name string `json:"name"`
 
 	// Description is shown when agent is used as a tool.
@@ -198,10 +201,10 @@ type AgentDefinition struct {
 	// Must reference tools registered via client.RegisterTool().
 	Tools []string `json:"tools,omitempty"`
 
-	// Agents is the list of agent names this agent can delegate to.
+	// AgentIDs is the list of agent IDs this agent can delegate to.
 	// Listed agents become available as tools to this agent.
 	// Enables multi-level agent hierarchies (PM -> Lead -> Worker pattern).
-	Agents []string `json:"agents,omitempty"`
+	AgentIDs []uuid.UUID `json:"agent_ids,omitempty"`
 
 	// MaxTokens limits response length.
 	MaxTokens *int `json:"max_tokens,omitempty"`
@@ -215,6 +218,9 @@ type AgentDefinition struct {
 	// TopP (nucleus sampling) limits cumulative probability.
 	TopP *float64 `json:"top_p,omitempty"`
 
+	// Metadata for multi-tenancy and filtering (tenant_id, user_id, etc.).
+	Metadata map[string]any `json:"metadata,omitempty"`
+
 	// Config holds additional settings as JSON.
 	Config map[string]any `json:"config,omitempty"`
 
@@ -223,12 +229,14 @@ type AgentDefinition struct {
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
-// AllToolNames returns all tool names available to this agent,
-// including both regular tools and agent-as-tool names.
-func (a *AgentDefinition) AllToolNames() []string {
-	result := make([]string, 0, len(a.Tools)+len(a.Agents))
-	result = append(result, a.Tools...)
-	result = append(result, a.Agents...)
+// ToolNames returns all regular tool names available to this agent.
+// For agent-as-tool delegation, use AgentIDs and look up agents separately.
+func (a *AgentDefinition) ToolNames() []string {
+	if len(a.Tools) == 0 {
+		return nil
+	}
+	result := make([]string, len(a.Tools))
+	copy(result, a.Tools)
 	return result
 }
 
@@ -305,7 +313,7 @@ type ToolExecution struct {
 
 	// Agent-as-tool support
 	IsAgentTool bool       `json:"is_agent_tool"`
-	AgentName   *string    `json:"agent_name,omitempty"`
+	AgentID     *uuid.UUID `json:"agent_id,omitempty"`
 	ChildRunID  *uuid.UUID `json:"child_run_id,omitempty"`
 
 	// Result
@@ -338,7 +346,7 @@ type ToolDefinition struct {
 	Description string         `json:"description"`
 	InputSchema map[string]any `json:"input_schema"`
 	IsAgentTool bool           `json:"is_agent_tool"`
-	AgentName   *string        `json:"agent_name,omitempty"`
+	AgentID     *uuid.UUID     `json:"agent_id,omitempty"`
 	Metadata    map[string]any `json:"metadata,omitempty"`
 	CreatedAt   time.Time      `json:"created_at,omitempty"`
 	UpdatedAt   time.Time      `json:"updated_at,omitempty"`

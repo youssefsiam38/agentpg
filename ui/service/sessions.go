@@ -49,7 +49,10 @@ func (s *Service[TTx]) ListSessions(ctx context.Context, params SessionListParam
 			summary.RunCount = len(runs)
 			// Get agent name from the first run (oldest = last in the slice since ordered by created_at desc)
 			if len(runs) > 0 {
-				summary.AgentName = runs[len(runs)-1].AgentName
+				firstRun := runs[len(runs)-1]
+				if agent, agentErr := s.store.GetAgent(ctx, firstRun.AgentID); agentErr == nil {
+					summary.AgentName = agent.Name
+				}
 			}
 			// Update last activity from most recent run
 			for _, run := range runs {
@@ -125,10 +128,15 @@ func (s *Service[TTx]) GetSessionDetail(ctx context.Context, id uuid.UUID) (*Ses
 				d := run.FinalizedAt.Sub(*run.StartedAt)
 				duration = &d
 			}
+			// Look up agent name from ID
+			runAgentName := ""
+			if agent, agentErr := s.store.GetAgent(ctx, run.AgentID); agentErr == nil {
+				runAgentName = agent.Name
+			}
 			detail.RecentRuns = append(detail.RecentRuns, &RunSummary{
 				ID:             run.ID,
 				SessionID:      run.SessionID,
-				AgentName:      run.AgentName,
+				AgentName:      runAgentName,
 				RunMode:        run.RunMode,
 				State:          string(run.State),
 				Depth:          run.Depth,

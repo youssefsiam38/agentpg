@@ -76,21 +76,22 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Register agent on the client
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+
+	// Create agent in the database (after client.Start)
 	maxTokens := 1024
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "database-sql-demo",
+	agent, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "agent.ID",
 		Description:  "Demonstrates database/sql driver usage",
 		Model:        "claude-sonnet-4-5-20250929",
 		SystemPrompt: "You are a helpful assistant. Keep responses concise.",
 		MaxTokens:    &maxTokens,
-	}); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
-	}
-
-	// Start the client
-	if err := client.Start(ctx); err != nil {
-		log.Fatalf("Failed to start client: %v", err)
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
 	}
 	defer func() {
 		if err := client.Stop(context.Background()); err != nil {
@@ -128,7 +129,7 @@ func main() {
 		fmt.Printf("=== Message %d ===\n", i+1)
 		fmt.Printf("User: %s\n", prompt)
 
-		response, err := client.RunFastSync(ctx, sessionID, "database-sql-demo", prompt)
+		response, err := client.RunFastSync(ctx, sessionID, agent.ID, prompt)
 		if err != nil {
 			log.Printf("Error: %v\n\n", err)
 			continue
@@ -168,7 +169,7 @@ func main() {
 	}
 
 	// Create a run within the transaction
-	runID, err := client.RunFastTx(ctx, tx, sessionID2, "database-sql-demo", "What's a fun fact about Tokyo?")
+	runID, err := client.RunFastTx(ctx, tx, sessionID2, agent.ID, "What's a fun fact about Tokyo?")
 	if err != nil {
 		tx.Rollback()
 		log.Fatalf("Failed to create run in transaction: %v", err)

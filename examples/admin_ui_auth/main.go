@@ -368,18 +368,21 @@ func main() {
 	// Register tool
 	client.RegisterTool(&CalculatorTool{})
 
-	// Register agent
-	client.RegisterAgent(&agentpg.AgentDefinition{
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+
+	// Create agent in the database (after client.Start)
+	_, err = client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
 		Name:         "assistant",
 		Description:  "A helpful AI assistant with calculator capabilities",
 		Model:        "claude-sonnet-4-5-20250929",
 		SystemPrompt: "You are a helpful AI assistant. You can perform calculations using the calculator tool. Be concise and friendly.",
 		Tools:        []string{"calculator"},
 	})
-
-	// Start the client
-	if err := client.Start(ctx); err != nil {
-		log.Fatalf("Failed to start client: %v", err)
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
 	}
 	defer client.Stop(context.Background())
 

@@ -73,7 +73,7 @@ func (r *rescuer[TTx]) rescueStuckRuns(ctx context.Context, config *RunRescueCon
 			// Mark as failed - too many rescue attempts
 			log.Warn("run exceeded max rescue attempts, marking as failed",
 				"run_id", run.ID,
-				"agent_name", run.AgentName,
+				"agent_id", run.AgentID,
 				"rescue_attempts", run.RescueAttempts,
 				"max_rescue_attempts", config.MaxRescueAttempts,
 			)
@@ -90,7 +90,7 @@ func (r *rescuer[TTx]) rescueStuckRuns(ctx context.Context, config *RunRescueCon
 		// Rescue the run - reset to pending state
 		log.Info("rescuing stuck run",
 			"run_id", run.ID,
-			"agent_name", run.AgentName,
+			"agent_id", run.AgentID,
 			"state", run.State,
 			"rescue_attempts", run.RescueAttempts+1,
 			"claimed_by", run.ClaimedByInstanceID,

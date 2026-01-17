@@ -33,6 +33,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/youssefsiam38/agentpg"
@@ -80,14 +81,14 @@ func main() {
 	// Register custom tools
 	registerTools(client)
 
-	// Register agents
-	registerAgents(client)
-
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
 	}
 	defer client.Stop(context.Background())
+
+	// Create agents (after client.Start)
+	assistantAgent := createAgents(ctx, client)
 
 	// Create HTTP server
 	mux := http.NewServeMux()
@@ -119,7 +120,7 @@ func main() {
 
 	// Demo: Create a sample session and run
 	mux.HandleFunc("POST /demo/create-session", func(w http.ResponseWriter, r *http.Request) {
-		handleCreateDemoSession(w, r, client)
+		handleCreateDemoSession(w, r, client, assistantAgent)
 	})
 
 	// Health check
@@ -181,19 +182,22 @@ func registerTools(client *agentpg.Client[pgx.Tx]) {
 	client.RegisterTool(&DatabaseQueryTool{})
 }
 
-// registerAgents registers all agents with the client.
-func registerAgents(client *agentpg.Client[pgx.Tx]) {
+// createAgents creates all agents with the client (after Start) and returns the assistant agent ID.
+func createAgents(ctx context.Context, client *agentpg.Client[pgx.Tx]) uuid.UUID {
 	// Basic assistant with calculator tool
-	client.RegisterAgent(&agentpg.AgentDefinition{
+	assistant, err := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
 		Name:         "assistant",
 		Description:  "A helpful general-purpose AI assistant",
 		Model:        "claude-sonnet-4-5-20250929",
 		SystemPrompt: "You are a helpful AI assistant. Be concise, accurate, and friendly. If you don't know something, say so. Use available tools when appropriate.",
 		Tools:        []string{"calculator"},
 	})
+	if err != nil {
+		log.Fatalf("Failed to create assistant agent: %v", err)
+	}
 
-	// Research specialist with web search
-	client.RegisterAgent(&agentpg.AgentDefinition{
+	// Research specialist with web search (child agent for coordinator)
+	researcher, err := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
 		Name:        "researcher",
 		Description: "Research specialist that can search the web for information",
 		Model:       "claude-sonnet-4-5-20250929",
@@ -206,9 +210,12 @@ When asked about a topic:
 Always cite your sources when providing information.`,
 		Tools: []string{"web_search"},
 	})
+	if err != nil {
+		log.Fatalf("Failed to create researcher agent: %v", err)
+	}
 
-	// Data analyst with calculator
-	client.RegisterAgent(&agentpg.AgentDefinition{
+	// Data analyst with calculator (child agent for coordinator)
+	analyst, err := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
 		Name:        "analyst",
 		Description: "Data analyst that can perform calculations and analyze data",
 		Model:       "claude-sonnet-4-5-20250929",
@@ -221,9 +228,12 @@ When given numbers or data:
 Always show your work when doing calculations.`,
 		Tools: []string{"calculator", "database_query"},
 	})
+	if err != nil {
+		log.Fatalf("Failed to create analyst agent: %v", err)
+	}
 
-	// Weather assistant
-	client.RegisterAgent(&agentpg.AgentDefinition{
+	// Weather assistant (child agent for coordinator)
+	weatherAssistant, err := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
 		Name:        "weather_assistant",
 		Description: "Weather specialist that provides weather information",
 		Model:       "claude-3-5-haiku-20241022", // Use faster model for simple tasks
@@ -231,9 +241,12 @@ Always show your work when doing calculations.`,
 Be conversational and helpful. Include relevant advice based on weather conditions.`,
 		Tools: []string{"get_weather"},
 	})
+	if err != nil {
+		log.Fatalf("Failed to create weather_assistant agent: %v", err)
+	}
 
-	// Coordinator that can delegate to other agents
-	client.RegisterAgent(&agentpg.AgentDefinition{
+	// Coordinator that can delegate to other agents (parent agent)
+	_, err = client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
 		Name:        "coordinator",
 		Description: "Orchestrator that delegates tasks to specialized agents",
 		Model:       "claude-sonnet-4-5-20250929",
@@ -244,8 +257,13 @@ Be conversational and helpful. Include relevant advice based on weather conditio
 - For weather information: delegate to the weather_assistant
 
 Analyze the request, delegate to the right specialist, and synthesize their responses into a coherent answer.`,
-		Agents: []string{"researcher", "analyst", "weather_assistant"},
+		AgentIDs: []uuid.UUID{researcher.ID, analyst.ID, weatherAssistant.ID},
 	})
+	if err != nil {
+		log.Fatalf("Failed to create coordinator agent: %v", err)
+	}
+
+	return assistant.ID
 }
 
 // Tool implementations
@@ -516,7 +534,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, html)
 }
 
-func handleCreateDemoSession(w http.ResponseWriter, r *http.Request, client *agentpg.Client[pgx.Tx]) {
+func handleCreateDemoSession(w http.ResponseWriter, r *http.Request, client *agentpg.Client[pgx.Tx], assistantAgentID uuid.UUID) {
 	ctx := r.Context()
 
 	// Create a demo session with metadata
@@ -533,7 +551,7 @@ func handleCreateDemoSession(w http.ResponseWriter, r *http.Request, client *age
 	}
 
 	// Start a run with the assistant agent
-	runID, err := client.RunFast(ctx, sessionID, "assistant", "Hello! Please introduce yourself and explain what you can help with.")
+	runID, err := client.RunFast(ctx, sessionID, assistantAgentID, "Hello! Please introduce yourself and explain what you can help with.")
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create run: %v", err), http.StatusInternalServerError)
 		return

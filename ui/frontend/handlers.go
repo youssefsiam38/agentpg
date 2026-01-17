@@ -234,7 +234,7 @@ func (rt *router[TTx]) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get agents for filter dropdown
-	agents, err := rt.svc.ListAgents(r.Context())
+	agents, err := rt.svc.ListAgents(r.Context(), nil)
 	if err != nil {
 		rt.logError("failed to list agents for filter dropdown", err)
 	}
@@ -419,7 +419,7 @@ func (rt *router[TTx]) handleToolExecutionDetail(w http.ResponseWriter, r *http.
 }
 
 func (rt *router[TTx]) handleAgents(w http.ResponseWriter, r *http.Request) {
-	agents, err := rt.svc.ListAgents(r.Context())
+	agents, err := rt.svc.ListAgents(r.Context(), nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -513,7 +513,7 @@ func (rt *router[TTx]) handleChat(w http.ResponseWriter, r *http.Request) {
 		sessionList = sessions.Sessions
 	}
 
-	agents, agentsErr := rt.svc.ListAgents(r.Context())
+	agents, agentsErr := rt.svc.ListAgents(r.Context(), nil)
 	if agentsErr != nil {
 		rt.logError("failed to list agents for chat", agentsErr)
 	}
@@ -530,7 +530,7 @@ func (rt *router[TTx]) handleChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rt *router[TTx]) handleChatNew(w http.ResponseWriter, r *http.Request) {
-	agents, agentsErr := rt.svc.ListAgents(r.Context())
+	agents, agentsErr := rt.svc.ListAgents(r.Context(), nil)
 	if agentsErr != nil {
 		rt.logError("failed to list agents for new chat", agentsErr)
 	}
@@ -649,8 +649,15 @@ func (rt *router[TTx]) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Look up agent by name to get its ID
+	agent, err := rt.client.GetAgentByName(r.Context(), agentName, nil)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Agent not found: %s", agentName), http.StatusBadRequest)
+		return
+	}
+
 	// Use streaming API for lower latency
-	runID, err := rt.client.RunFast(r.Context(), sessionID, agentName, message)
+	runID, err := rt.client.RunFast(r.Context(), sessionID, agent.ID, message)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -841,7 +848,7 @@ func (rt *router[TTx]) handleChatSession(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Get agents for the send form
-	agents, agentsErr := rt.svc.ListAgents(r.Context())
+	agents, agentsErr := rt.svc.ListAgents(r.Context(), nil)
 	if agentsErr != nil {
 		rt.logError("failed to list agents for chat session", agentsErr)
 	}

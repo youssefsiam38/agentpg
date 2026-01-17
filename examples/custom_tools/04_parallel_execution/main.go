@@ -155,22 +155,23 @@ func main() {
 		log.Fatalf("Failed to register tool: %v", err)
 	}
 
-	// Register agent on client
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+
+	// Create agent in the database (after client.Start)
 	maxTokens := 2048
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "data-processor",
+	agent, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "agent.ID",
 		Description:  "A data processing assistant",
 		Model:        "claude-sonnet-4-5-20250929",
 		SystemPrompt: "You are a data processing assistant. Use the available tools to fetch and process data. When asked to fetch from multiple sources, call all the fetch_data tools in parallel (in the same response) to be efficient.",
 		MaxTokens:    &maxTokens,
 		Tools:        []string{"fetch_data"},
-	}); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
-	}
-
-	// Start the client
-	if err := client.Start(ctx); err != nil {
-		log.Fatalf("Failed to start client: %v", err)
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
 	}
 	defer func() {
 		if err := client.Stop(context.Background()); err != nil {
@@ -199,7 +200,7 @@ func main() {
 	fmt.Println()
 
 	start := time.Now()
-	response, err := client.RunFastSync(ctx, sessionID, "data-processor",
+	response, err := client.RunFastSync(ctx, sessionID, agent.ID,
 		"Fetch the user profile from the database, the cache, and the API. The query for all should be 'user-123'. Call all three fetch_data tools in your response.")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)

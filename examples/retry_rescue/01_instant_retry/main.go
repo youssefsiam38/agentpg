@@ -109,20 +109,21 @@ func main() {
 		log.Fatalf("Failed to register tool: %v", err)
 	}
 
-	// Register agent with access to the flaky tool
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "assistant",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful assistant. Use the flaky_service tool to answer user queries.",
-		Tools:        []string{"flaky_service"},
-	}); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
-	}
-
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
 	}
 	defer client.Stop(context.Background())
+
+	// Create agent with access to the flaky tool in the database
+	agent, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Use the flaky_service tool to answer user queries.",
+		Tools:        []string{"flaky_service"},
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
+	}
 
 	log.Println("Client started with DEFAULT instant retry (2 attempts, no delay)")
 	log.Println("")
@@ -138,7 +139,7 @@ func main() {
 	log.Println("")
 
 	start := time.Now()
-	response, err := client.RunFastSync(ctx, sessionID, "assistant", "Query the service for 'weather forecast' once, never retry, if it fails. if it succeeds, provide the result.")
+	response, err := client.RunFastSync(ctx, sessionID, agent.ID, "Query the service for 'weather forecast' once, never retry, if it fails. if it succeeds, provide the result.")
 	elapsed := time.Since(start)
 
 	if err != nil {

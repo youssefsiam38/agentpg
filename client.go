@@ -29,9 +29,9 @@ type Client[TTx any] struct {
 	started    bool
 	mu         sync.RWMutex
 
-	// Registered agents and tools (pre-Start)
-	agents map[string]*AgentDefinition
-	tools  map[string]tool.Tool
+	// Registered tools (pre-Start)
+	// Tools remain in-memory because they contain executable code
+	tools map[string]tool.Tool
 
 	// Background workers
 	runWorker       *runWorker[TTx]
@@ -101,7 +101,6 @@ func NewClient[TTx any](drv driver.Driver[TTx], config *ClientConfig) (*Client[T
 		config:     config,
 		anthropic:  anthropicClient,
 		instanceID: instanceID,
-		agents:     make(map[string]*AgentDefinition),
 		tools:      make(map[string]tool.Tool),
 		runWaiters: make(map[uuid.UUID][]chan *Run),
 		compactor:  comp,
@@ -118,31 +117,97 @@ func (c *Client[TTx]) Config() *ClientConfig {
 	return c.config
 }
 
-// RegisterAgent registers an agent definition with the client.
-// Must be called before Start().
-func (c *Client[TTx]) RegisterAgent(def *AgentDefinition) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.started {
-		return ErrClientAlreadyStarted
-	}
-
+// CreateAgent creates a new agent in the database.
+// Returns the created agent with its ID populated.
+func (c *Client[TTx]) CreateAgent(ctx context.Context, def *AgentDefinition) (*AgentDefinition, error) {
 	if def == nil {
-		return fmt.Errorf("%w: agent definition is nil", ErrInvalidConfig)
+		return nil, fmt.Errorf("%w: agent definition is nil", ErrInvalidConfig)
 	}
 
 	if def.Name == "" {
-		return fmt.Errorf("%w: agent name is required", ErrInvalidConfig)
+		return nil, fmt.Errorf("%w: agent name is required", ErrInvalidConfig)
 	}
 
 	if def.Model == "" {
-		return fmt.Errorf("%w: agent model is required for agent %q", ErrInvalidConfig, def.Name)
+		return nil, fmt.Errorf("%w: agent model is required for agent %q", ErrInvalidConfig, def.Name)
 	}
 
-	c.agents[def.Name] = def
-	c.log().Debug("registered agent", "name", def.Name, "model", def.Model)
+	driverDef := &driver.AgentDefinition{
+		Name:         def.Name,
+		Description:  def.Description,
+		Model:        def.Model,
+		SystemPrompt: def.SystemPrompt,
+		ToolNames:    def.Tools,
+		AgentIDs:     def.AgentIDs,
+		MaxTokens:    def.MaxTokens,
+		Temperature:  def.Temperature,
+		TopK:         def.TopK,
+		TopP:         def.TopP,
+		Metadata:     def.Metadata,
+		Config:       def.Config,
+	}
+
+	created, err := c.driver.Store().CreateAgent(ctx, driverDef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create agent: %w", err)
+	}
+
+	return convertDriverAgent(created), nil
+}
+
+// UpdateAgent updates an existing agent in the database.
+func (c *Client[TTx]) UpdateAgent(ctx context.Context, def *AgentDefinition) error {
+	if def.ID == uuid.Nil {
+		return fmt.Errorf("%w: agent ID is required for update", ErrInvalidConfig)
+	}
+
+	driverDef := &driver.AgentDefinition{
+		ID:           def.ID,
+		Name:         def.Name,
+		Description:  def.Description,
+		Model:        def.Model,
+		SystemPrompt: def.SystemPrompt,
+		ToolNames:    def.Tools,
+		AgentIDs:     def.AgentIDs,
+		MaxTokens:    def.MaxTokens,
+		Temperature:  def.Temperature,
+		TopK:         def.TopK,
+		TopP:         def.TopP,
+		Metadata:     def.Metadata,
+		Config:       def.Config,
+	}
+
+	if err := c.driver.Store().UpdateAgent(ctx, driverDef); err != nil {
+		return fmt.Errorf("failed to update agent: %w", err)
+	}
+
 	return nil
+}
+
+// DeleteAgent removes an agent from the database.
+func (c *Client[TTx]) DeleteAgent(ctx context.Context, id uuid.UUID) error {
+	if err := c.driver.Store().DeleteAgent(ctx, id); err != nil {
+		return fmt.Errorf("failed to delete agent: %w", err)
+	}
+	return nil
+}
+
+// ListAgents returns agents from the database with optional filtering.
+func (c *Client[TTx]) ListAgents(ctx context.Context, metadata map[string]any, limit, offset int) ([]*AgentDefinition, int, error) {
+	agents, total, err := c.driver.Store().ListAgents(ctx, driver.ListAgentsParams{
+		MetadataFilter: metadata,
+		Limit:          limit,
+		Offset:         offset,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list agents: %w", err)
+	}
+
+	result := make([]*AgentDefinition, len(agents))
+	for i, a := range agents {
+		result[i] = convertDriverAgent(a)
+	}
+	return result, total, nil
 }
 
 // RegisterTool registers a tool with the client.
@@ -169,11 +234,56 @@ func (c *Client[TTx]) RegisterTool(t tool.Tool) error {
 	return nil
 }
 
-// GetAgent returns the registered agent definition by name.
-func (c *Client[TTx]) GetAgent(name string) *AgentDefinition {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.agents[name]
+// GetAgentByID retrieves an agent definition by ID from the database.
+func (c *Client[TTx]) GetAgentByID(ctx context.Context, id uuid.UUID) (*AgentDefinition, error) {
+	agent, err := c.driver.Store().GetAgent(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get agent: %w", err)
+	}
+	if agent == nil {
+		return nil, ErrAgentNotFound
+	}
+	return convertDriverAgent(agent), nil
+}
+
+// GetAgentByName retrieves an agent definition by name and optional metadata from the database.
+func (c *Client[TTx]) GetAgentByName(ctx context.Context, name string, metadata map[string]any) (*AgentDefinition, error) {
+	agent, err := c.driver.Store().GetAgentByName(ctx, name, metadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get agent: %w", err)
+	}
+	if agent == nil {
+		return nil, ErrAgentNotFound
+	}
+	return convertDriverAgent(agent), nil
+}
+
+// GetOrCreateAgent returns an existing agent or creates a new one if it doesn't exist.
+// Matching is done by name and metadata (agents with the same name but different metadata are distinct).
+// If the agent exists, the existing agent is returned (the definition is NOT updated).
+// If you need to update an existing agent, use UpdateAgent instead.
+func (c *Client[TTx]) GetOrCreateAgent(ctx context.Context, def *AgentDefinition) (*AgentDefinition, error) {
+	if def == nil {
+		return nil, fmt.Errorf("%w: agent definition is nil", ErrInvalidConfig)
+	}
+
+	if def.Name == "" {
+		return nil, fmt.Errorf("%w: agent name is required", ErrInvalidConfig)
+	}
+
+	// Try to find existing agent by name and metadata
+	existing, err := c.driver.Store().GetAgentByName(ctx, def.Name, def.Metadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check for existing agent: %w", err)
+	}
+
+	if existing != nil {
+		// Agent exists, return it
+		return convertDriverAgent(existing), nil
+	}
+
+	// Agent doesn't exist, create it
+	return c.CreateAgent(ctx, def)
 }
 
 // GetTool returns the registered tool by name.
@@ -263,7 +373,7 @@ func (c *Client[TTx]) Start(ctx context.Context) error {
 	}()
 
 	c.started = true
-	c.log().Info("client started", "instance_id", c.instanceID, "agents", len(c.agents), "tools", len(c.tools))
+	c.log().Info("client started", "instance_id", c.instanceID, "tools", len(c.tools))
 	return nil
 }
 
@@ -387,23 +497,19 @@ func (c *Client[TTx]) GetSession(ctx context.Context, id uuid.UUID) (*Session, e
 
 // Run creates a new asynchronous agent run and returns immediately.
 // Use WaitForRun to wait for completion.
-func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentName, prompt string) (uuid.UUID, error) {
+// The agentID must reference an agent that exists in the database.
+func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error) {
 	c.mu.RLock()
 	started := c.started
-	agent := c.agents[agentName]
 	c.mu.RUnlock()
 
 	if !started {
 		return uuid.Nil, ErrClientNotStarted
 	}
 
-	if agent == nil {
-		return uuid.Nil, fmt.Errorf("%w: %s", ErrAgentNotRegistered, agentName)
-	}
-
 	run, err := c.driver.Store().CreateRun(ctx, driver.CreateRunParams{
 		SessionID:           sessionID,
-		AgentName:           agentName,
+		AgentID:             agentID,
 		Prompt:              prompt,
 		Depth:               0,
 		CreatedByInstanceID: c.instanceID,
@@ -417,23 +523,19 @@ func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentName, p
 
 // RunTx creates a new asynchronous agent run within a transaction.
 // The run won't be visible to workers until the transaction commits.
-func (c *Client[TTx]) RunTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentName, prompt string) (uuid.UUID, error) {
+// The agentID must reference an agent that exists in the database.
+func (c *Client[TTx]) RunTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error) {
 	c.mu.RLock()
 	started := c.started
-	agent := c.agents[agentName]
 	c.mu.RUnlock()
 
 	if !started {
 		return uuid.Nil, ErrClientNotStarted
 	}
 
-	if agent == nil {
-		return uuid.Nil, fmt.Errorf("%w: %s", ErrAgentNotRegistered, agentName)
-	}
-
 	run, err := c.driver.Store().CreateRunTx(ctx, tx, driver.CreateRunParams{
 		SessionID:           sessionID,
-		AgentName:           agentName,
+		AgentID:             agentID,
 		Prompt:              prompt,
 		Depth:               0,
 		CreatedByInstanceID: c.instanceID,
@@ -495,7 +597,7 @@ func (c *Client[TTx]) WaitForRun(ctx context.Context, runID uuid.UUID) (*Respons
 			return c.buildResponse(ctx, &driver.Run{
 				ID:                       finalRun.ID,
 				SessionID:                finalRun.SessionID,
-				AgentName:                finalRun.AgentName,
+				AgentID:                  finalRun.AgentID,
 				RunMode:                  string(finalRun.RunMode),
 				ParentRunID:              finalRun.ParentRunID,
 				ParentToolExecutionID:    finalRun.ParentToolExecutionID,
@@ -544,8 +646,8 @@ func (c *Client[TTx]) WaitForRun(ctx context.Context, runID uuid.UUID) (*Respons
 // RunSync creates a run and waits for completion. This is a convenience wrapper
 // around Run and WaitForRun.
 // Note: Do not use RunSync inside a transaction as it will deadlock.
-func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentName, prompt string) (*Response, error) {
-	runID, err := c.Run(ctx, sessionID, agentName, prompt)
+func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (*Response, error) {
+	runID, err := c.Run(ctx, sessionID, agentID, prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -556,23 +658,19 @@ func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentNam
 // RunFast creates a new asynchronous agent run using the streaming API.
 // This provides faster response times compared to the batch API.
 // Use WaitForRun to wait for completion.
-func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentName, prompt string) (uuid.UUID, error) {
+// The agentID must reference an agent that exists in the database.
+func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error) {
 	c.mu.RLock()
 	started := c.started
-	agent := c.agents[agentName]
 	c.mu.RUnlock()
 
 	if !started {
 		return uuid.Nil, ErrClientNotStarted
 	}
 
-	if agent == nil {
-		return uuid.Nil, fmt.Errorf("%w: %s", ErrAgentNotRegistered, agentName)
-	}
-
 	run, err := c.driver.Store().CreateRun(ctx, driver.CreateRunParams{
 		SessionID:           sessionID,
-		AgentName:           agentName,
+		AgentID:             agentID,
 		Prompt:              prompt,
 		RunMode:             string(RunModeStreaming),
 		Depth:               0,
@@ -587,23 +685,19 @@ func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentNam
 
 // RunFastTx creates a new asynchronous agent run using the streaming API within a transaction.
 // The run won't be visible to workers until the transaction commits.
-func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentName, prompt string) (uuid.UUID, error) {
+// The agentID must reference an agent that exists in the database.
+func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error) {
 	c.mu.RLock()
 	started := c.started
-	agent := c.agents[agentName]
 	c.mu.RUnlock()
 
 	if !started {
 		return uuid.Nil, ErrClientNotStarted
 	}
 
-	if agent == nil {
-		return uuid.Nil, fmt.Errorf("%w: %s", ErrAgentNotRegistered, agentName)
-	}
-
 	run, err := c.driver.Store().CreateRunTx(ctx, tx, driver.CreateRunParams{
 		SessionID:           sessionID,
-		AgentName:           agentName,
+		AgentID:             agentID,
 		Prompt:              prompt,
 		RunMode:             string(RunModeStreaming),
 		Depth:               0,
@@ -619,8 +713,8 @@ func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID
 // RunFastSync creates a streaming run and waits for completion.
 // This is a convenience wrapper around RunFast and WaitForRun.
 // Note: Do not use RunFastSync inside a transaction as it will deadlock.
-func (c *Client[TTx]) RunFastSync(ctx context.Context, sessionID uuid.UUID, agentName, prompt string) (*Response, error) {
-	runID, err := c.RunFast(ctx, sessionID, agentName, prompt)
+func (c *Client[TTx]) RunFastSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (*Response, error) {
+	runID, err := c.RunFast(ctx, sessionID, agentID, prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -729,26 +823,8 @@ func (c *Client[TTx]) GetRun(ctx context.Context, id uuid.UUID) (*Run, error) {
 // Internal methods
 
 func (c *Client[TTx]) validateReferences() error {
-	// Validate that agents reference only registered tools and agents
-	for agentName, agent := range c.agents {
-		// Check tool references
-		for _, toolName := range agent.Tools {
-			if _, ok := c.tools[toolName]; !ok {
-				return fmt.Errorf("%w: agent %q references unknown tool %q", ErrInvalidConfig, agentName, toolName)
-			}
-		}
-
-		// Check agent references (for agent-as-tool)
-		for _, delegateName := range agent.Agents {
-			if _, ok := c.agents[delegateName]; !ok {
-				return fmt.Errorf("%w: agent %q references unknown agent %q", ErrInvalidConfig, agentName, delegateName)
-			}
-			// Prevent self-reference
-			if delegateName == agentName {
-				return fmt.Errorf("%w: agent %q cannot reference itself", ErrInvalidConfig, agentName)
-			}
-		}
-	}
+	// Tools are validated at registration time (RegisterTool checks for nil and empty name)
+	// Agent validation happens at the database level with foreign key constraints
 	return nil
 }
 
@@ -770,34 +846,8 @@ func (c *Client[TTx]) registerInstance(ctx context.Context) error {
 func (c *Client[TTx]) syncRegistrations(ctx context.Context) error {
 	store := c.driver.Store()
 
-	// Sync agents to database
-	for _, agent := range c.agents {
-		toolNames := make([]string, 0, len(agent.Tools)+len(agent.Agents))
-		toolNames = append(toolNames, agent.Tools...)
-		toolNames = append(toolNames, agent.Agents...)
-
-		if err := store.UpsertAgent(ctx, &driver.AgentDefinition{
-			Name:         agent.Name,
-			Description:  agent.Description,
-			Model:        agent.Model,
-			SystemPrompt: agent.SystemPrompt,
-			ToolNames:    toolNames,
-			MaxTokens:    agent.MaxTokens,
-			Temperature:  agent.Temperature,
-			TopK:         agent.TopK,
-			TopP:         agent.TopP,
-			Config:       agent.Config,
-		}); err != nil {
-			return fmt.Errorf("failed to upsert agent %q: %w", agent.Name, err)
-		}
-
-		// Register instance capability for this agent
-		if err := store.RegisterInstanceAgent(ctx, c.instanceID, agent.Name); err != nil {
-			return fmt.Errorf("failed to register instance agent %q: %w", agent.Name, err)
-		}
-	}
-
-	// Sync regular tools to database
+	// Sync tools to database and register instance capabilities
+	// Note: Agents are now managed via CRUD API (CreateAgent, etc.) not auto-synced
 	for name, t := range c.tools {
 		schema := t.InputSchema()
 		schemaMap := map[string]any{
@@ -818,40 +868,6 @@ func (c *Client[TTx]) syncRegistrations(ctx context.Context) error {
 		// Register instance capability for this tool
 		if err := store.RegisterInstanceTool(ctx, c.instanceID, name); err != nil {
 			return fmt.Errorf("failed to register instance tool %q: %w", name, err)
-		}
-	}
-
-	// Create agent-as-tool entries
-	for _, agent := range c.agents {
-		for _, delegateName := range agent.Agents {
-			delegateAgent := c.agents[delegateName]
-
-			// Create tool entry for the agent
-			schemaMap := map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"task": map[string]any{
-						"type":        "string",
-						"description": "The task to delegate to this agent",
-					},
-				},
-				"required": []string{"task"},
-			}
-
-			if err := store.UpsertTool(ctx, &driver.ToolDefinition{
-				Name:        delegateName,
-				Description: delegateAgent.Description,
-				InputSchema: schemaMap,
-				IsAgentTool: true,
-				AgentName:   &delegateName,
-			}); err != nil {
-				return fmt.Errorf("failed to upsert agent-tool %q: %w", delegateName, err)
-			}
-
-			// Register instance capability for agent-tool
-			if err := store.RegisterInstanceTool(ctx, c.instanceID, delegateName); err != nil {
-				return fmt.Errorf("failed to register instance agent-tool %q: %w", delegateName, err)
-			}
 		}
 	}
 
@@ -1201,7 +1217,7 @@ func convertRun(r *driver.Run) *Run {
 	return &Run{
 		ID:                       r.ID,
 		SessionID:                r.SessionID,
-		AgentName:                r.AgentName,
+		AgentID:                  r.AgentID,
 		RunMode:                  RunMode(r.RunMode),
 		ParentRunID:              r.ParentRunID,
 		ParentToolExecutionID:    r.ParentToolExecutionID,
@@ -1263,6 +1279,29 @@ func convertMessage(m *driver.Message) *Message {
 		Metadata:    m.Metadata,
 		CreatedAt:   m.CreatedAt,
 		UpdatedAt:   m.UpdatedAt,
+	}
+}
+
+func convertDriverAgent(a *driver.AgentDefinition) *AgentDefinition {
+	if a == nil {
+		return nil
+	}
+	return &AgentDefinition{
+		ID:           a.ID,
+		Name:         a.Name,
+		Description:  a.Description,
+		Model:        a.Model,
+		SystemPrompt: a.SystemPrompt,
+		Tools:        a.ToolNames,
+		AgentIDs:     a.AgentIDs,
+		MaxTokens:    a.MaxTokens,
+		Temperature:  a.Temperature,
+		TopK:         a.TopK,
+		TopP:         a.TopP,
+		Metadata:     a.Metadata,
+		Config:       a.Config,
+		CreatedAt:    a.CreatedAt,
+		UpdatedAt:    a.UpdatedAt,
 	}
 }
 

@@ -19,11 +19,20 @@ func (s *Service[TTx]) ListRuns(ctx context.Context, params RunListParams) (*Run
 	params.OrderBy = ValidateOrderBy(params.OrderBy, AllowedRunOrderBy)
 	params.OrderDir = ValidateOrderDir(params.OrderDir)
 
+	// Convert agent name filter to agent ID if provided
+	var agentID *uuid.UUID
+	if params.AgentName != "" {
+		agent, err := s.store.GetAgentByName(ctx, params.AgentName, nil)
+		if err == nil && agent != nil {
+			agentID = &agent.ID
+		}
+	}
+
 	// Use the driver's ListRuns method with filtering and pagination
 	runs, total, err := s.store.ListRuns(ctx, driver.ListRunsParams{
 		MetadataFilter: params.MetadataFilter,
 		SessionID:      params.SessionID,
-		AgentName:      params.AgentName,
+		AgentID:        agentID,
 		State:          params.State,
 		RunMode:        params.RunMode,
 		Limit:          params.Limit,
@@ -36,27 +45,7 @@ func (s *Service[TTx]) ListRuns(ctx context.Context, params RunListParams) (*Run
 	// Convert to summaries
 	summaries := make([]*RunSummary, 0, len(runs))
 	for _, run := range runs {
-		var duration *time.Duration
-		if run.FinalizedAt != nil && run.StartedAt != nil {
-			d := run.FinalizedAt.Sub(*run.StartedAt)
-			duration = &d
-		}
-		summaries = append(summaries, &RunSummary{
-			ID:             run.ID,
-			SessionID:      run.SessionID,
-			AgentName:      run.AgentName,
-			RunMode:        run.RunMode,
-			State:          string(run.State),
-			Depth:          run.Depth,
-			HasParent:      run.ParentRunID != nil,
-			IterationCount: run.IterationCount,
-			ToolIterations: run.ToolIterations,
-			TotalTokens:    run.InputTokens + run.OutputTokens,
-			Duration:       duration,
-			ErrorMessage:   run.ErrorMessage,
-			CreatedAt:      run.CreatedAt,
-			FinalizedAt:    run.FinalizedAt,
-		})
+		summaries = append(summaries, s.runToSummary(ctx, run))
 	}
 
 	return &RunList{
@@ -64,6 +53,74 @@ func (s *Service[TTx]) ListRuns(ctx context.Context, params RunListParams) (*Run
 		TotalCount: total,
 		HasMore:    params.Offset+len(summaries) < total,
 	}, nil
+}
+
+// runToSummary converts a driver.Run to a RunSummary, looking up the agent name.
+func (s *Service[TTx]) runToSummary(ctx context.Context, run *driver.Run) *RunSummary {
+	var duration *time.Duration
+	if run.FinalizedAt != nil && run.StartedAt != nil {
+		d := run.FinalizedAt.Sub(*run.StartedAt)
+		duration = &d
+	}
+
+	// Look up agent name from ID
+	agentName := ""
+	if agent, err := s.store.GetAgent(ctx, run.AgentID); err == nil {
+		agentName = agent.Name
+	}
+
+	return &RunSummary{
+		ID:             run.ID,
+		SessionID:      run.SessionID,
+		AgentName:      agentName,
+		RunMode:        run.RunMode,
+		State:          string(run.State),
+		Depth:          run.Depth,
+		HasParent:      run.ParentRunID != nil,
+		IterationCount: run.IterationCount,
+		ToolIterations: run.ToolIterations,
+		TotalTokens:    run.InputTokens + run.OutputTokens,
+		Duration:       duration,
+		ErrorMessage:   run.ErrorMessage,
+		CreatedAt:      run.CreatedAt,
+		FinalizedAt:    run.FinalizedAt,
+	}
+}
+
+// toolExecToSummary converts a driver.ToolExecution to a ToolExecutionSummary.
+func (s *Service[TTx]) toolExecToSummary(ctx context.Context, exec *driver.ToolExecution) *ToolExecutionSummary {
+	var duration *time.Duration
+	if exec.CompletedAt != nil && exec.StartedAt != nil {
+		d := exec.CompletedAt.Sub(*exec.StartedAt)
+		duration = &d
+	}
+
+	// Look up agent name from ID if this is an agent tool
+	var agentName *string
+	if exec.IsAgentTool && exec.AgentID != nil {
+		if agent, err := s.store.GetAgent(ctx, *exec.AgentID); err == nil {
+			agentName = &agent.Name
+		}
+	}
+
+	return &ToolExecutionSummary{
+		ID:           exec.ID,
+		RunID:        exec.RunID,
+		IterationID:  exec.IterationID,
+		ToolUseID:    exec.ToolUseID,
+		ToolName:     exec.ToolName,
+		ToolInput:    exec.ToolInput,
+		State:        string(exec.State),
+		IsAgentTool:  exec.IsAgentTool,
+		AgentName:    agentName,
+		ChildRunID:   exec.ChildRunID,
+		IsError:      exec.IsError,
+		AttemptCount: exec.AttemptCount,
+		MaxAttempts:  exec.MaxAttempts,
+		Duration:     duration,
+		CreatedAt:    exec.CreatedAt,
+		CompletedAt:  exec.CompletedAt,
+	}
 }
 
 // GetRun returns a run by ID.
@@ -78,8 +135,15 @@ func (s *Service[TTx]) GetRunDetail(ctx context.Context, id uuid.UUID) (*RunDeta
 		return nil, err
 	}
 
+	// Look up agent name from ID
+	agentName := ""
+	if agent, err := s.store.GetAgent(ctx, run.AgentID); err == nil {
+		agentName = agent.Name
+	}
+
 	detail := &RunDetail{
 		Run:            run,
+		AgentName:      agentName,
 		HierarchyDepth: run.Depth,
 	}
 
@@ -127,27 +191,7 @@ func (s *Service[TTx]) GetRunDetail(ctx context.Context, id uuid.UUID) (*RunDeta
 	toolExecs, err := s.store.GetToolExecutionsByRun(ctx, id)
 	if err == nil {
 		for _, exec := range toolExecs {
-			var duration *time.Duration
-			if exec.CompletedAt != nil && exec.StartedAt != nil {
-				d := exec.CompletedAt.Sub(*exec.StartedAt)
-				duration = &d
-			}
-			detail.ToolExecutions = append(detail.ToolExecutions, &ToolExecutionSummary{
-				ID:           exec.ID,
-				RunID:        exec.RunID,
-				IterationID:  exec.IterationID,
-				ToolName:     exec.ToolName,
-				State:        string(exec.State),
-				IsAgentTool:  exec.IsAgentTool,
-				AgentName:    exec.AgentName,
-				ChildRunID:   exec.ChildRunID,
-				IsError:      exec.IsError,
-				AttemptCount: exec.AttemptCount,
-				MaxAttempts:  exec.MaxAttempts,
-				Duration:     duration,
-				CreatedAt:    exec.CreatedAt,
-				CompletedAt:  exec.CompletedAt,
-			})
+			detail.ToolExecutions = append(detail.ToolExecutions, s.toolExecToSummary(ctx, exec))
 		}
 	}
 
@@ -197,24 +241,7 @@ func (s *Service[TTx]) GetRunDetail(ctx context.Context, id uuid.UUID) (*RunDeta
 	if run.ParentRunID != nil {
 		parent, err := s.store.GetRun(ctx, *run.ParentRunID)
 		if err == nil {
-			var duration *time.Duration
-			if parent.FinalizedAt != nil && parent.StartedAt != nil {
-				d := parent.FinalizedAt.Sub(*parent.StartedAt)
-				duration = &d
-			}
-			detail.ParentRun = &RunSummary{
-				ID:             parent.ID,
-				SessionID:      parent.SessionID,
-				AgentName:      parent.AgentName,
-				RunMode:        parent.RunMode,
-				State:          string(parent.State),
-				Depth:          parent.Depth,
-				IterationCount: parent.IterationCount,
-				TotalTokens:    parent.InputTokens + parent.OutputTokens,
-				Duration:       duration,
-				CreatedAt:      parent.CreatedAt,
-				FinalizedAt:    parent.FinalizedAt,
-			}
+			detail.ParentRun = s.runToSummary(ctx, parent)
 		}
 	}
 
@@ -227,27 +254,7 @@ func (s *Service[TTx]) GetRunDetail(ctx context.Context, id uuid.UUID) (*RunDeta
 		if exec.ChildRunID != nil {
 			childRun, childErr := s.store.GetRun(ctx, *exec.ChildRunID)
 			if childErr == nil && childRun != nil {
-				var childDuration *time.Duration
-				if childRun.FinalizedAt != nil && childRun.StartedAt != nil {
-					d := childRun.FinalizedAt.Sub(*childRun.StartedAt)
-					childDuration = &d
-				}
-				detail.ChildRuns = append(detail.ChildRuns, &RunSummary{
-					ID:             childRun.ID,
-					SessionID:      childRun.SessionID,
-					AgentName:      childRun.AgentName,
-					RunMode:        childRun.RunMode,
-					State:          string(childRun.State),
-					Depth:          childRun.Depth,
-					HasParent:      childRun.ParentRunID != nil,
-					IterationCount: childRun.IterationCount,
-					ToolIterations: childRun.ToolIterations,
-					TotalTokens:    childRun.InputTokens + childRun.OutputTokens,
-					Duration:       childDuration,
-					ErrorMessage:   childRun.ErrorMessage,
-					CreatedAt:      childRun.CreatedAt,
-					FinalizedAt:    childRun.FinalizedAt,
-				})
+				detail.ChildRuns = append(detail.ChildRuns, s.runToSummary(ctx, childRun))
 			}
 		}
 	}
@@ -279,29 +286,8 @@ func (s *Service[TTx]) GetRunHierarchy(ctx context.Context, id uuid.UUID) (*RunH
 }
 
 func (s *Service[TTx]) buildRunNode(ctx context.Context, run *driver.Run) *RunNode {
-	var duration *time.Duration
-	if run.FinalizedAt != nil && run.StartedAt != nil {
-		d := run.FinalizedAt.Sub(*run.StartedAt)
-		duration = &d
-	}
-
 	node := &RunNode{
-		Run: &RunSummary{
-			ID:             run.ID,
-			SessionID:      run.SessionID,
-			AgentName:      run.AgentName,
-			RunMode:        run.RunMode,
-			State:          string(run.State),
-			Depth:          run.Depth,
-			HasParent:      run.ParentRunID != nil,
-			IterationCount: run.IterationCount,
-			ToolIterations: run.ToolIterations,
-			TotalTokens:    run.InputTokens + run.OutputTokens,
-			Duration:       duration,
-			ErrorMessage:   run.ErrorMessage,
-			CreatedAt:      run.CreatedAt,
-			FinalizedAt:    run.FinalizedAt,
-		},
+		Run: s.runToSummary(ctx, run),
 	}
 
 	// Get child runs by looking at tool executions with child_run_id
@@ -364,29 +350,7 @@ func (s *Service[TTx]) GetRunToolExecutions(ctx context.Context, runID uuid.UUID
 
 	summaries := make([]*ToolExecutionSummary, 0, len(executions))
 	for _, exec := range executions {
-		var duration *time.Duration
-		if exec.CompletedAt != nil && exec.StartedAt != nil {
-			d := exec.CompletedAt.Sub(*exec.StartedAt)
-			duration = &d
-		}
-		summaries = append(summaries, &ToolExecutionSummary{
-			ID:           exec.ID,
-			RunID:        exec.RunID,
-			IterationID:  exec.IterationID,
-			ToolUseID:    exec.ToolUseID,
-			ToolName:     exec.ToolName,
-			ToolInput:    exec.ToolInput,
-			State:        string(exec.State),
-			IsAgentTool:  exec.IsAgentTool,
-			AgentName:    exec.AgentName,
-			ChildRunID:   exec.ChildRunID,
-			IsError:      exec.IsError,
-			AttemptCount: exec.AttemptCount,
-			MaxAttempts:  exec.MaxAttempts,
-			Duration:     duration,
-			CreatedAt:    exec.CreatedAt,
-			CompletedAt:  exec.CompletedAt,
-		})
+		summaries = append(summaries, s.toolExecToSummary(ctx, exec))
 	}
 
 	return summaries, nil

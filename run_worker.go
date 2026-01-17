@@ -77,14 +77,14 @@ func (w *runWorker[TTx]) processRun(ctx context.Context, run *driver.Run) error 
 
 	log.Info("processing run",
 		"run_id", run.ID,
-		"agent_name", run.AgentName,
+		"agent_id", run.AgentID,
 		"iteration", run.CurrentIteration,
 	)
 
-	// Get agent definition
-	agent := w.client.GetAgent(run.AgentName)
-	if agent == nil {
-		return fmt.Errorf("agent not found: %s", run.AgentName)
+	// Get agent definition from database
+	agent, err := w.client.GetAgentByID(ctx, run.AgentID)
+	if err != nil {
+		return fmt.Errorf("agent not found: %w", err)
 	}
 
 	// Determine trigger type
@@ -275,11 +275,11 @@ func (w *runWorker[TTx]) buildMessages(ctx context.Context, run *driver.Run) ([]
 }
 
 func (w *runWorker[TTx]) buildTools(ctx context.Context, agent *AgentDefinition) ([]anthropic.ToolUnionParam, error) {
-	if len(agent.Tools) == 0 && len(agent.Agents) == 0 {
+	if len(agent.Tools) == 0 && len(agent.AgentIDs) == 0 {
 		return nil, nil
 	}
 
-	tools := make([]anthropic.ToolUnionParam, 0, len(agent.Tools)+len(agent.Agents))
+	tools := make([]anthropic.ToolUnionParam, 0, len(agent.Tools)+len(agent.AgentIDs))
 
 	// Add regular tools
 	for _, toolName := range agent.Tools {
@@ -306,9 +306,9 @@ func (w *runWorker[TTx]) buildTools(ctx context.Context, agent *AgentDefinition)
 	}
 
 	// Add agent-as-tool entries
-	for _, agentName := range agent.Agents {
-		delegateAgent := w.client.GetAgent(agentName)
-		if delegateAgent == nil {
+	for _, delegateID := range agent.AgentIDs {
+		delegateAgent, err := w.client.GetAgentByID(ctx, delegateID)
+		if err != nil || delegateAgent == nil {
 			continue
 		}
 
@@ -324,7 +324,7 @@ func (w *runWorker[TTx]) buildTools(ctx context.Context, agent *AgentDefinition)
 		}
 
 		toolParam := anthropic.ToolParam{
-			Name:        agentName,
+			Name:        delegateAgent.Name,
 			Description: anthropic.String(delegateAgent.Description),
 			InputSchema: inputSchema,
 		}

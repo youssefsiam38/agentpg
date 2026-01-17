@@ -63,21 +63,22 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Register a simple assistant agent
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "assistant",
-		Description:  "A helpful AI assistant",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful AI assistant. Be concise and friendly.",
-	}); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
-	}
-
 	// Start the client (begins processing runs)
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
 	}
 	defer client.Stop(context.Background())
+
+	// Create a simple assistant agent in the database
+	_, err = client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "assistant",
+		Description:  "A helpful AI assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful AI assistant. Be concise and friendly.",
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
+	}
 
 	// Create HTTP server with admin UI
 	mux := http.NewServeMux()

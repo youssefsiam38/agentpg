@@ -143,45 +143,6 @@ func main() {
 		log.Fatalf("Failed to register weather tool: %v", err)
 	}
 
-	// Register agents on the client
-	maxTokens := 1024
-
-	// Agent 1: General Assistant - has access to all tools
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "general-assistant",
-		Description:  "General purpose assistant with all tools",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful general assistant. Be concise.",
-		Tools:        []string{"get_time", "calculator", "get_weather"}, // All tools
-		MaxTokens:    &maxTokens,
-	}); err != nil {
-		log.Fatalf("Failed to register general-assistant: %v", err)
-	}
-
-	// Agent 2: Math Tutor - only calculator
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "math-tutor",
-		Description:  "Math tutor with calculation abilities",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a math tutor. Help with calculations. Be concise.",
-		Tools:        []string{"calculator"}, // Only calculator
-		MaxTokens:    &maxTokens,
-	}); err != nil {
-		log.Fatalf("Failed to register math-tutor: %v", err)
-	}
-
-	// Agent 3: Weather Bot - only weather
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "weather-bot",
-		Description:  "Weather information assistant",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a weather assistant. Provide weather info. Be concise.",
-		Tools:        []string{"get_weather"}, // Only weather
-		MaxTokens:    &maxTokens,
-	}); err != nil {
-		log.Fatalf("Failed to register weather-bot: %v", err)
-	}
-
 	// Start the client
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -194,6 +155,48 @@ func main() {
 
 	fmt.Printf("Client started (instance: %s)\n", client.InstanceID())
 	fmt.Println()
+
+	// Create agents in the database (after client.Start)
+	maxTokens := 1024
+
+	// Agent 1: General Assistant - has access to all tools
+	generalAssistant, err := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "general-assistant",
+		Description:  "General purpose assistant with all tools",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful general assistant. Be concise.",
+		Tools:        []string{"get_time", "calculator", "get_weather"}, // All tools
+		MaxTokens:    &maxTokens,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create general-assistant: %v", err)
+	}
+
+	// Agent 2: Math Tutor - only calculator
+	mathTutor, err := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "math-tutor",
+		Description:  "Math tutor with calculation abilities",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a math tutor. Help with calculations. Be concise.",
+		Tools:        []string{"calculator"}, // Only calculator
+		MaxTokens:    &maxTokens,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create math-tutor: %v", err)
+	}
+
+	// Agent 3: Weather Bot - only weather
+	weatherBot, err := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "weather-bot",
+		Description:  "Weather information assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a weather assistant. Provide weather info. Be concise.",
+		Tools:        []string{"get_weather"}, // Only weather
+		MaxTokens:    &maxTokens,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create weather-bot: %v", err)
+	}
 
 	// =============================================================================
 	// Demo: Each agent can use the shared tools
@@ -213,7 +216,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
-	resp1, err := client.RunSync(ctx, sid1, "general-assistant", "What time is it, what's 15*7, and what's the weather in Paris?")
+	resp1, err := client.RunSync(ctx, sid1, generalAssistant.ID, "What time is it, what's 15*7, and what's the weather in Paris?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -225,7 +228,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
-	resp2, err := client.RunSync(ctx, sid2, "math-tutor", "What's 144 divided by 12?")
+	resp2, err := client.RunSync(ctx, sid2, mathTutor.ID, "What's 144 divided by 12?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -237,7 +240,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create session: %v", err)
 	}
-	resp3, err := client.RunSync(ctx, sid3, "weather-bot", "What's the weather in Tokyo?")
+	resp3, err := client.RunSync(ctx, sid3, weatherBot.ID, "What's the weather in Tokyo?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

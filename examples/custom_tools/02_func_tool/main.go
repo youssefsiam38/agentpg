@@ -224,22 +224,23 @@ func main() {
 		log.Fatalf("Failed to register date diff tool: %v", err)
 	}
 
-	// Register the time assistant agent
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+
+	// Create the time assistant agent in the database (after client.Start)
 	maxTokens := 1024
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "time-assistant",
+	agent, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "agent.ID",
 		Description:  "A helpful time assistant",
 		Model:        "claude-sonnet-4-5-20250929",
 		SystemPrompt: "You are a helpful time assistant. Use the available tools to provide time information.",
 		Tools:        []string{"get_time", "calculate_date_diff"},
 		MaxTokens:    &maxTokens,
-	}); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
-	}
-
-	// Start the client
-	if err := client.Start(ctx); err != nil {
-		log.Fatalf("Failed to start client: %v", err)
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
 	}
 	defer func() {
 		if err := client.Stop(context.Background()); err != nil {
@@ -261,7 +262,7 @@ func main() {
 
 	// Example 1: Get time in different timezone
 	fmt.Println("=== Example 1: Get Time in Tokyo ===")
-	response1, err := client.RunSync(ctx, sessionID, "time-assistant", "What time is it in Tokyo right now?")
+	response1, err := client.RunSync(ctx, sessionID, agent.ID, "What time is it in Tokyo right now?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -274,7 +275,7 @@ func main() {
 
 	// Example 2: Get time with specific format
 	fmt.Println("\n=== Example 2: Time in 12-hour Format ===")
-	response2, err := client.RunSync(ctx, sessionID, "time-assistant", "What's the current time in New York (EST) in 12-hour format?")
+	response2, err := client.RunSync(ctx, sessionID, agent.ID, "What's the current time in New York (EST) in 12-hour format?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -287,7 +288,7 @@ func main() {
 
 	// Example 3: Calculate date difference
 	fmt.Println("\n=== Example 3: Date Difference ===")
-	response3, err := client.RunSync(ctx, sessionID, "time-assistant", "How many weeks are between 2024-01-01 and 2024-12-31?")
+	response3, err := client.RunSync(ctx, sessionID, agent.ID, "How many weeks are between 2024-01-01 and 2024-12-31?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

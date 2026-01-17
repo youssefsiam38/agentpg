@@ -21,6 +21,9 @@ func (s *Service[TTx]) ListInstances(ctx context.Context) ([]*InstanceWithHealth
 		activeCounts = make(map[string][2]int)
 	}
 
+	// Pre-fetch all agents to determine which agents each instance can handle
+	agents, _, _ := s.store.ListAgents(ctx, driver.ListAgentsParams{Limit: 1000})
+
 	results := make([]*InstanceWithHealth, 0, len(instances))
 	for _, inst := range instances {
 		// Populate active counts from the query results
@@ -46,18 +49,45 @@ func (s *Service[TTx]) ListInstances(ctx context.Context) ([]*InstanceWithHealth
 			health.Status = "unhealthy"
 		}
 
-		// Get registered agents
-		agentNames, _ := s.store.GetInstanceAgents(ctx, inst.ID)
-		health.AgentNames = agentNames
-
 		// Get registered tools
 		toolNames, _ := s.store.GetInstanceTools(ctx, inst.ID)
 		health.ToolNames = toolNames
+
+		// Compute which agents this instance can handle based on its tools
+		health.AgentNames = computeHandleableAgents(agents, toolNames)
 
 		results = append(results, health)
 	}
 
 	return results, nil
+}
+
+// computeHandleableAgents returns the names of agents that can be handled by an instance with the given tools.
+func computeHandleableAgents(agents []*driver.AgentDefinition, instanceTools []string) []string {
+	if len(agents) == 0 {
+		return nil
+	}
+
+	toolSet := make(map[string]bool)
+	for _, t := range instanceTools {
+		toolSet[t] = true
+	}
+
+	var result []string
+	for _, agent := range agents {
+		// Agent can be handled if all its required tools are available
+		canHandle := true
+		for _, toolName := range agent.ToolNames {
+			if !toolSet[toolName] {
+				canHandle = false
+				break
+			}
+		}
+		if canHandle {
+			result = append(result, agent.Name)
+		}
+	}
+	return result
 }
 
 // GetInstance returns an instance by ID.
@@ -106,13 +136,13 @@ func (s *Service[TTx]) GetInstanceDetail(ctx context.Context, id string) (*Insta
 		detail.Status = "unhealthy"
 	}
 
-	// Get registered agents
-	agentNames, _ := s.store.GetInstanceAgents(ctx, id)
-	detail.AgentNames = agentNames
-
 	// Get registered tools
 	toolNames, _ := s.store.GetInstanceTools(ctx, id)
 	detail.ToolNames = toolNames
+
+	// Compute which agents this instance can handle based on its tools
+	agents, _, _ := s.store.ListAgents(ctx, driver.ListAgentsParams{Limit: 1000})
+	detail.AgentNames = computeHandleableAgents(agents, toolNames)
 
 	// Get current leader
 	leaderID, _ := s.store.GetLeader(ctx)

@@ -232,6 +232,7 @@ type RunSummary struct {
 // RunDetail contains detailed information about a run.
 type RunDetail struct {
 	Run            *driver.Run             `json:"run"`
+	AgentName      string                  `json:"agent_name"` // Looked up from AgentID
 	Session        *SessionSummary         `json:"session"`
 	Iterations     []*IterationSummary     `json:"iterations"`
 	ToolExecutions []*ToolExecutionSummary `json:"tool_executions"`
@@ -392,14 +393,14 @@ type HierarchicalConversationView struct {
 
 // AgentWithStats contains an agent definition with statistics.
 type AgentWithStats struct {
-	Agent           *driver.AgentDefinition `json:"agent"`
-	TotalRuns       int                     `json:"total_runs"`
-	ActiveRuns      int                     `json:"active_runs"`
-	CompletedRuns   int                     `json:"completed_runs"`
-	FailedRuns      int                     `json:"failed_runs"`
-	AvgTokensPerRun int                     `json:"avg_tokens_per_run"`
-	RegisteredOn    []string                `json:"registered_on"`
-	IsActive        bool                    `json:"is_active"` // true if registered on at least one instance
+	Agent             *driver.AgentDefinition `json:"agent"`
+	TotalRuns         int                     `json:"total_runs"`
+	ActiveRuns        int                     `json:"active_runs"`
+	CompletedRuns     int                     `json:"completed_runs"`
+	FailedRuns        int                     `json:"failed_runs"`
+	AvgTokensPerRun   int                     `json:"avg_tokens_per_run"`
+	CapableInstances  []string                `json:"capable_instances"`  // instances that have all required tools
+	IsActive          bool                    `json:"is_active"`          // true if at least one instance can handle this agent
 }
 
 // ToolWithStats contains a tool definition with statistics.
@@ -417,8 +418,8 @@ type ToolWithStats struct {
 // InstanceWithCapabilities contains instance info with its capabilities.
 type InstanceWithCapabilities struct {
 	Instance  *driver.Instance `json:"instance"`
-	Agents    []string         `json:"agents"`
-	Tools     []string         `json:"tools"`
+	Agents    []string         `json:"agents"` // agent names this instance can handle (based on its registered tools)
+	Tools     []string         `json:"tools"`  // tool names registered on this instance
 	IsLeader  bool             `json:"is_leader"`
 	IsHealthy bool             `json:"is_healthy"`
 }

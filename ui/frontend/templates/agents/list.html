@@ -4,7 +4,7 @@
     <div class="flex items-center justify-between">
         <div>
             <h1 class="text-2xl font-bold text-gray-100">Agents</h1>
-            <p class="mt-1 text-sm text-gray-400">Registered agent definitions and statistics</p>
+            <p class="mt-1 text-sm text-gray-400">Database agent definitions and statistics</p>
         </div>
     </div>
 
@@ -84,12 +84,12 @@
                     </div>
                 </div>
 
-                <!-- Registered On -->
-                {{if .RegisteredOn}}
+                <!-- Capable Instances -->
+                {{if .CapableInstances}}
                 <div class="mt-4 pt-4 border-t border-gray-700">
-                    <p class="text-xs text-gray-500 mb-2">Registered on instances:</p>
+                    <p class="text-xs text-gray-500 mb-2">Capable instances:</p>
                     <div class="flex flex-wrap gap-1">
-                        {{range .RegisteredOn}}
+                        {{range .CapableInstances}}
                         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300 ring-1 ring-gray-600">
                             {{.}}
                         </span>
@@ -121,7 +121,7 @@
         {{else}}
         <div class="col-span-full">
             <div class="bg-gray-800 rounded-lg shadow-lg shadow-gray-900/50 border border-gray-700">
-                {{template "empty-state" (dict "Icon" "computer" "Title" "No agents registered" "Description" "Agents will appear here when registered with the client.")}}
+                {{template "empty-state" (dict "Icon" "computer" "Title" "No agents found" "Description" "Agents will appear here when created via CreateAgent().")}}
             </div>
         </div>
         {{end}}

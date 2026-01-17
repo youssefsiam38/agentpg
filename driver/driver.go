@@ -48,10 +48,19 @@ type Store[TTx any] interface {
 	GetMetadataValues(ctx context.Context, key string) ([]MetadataValue, error)
 
 	// Agent operations
-	UpsertAgent(ctx context.Context, agent *AgentDefinition) error
-	GetAgent(ctx context.Context, name string) (*AgentDefinition, error)
-	DeleteAgent(ctx context.Context, name string) error
-	ListAgents(ctx context.Context) ([]*AgentDefinition, error)
+	// CreateAgent creates a new agent and returns it with the generated ID.
+	CreateAgent(ctx context.Context, agent *AgentDefinition) (*AgentDefinition, error)
+	// UpdateAgent updates an existing agent by ID.
+	UpdateAgent(ctx context.Context, agent *AgentDefinition) error
+	// GetAgent retrieves an agent by its UUID.
+	GetAgent(ctx context.Context, id uuid.UUID) (*AgentDefinition, error)
+	// GetAgentByName retrieves an agent by name and metadata.
+	// If metadata is nil or empty, matches agents with any metadata that have the given name.
+	GetAgentByName(ctx context.Context, name string, metadata map[string]any) (*AgentDefinition, error)
+	// DeleteAgent deletes an agent by its UUID.
+	DeleteAgent(ctx context.Context, id uuid.UUID) error
+	// ListAgents returns agents with optional filtering and pagination.
+	ListAgents(ctx context.Context, params ListAgentsParams) ([]*AgentDefinition, int, error)
 
 	// Tool operations
 	UpsertTool(ctx context.Context, tool *ToolDefinition) error
@@ -155,12 +164,9 @@ type Store[TTx any] interface {
 	// Returns a map of instance ID to [activeRuns, activeTools].
 	GetAllInstanceActiveCounts(ctx context.Context) (map[string][2]int, error)
 
-	// Instance capability operations
-	RegisterInstanceAgent(ctx context.Context, instanceID, agentName string) error
+	// Instance capability operations (tools only - agents are now database-driven)
 	RegisterInstanceTool(ctx context.Context, instanceID, toolName string) error
-	UnregisterInstanceAgent(ctx context.Context, instanceID, agentName string) error
 	UnregisterInstanceTool(ctx context.Context, instanceID, toolName string) error
-	GetInstanceAgents(ctx context.Context, instanceID string) ([]string, error)
 	GetInstanceTools(ctx context.Context, instanceID string) ([]string, error)
 
 	// Leader election
@@ -216,7 +222,7 @@ type CreateSessionParams struct {
 // CreateRunParams contains parameters for creating a run.
 type CreateRunParams struct {
 	SessionID             uuid.UUID
-	AgentName             string
+	AgentID               uuid.UUID // UUID of the agent to execute
 	Prompt                string
 	RunMode               string // "batch" or "streaming", defaults to "batch"
 	ParentRunID           *uuid.UUID
@@ -242,7 +248,7 @@ type CreateToolExecutionParams struct {
 	ToolName    string
 	ToolInput   []byte // JSON
 	IsAgentTool bool
-	AgentName   *string
+	AgentID     *uuid.UUID // For agent-as-tool: UUID of the agent to invoke
 	MaxAttempts int
 }
 
@@ -287,7 +293,7 @@ type CreateCompactionEventParams struct {
 type ListRunsParams struct {
 	MetadataFilter map[string]any // Filter sessions by metadata key-value pairs (uses @> operator)
 	SessionID      *uuid.UUID     // Filter by session
-	AgentName      string         // Filter by agent name
+	AgentID        *uuid.UUID     // Filter by agent UUID
 	State          string         // Filter by run state
 	RunMode        string         // Filter by run mode ("batch" or "streaming")
 	Limit          int            // Maximum number of results
@@ -314,6 +320,14 @@ type ListSessionsParams struct {
 	OrderDir       string         // Order direction (asc, desc)
 }
 
+// ListAgentsParams contains parameters for listing agents with optional filtering.
+type ListAgentsParams struct {
+	MetadataFilter map[string]any // Filter by metadata key-value pairs (uses @> operator)
+	Name           string         // Filter by agent name (partial match)
+	Limit          int            // Maximum number of results
+	Offset         int            // Offset for pagination
+}
+
 // MetadataValue contains a metadata value with its session count.
 // Used by GetMetadataValues to return distinct values for a metadata key.
 type MetadataValue struct {
@@ -334,16 +348,19 @@ type (
 	}
 
 	AgentDefinition = struct {
-		Name         string
-		Description  string
-		Model        string
-		SystemPrompt string
-		ToolNames    []string
-		MaxTokens    *int
-		Temperature  *float64
-		TopK         *int
-		TopP         *float64
-		Config       map[string]any
+		ID           uuid.UUID      // Primary key (UUID for stable references)
+		Name         string         // Display name (must be unique within same metadata context)
+		Description  string         // Shown when agent is used as tool
+		Model        string         // Claude model to use
+		SystemPrompt string         // System prompt for this agent
+		ToolNames    []string       // Tool names this agent can use
+		AgentIDs     []uuid.UUID    // UUIDs of agents this agent can delegate to (agent-as-tool)
+		MaxTokens    *int           // Model max tokens
+		Temperature  *float64       // Model temperature
+		TopK         *int           // Model top_k
+		TopP         *float64       // Model top_p
+		Metadata     map[string]any // Flexible metadata for multi-tenancy (tenant_id, user_id, etc.)
+		Config       map[string]any // Additional configuration
 		CreatedAt    time.Time
 		UpdatedAt    time.Time
 	}
@@ -353,7 +370,7 @@ type (
 		Description string
 		InputSchema map[string]any
 		IsAgentTool bool
-		AgentName   *string
+		AgentID     *uuid.UUID // For agent-as-tool: UUID of the agent to invoke
 		Metadata    map[string]any
 		CreatedAt   time.Time
 		UpdatedAt   time.Time
@@ -362,8 +379,8 @@ type (
 	Run = struct {
 		ID                       uuid.UUID
 		SessionID                uuid.UUID
-		AgentName                string
-		RunMode                  string // "batch" or "streaming"
+		AgentID                  uuid.UUID // UUID of the agent executing this run
+		RunMode                  string    // "batch" or "streaming"
 		ParentRunID              *uuid.UUID
 		ParentToolExecutionID    *uuid.UUID
 		Depth                    int
@@ -439,7 +456,7 @@ type (
 		ToolName            string
 		ToolInput           []byte
 		IsAgentTool         bool
-		AgentName           *string
+		AgentID             *uuid.UUID // For agent-as-tool: UUID of the agent being invoked
 		ChildRunID          *uuid.UUID
 		ToolOutput          *string
 		IsError             bool
@@ -543,9 +560,9 @@ type (
 		CreatedAt   time.Time
 		UpdatedAt   time.Time
 		// Run information (from LEFT JOIN with runs table)
-		RunAgentName *string    // Agent name from the run
-		RunDepth     *int       // Depth level of the run (0=root, 1+=child)
-		ParentRunID  *uuid.UUID // Parent run ID for child runs
-		RunState     *string    // Current state of the run
+		RunAgentID  *uuid.UUID // Agent UUID from the run
+		RunDepth    *int       // Depth level of the run (0=root, 1+=child)
+		ParentRunID *uuid.UUID // Parent run ID for child runs
+		RunState    *string    // Current state of the run
 	}
 )

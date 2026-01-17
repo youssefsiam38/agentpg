@@ -3,40 +3,31 @@ package service
 import (
 	"context"
 
+	"github.com/google/uuid"
 	"github.com/youssefsiam38/agentpg/driver"
 )
 
 // ListAgents returns all agents with statistics.
-func (s *Service[TTx]) ListAgents(ctx context.Context) ([]*AgentWithStats, error) {
-	agents, err := s.store.ListAgents(ctx)
+func (s *Service[TTx]) ListAgents(ctx context.Context, metadataFilter map[string]any) ([]*AgentWithStats, error) {
+	agents, _, err := s.store.ListAgents(ctx, driver.ListAgentsParams{
+		MetadataFilter: metadataFilter,
+		Limit:          1000, // Get all agents
+	})
 	if err != nil {
 		return nil, err
-	}
-
-	// Get instances to find which agents are registered where
-	instances, _ := s.store.ListInstances(ctx)
-	agentInstances := make(map[string][]string)
-	for _, inst := range instances {
-		agentNames, _ := s.store.GetInstanceAgents(ctx, inst.ID)
-		for _, name := range agentNames {
-			agentInstances[name] = append(agentInstances[name], inst.ID)
-		}
 	}
 
 	// Build results
 	results := make([]*AgentWithStats, 0, len(agents))
 	for _, agent := range agents {
-		registeredOn := agentInstances[agent.Name]
 		stats := &AgentWithStats{
-			Agent:        agent,
-			RegisteredOn: registeredOn,
-			IsActive:     len(registeredOn) > 0,
+			Agent: agent,
 		}
 
 		// Get run statistics using ListRuns with agent filter
 		runs, total, err := s.store.ListRuns(ctx, driver.ListRunsParams{
-			AgentName: agent.Name,
-			Limit:     1000, // Get enough to compute stats
+			AgentID: &agent.ID,
+			Limit:   1000, // Get enough to compute stats
 		})
 		if err == nil {
 			stats.TotalRuns = total
@@ -59,6 +50,12 @@ func (s *Service[TTx]) ListAgents(ctx context.Context) ([]*AgentWithStats, error
 			}
 		}
 
+		// Check if any instance can handle this agent (has all required tools)
+		stats.IsActive = s.canAnyInstanceHandleAgent(ctx, agent)
+		if stats.IsActive {
+			stats.CapableInstances = s.getInstancesWithTools(ctx, agent.ToolNames)
+		}
+
 		results = append(results, stats)
 	}
 
@@ -66,30 +63,90 @@ func (s *Service[TTx]) ListAgents(ctx context.Context) ([]*AgentWithStats, error
 }
 
 // GetAgentWithStats returns an agent with its statistics.
-func (s *Service[TTx]) GetAgentWithStats(ctx context.Context, name string) (*AgentWithStats, error) {
-	agent, err := s.store.GetAgent(ctx, name)
+func (s *Service[TTx]) GetAgentWithStats(ctx context.Context, agentID uuid.UUID) (*AgentWithStats, error) {
+	agent, err := s.store.GetAgent(ctx, agentID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Get instances
-	instances, _ := s.store.ListInstances(ctx)
-	var registeredOn []string
-	for _, inst := range instances {
-		agentNames, _ := s.store.GetInstanceAgents(ctx, inst.ID)
-		for _, n := range agentNames {
-			if n == name {
-				registeredOn = append(registeredOn, inst.ID)
-				break
-			}
-		}
+	// Check which instances can handle this agent
+	isActive := s.canAnyInstanceHandleAgent(ctx, agent)
+	var capableInstances []string
+	if isActive {
+		capableInstances = s.getInstancesWithTools(ctx, agent.ToolNames)
 	}
 
 	return &AgentWithStats{
-		Agent:        agent,
-		RegisteredOn: registeredOn,
-		IsActive:     len(registeredOn) > 0,
+		Agent:            agent,
+		CapableInstances: capableInstances,
+		IsActive:         isActive,
 	}, nil
+}
+
+// canAnyInstanceHandleAgent checks if any instance has all the tools required by an agent.
+func (s *Service[TTx]) canAnyInstanceHandleAgent(ctx context.Context, agent *driver.AgentDefinition) bool {
+	if len(agent.ToolNames) == 0 {
+		// Agent doesn't need any tools, any instance can handle it
+		return true
+	}
+
+	instances, _ := s.store.ListInstances(ctx)
+	for _, inst := range instances {
+		instanceTools, _ := s.store.GetInstanceTools(ctx, inst.ID)
+		toolSet := make(map[string]bool)
+		for _, t := range instanceTools {
+			toolSet[t] = true
+		}
+
+		// Check if instance has all required tools
+		hasAllTools := true
+		for _, toolName := range agent.ToolNames {
+			if !toolSet[toolName] {
+				hasAllTools = false
+				break
+			}
+		}
+		if hasAllTools {
+			return true
+		}
+	}
+	return false
+}
+
+// getInstancesWithTools returns instance IDs that have all the specified tools.
+func (s *Service[TTx]) getInstancesWithTools(ctx context.Context, toolNames []string) []string {
+	if len(toolNames) == 0 {
+		// Return all instances if no tools required
+		instances, _ := s.store.ListInstances(ctx)
+		result := make([]string, 0, len(instances))
+		for _, inst := range instances {
+			result = append(result, inst.ID)
+		}
+		return result
+	}
+
+	var result []string
+	instances, _ := s.store.ListInstances(ctx)
+	for _, inst := range instances {
+		instanceTools, _ := s.store.GetInstanceTools(ctx, inst.ID)
+		toolSet := make(map[string]bool)
+		for _, t := range instanceTools {
+			toolSet[t] = true
+		}
+
+		// Check if instance has all required tools
+		hasAllTools := true
+		for _, toolName := range toolNames {
+			if !toolSet[toolName] {
+				hasAllTools = false
+				break
+			}
+		}
+		if hasAllTools {
+			result = append(result, inst.ID)
+		}
+	}
+	return result
 }
 
 // ListTools returns all tools with statistics.

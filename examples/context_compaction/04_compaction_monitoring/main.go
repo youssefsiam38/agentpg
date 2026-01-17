@@ -190,19 +190,21 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+
+	// Create agent in the database (after client.Start)
 	maxTokens := 4096
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "monitoring-demo",
+	agent, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "agent.ID",
 		Description:  "Assistant for compaction monitoring demo",
 		Model:        "claude-sonnet-4-5-20250929",
 		SystemPrompt: "You are a helpful assistant. Provide detailed responses.",
 		MaxTokens:    &maxTokens,
-	}); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
-	}
-
-	if err := client.Start(ctx); err != nil {
-		log.Fatalf("Failed to start client: %v", err)
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
 	}
 	defer client.Stop(context.Background())
 
@@ -239,7 +241,7 @@ func main() {
 		fmt.Printf("\n--- Query %d/%d ---\n", i+1, len(prompts))
 		fmt.Printf("Prompt: %s\n", truncate(prompt, 60))
 
-		response, err := client.RunFastSync(ctx, sessionID, "monitoring-demo", prompt)
+		response, err := client.RunFastSync(ctx, sessionID, agent.ID, prompt)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}

@@ -135,19 +135,21 @@ func main() {
 		log.Fatalf("Failed to register tool: %v", err)
 	}
 
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "assistant",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful assistant. Use the api_call tool to perform API operations.",
-		Tools:        []string{"api_call"},
-	}); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
-	}
-
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
 	}
 	defer client.Stop(context.Background())
+
+	// Create agent in the database
+	agent, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Use the api_call tool to perform API operations.",
+		Tools:        []string{"api_call"},
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
+	}
 
 	log.Println("=== Tool Error Types Demo ===")
 	log.Println("")
@@ -192,7 +194,7 @@ func main() {
 		log.Printf("\n--- Demo: %s ---\n", demo.name)
 		apiTool.callCount = 0
 
-		response, err := client.RunFastSync(ctx, sessionID, "assistant", demo.prompt)
+		response, err := client.RunFastSync(ctx, sessionID, agent.ID, demo.prompt)
 		if err != nil {
 			log.Printf("Error: %v", err)
 		} else {

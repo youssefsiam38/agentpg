@@ -31,7 +31,10 @@ func (s *Service[TTx]) GetConversation(ctx context.Context, sessionID uuid.UUID,
 	runs, err := s.store.GetRunsBySession(ctx, sessionID, 1000)
 	if err == nil && len(runs) > 0 {
 		// Runs are ordered by created_at DESC, so first run is last in slice
-		agentName = runs[len(runs)-1].AgentName
+		firstRun := runs[len(runs)-1]
+		if agent, agentErr := s.store.GetAgent(ctx, firstRun.AgentID); agentErr == nil {
+			agentName = agent.Name
+		}
 	}
 
 	// Build run lookup map for RunInfo
@@ -129,7 +132,7 @@ func (s *Service[TTx]) GetConversation(ctx context.Context, sessionID uuid.UUID,
 		// Add run info if available
 		if msgInfo.RunID != nil {
 			if run, ok := runMap[*msgInfo.RunID]; ok {
-				msgWithBlocks.RunInfo = s.runToSummary(run)
+				msgWithBlocks.RunInfo = s.runToSummary(ctx, run)
 			}
 		}
 
@@ -171,9 +174,14 @@ func (s *Service[TTx]) GetMessage(ctx context.Context, id uuid.UUID) (*MessageWi
 	if msg.RunID != nil {
 		run, err := s.store.GetRun(ctx, *msg.RunID)
 		if err == nil {
+			// Look up agent name from ID
+			runAgentName := ""
+			if agent, agentErr := s.store.GetAgent(ctx, run.AgentID); agentErr == nil {
+				runAgentName = agent.Name
+			}
 			runInfo = &RunSummary{
 				ID:        run.ID,
-				AgentName: run.AgentName,
+				AgentName: runAgentName,
 				State:     string(run.State),
 				CreatedAt: run.CreatedAt,
 			}
@@ -229,7 +237,9 @@ func (s *Service[TTx]) GetHierarchicalConversation(ctx context.Context, sessionI
 	var agentName string
 	for _, r := range runs {
 		if r.Depth == 0 {
-			agentName = r.AgentName
+			if agent, agentErr := s.store.GetAgent(ctx, r.AgentID); agentErr == nil {
+				agentName = agent.Name
+			}
 			break
 		}
 	}
@@ -277,7 +287,7 @@ func (s *Service[TTx]) GetHierarchicalConversation(ctx context.Context, sessionI
 		// Add run info if available
 		if msgInfo.RunID != nil {
 			if run, ok := runMap[*msgInfo.RunID]; ok {
-				msgWithBlocks.RunInfo = s.runToSummary(run)
+				msgWithBlocks.RunInfo = s.runToSummary(ctx, run)
 			}
 		}
 
@@ -324,7 +334,7 @@ func (s *Service[TTx]) GetHierarchicalConversation(ctx context.Context, sessionI
 	}
 
 	// Build hierarchical groups starting from root runs (depth=0)
-	rootGroups := s.buildRunMessageGroupsAtDepth(runs, messagesByRun, toolExecsByRun, 0, nil)
+	rootGroups := s.buildRunMessageGroupsAtDepth(ctx, runs, messagesByRun, toolExecsByRun, 0, nil)
 
 	return &HierarchicalConversationView{
 		SessionID: sessionID,
@@ -346,7 +356,7 @@ func (s *Service[TTx]) GetHierarchicalConversation(ctx context.Context, sessionI
 
 // buildRunMessageGroupsAtDepth recursively builds run message groups for runs at a given depth
 // with the specified parent run ID. Supports unlimited depth.
-func (s *Service[TTx]) buildRunMessageGroupsAtDepth(allRuns []*driver.Run, messagesByRun map[uuid.UUID][]*MessageWithBlocks, toolExecsByRun map[uuid.UUID][]*ToolExecutionSummary, depth int, parentRunID *uuid.UUID) []*RunMessageGroup {
+func (s *Service[TTx]) buildRunMessageGroupsAtDepth(ctx context.Context, allRuns []*driver.Run, messagesByRun map[uuid.UUID][]*MessageWithBlocks, toolExecsByRun map[uuid.UUID][]*ToolExecutionSummary, depth int, parentRunID *uuid.UUID) []*RunMessageGroup {
 	groups := make([]*RunMessageGroup, 0, len(allRuns))
 
 	for _, run := range allRuns {
@@ -387,39 +397,17 @@ func (s *Service[TTx]) buildRunMessageGroupsAtDepth(allRuns []*driver.Run, messa
 		}
 
 		group := &RunMessageGroup{
-			Run:            s.runToSummary(run),
+			Run:            s.runToSummary(ctx, run),
 			Messages:       messagesByRun[run.ID],
 			Depth:          run.Depth,
 			ToolExecutions: filteredExecs, // Only tool executions not shown in messages
 		}
 
 		// Recursively build child groups (supports any depth)
-		group.ChildGroups = s.buildRunMessageGroupsAtDepth(allRuns, messagesByRun, toolExecsByRun, depth+1, &run.ID)
+		group.ChildGroups = s.buildRunMessageGroupsAtDepth(ctx, allRuns, messagesByRun, toolExecsByRun, depth+1, &run.ID)
 
 		groups = append(groups, group)
 	}
 
 	return groups
-}
-
-// runToSummary converts a driver.Run to a RunSummary.
-func (s *Service[TTx]) runToSummary(run *driver.Run) *RunSummary {
-	summary := &RunSummary{
-		ID:             run.ID,
-		SessionID:      run.SessionID,
-		AgentName:      run.AgentName,
-		RunMode:        run.RunMode,
-		State:          string(run.State),
-		Depth:          run.Depth,
-		HasParent:      run.ParentRunID != nil,
-		IterationCount: run.IterationCount,
-		ToolIterations: run.ToolIterations,
-		TotalTokens:    run.InputTokens + run.OutputTokens,
-		CreatedAt:      run.CreatedAt,
-		FinalizedAt:    run.FinalizedAt,
-	}
-	if run.ErrorMessage != nil {
-		summary.ErrorMessage = run.ErrorMessage
-	}
-	return summary
 }

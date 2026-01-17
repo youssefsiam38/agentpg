@@ -11,11 +11,13 @@
 //	client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{
 //	    APIKey: os.Getenv("ANTHROPIC_API_KEY"),
 //	})
-//	client.RegisterAgent(&agentpg.AgentDefinition{
+//	client.Start(ctx)
+//
+//	// Create agent in database (after Start)
+//	client.CreateAgent(ctx, &agentpg.AgentDefinition{
 //	    Name:  "assistant",
 //	    Model: "claude-sonnet-4-5-20250929",
 //	})
-//	client.Start(ctx)
 //
 //	mux := http.NewServeMux()
 //	mux.Handle("/ui/", http.StripPrefix("/ui", ui.UIHandler(drv.Store(), client, nil)))

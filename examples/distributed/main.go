@@ -144,27 +144,6 @@ func main() {
 		log.Fatalf("Failed to register tool: %v", err)
 	}
 
-	// Register agents on the client
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "chat",
-		Description:  "General purpose chat agent with math capabilities",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful assistant. Use the calculator tool when asked to perform math operations.",
-		Tools:        []string{"calculator"}, // Agent has access to calculator tool
-	}); err != nil {
-		log.Fatalf("Failed to register chat agent: %v", err)
-	}
-
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "simple",
-		Description:  "Simple chat agent without tools",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a concise assistant. Answer in 2-3 sentences maximum.",
-		// No Tools field = no tool access
-	}); err != nil {
-		log.Fatalf("Failed to register simple agent: %v", err)
-	}
-
 	// Start the client (registers instance, starts heartbeat, leader election)
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
@@ -177,6 +156,29 @@ func main() {
 	}()
 
 	log.Printf("Client started (instance ID: %s)", client.InstanceID())
+
+	// Create agents in the database (after client.Start)
+	chatAgent, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "chat",
+		Description:  "General purpose chat agent with math capabilities",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Use the calculator tool when asked to perform math operations.",
+		Tools:        []string{"calculator"}, // Agent has access to calculator tool
+	})
+	if err != nil {
+		log.Fatalf("Failed to create chat agent: %v", err)
+	}
+
+	_, err = client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "simple",
+		Description:  "Simple chat agent without tools",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a concise assistant. Answer in 2-3 sentences maximum.",
+		// No Tools field = no tool access
+	})
+	if err != nil {
+		log.Fatalf("Failed to create simple agent: %v", err)
+	}
 
 	// Create a new session
 	// App-specific fields (tenant_id, user_id, etc.) go in metadata
@@ -192,7 +194,7 @@ func main() {
 
 	// Run the agent with a math question
 	log.Println("\n--- Running agent with math question ---")
-	response, err := client.RunSync(ctx, sessionID, "chat", "What is 42 * 17?")
+	response, err := client.RunSync(ctx, sessionID, chatAgent.ID, "What is 42 * 17?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -211,7 +213,7 @@ func main() {
 
 	// Continue the conversation
 	log.Println("\n--- Continuing conversation ---")
-	response, err = client.RunSync(ctx, sessionID, "chat", "Now divide that result by 7")
+	response, err = client.RunSync(ctx, sessionID, chatAgent.ID, "Now divide that result by 7")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

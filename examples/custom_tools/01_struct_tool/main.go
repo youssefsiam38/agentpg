@@ -189,22 +189,23 @@ func main() {
 		log.Fatalf("Failed to register tool: %v", err)
 	}
 
-	// Register the weather agent on this client
+	// Start the client
+	if err := client.Start(ctx); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
+	}
+
+	// Create the weather agent in the database (after client.Start)
 	maxTokens := 1024
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "weather-assistant",
+	agent, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "agent.ID",
 		Description:  "A helpful weather assistant",
 		Model:        "claude-sonnet-4-5-20250929",
 		SystemPrompt: "You are a helpful weather assistant. Use the get_weather tool to provide weather information when asked.",
 		Tools:        []string{"get_weather"},
 		MaxTokens:    &maxTokens,
-	}); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
-	}
-
-	// Start the client
-	if err := client.Start(ctx); err != nil {
-		log.Fatalf("Failed to start client: %v", err)
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
 	}
 	defer func() {
 		if err := client.Stop(context.Background()); err != nil {
@@ -226,7 +227,7 @@ func main() {
 
 	// Example 1: Basic weather query
 	fmt.Println("=== Example 1: Basic Weather Query ===")
-	response1, err := client.RunFastSync(ctx, sessionID, "weather-assistant", "What's the weather like in Tokyo?")
+	response1, err := client.RunFastSync(ctx, sessionID, agent.ID, "What's the weather like in Tokyo?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -239,7 +240,7 @@ func main() {
 
 	// Example 2: Weather with unit preference
 	fmt.Println("\n=== Example 2: Weather with Fahrenheit ===")
-	response2, err := client.RunSync(ctx, sessionID, "weather-assistant", "What's the temperature in New York in Fahrenheit?")
+	response2, err := client.RunSync(ctx, sessionID, agent.ID, "What's the temperature in New York in Fahrenheit?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -252,7 +253,7 @@ func main() {
 
 	// Example 3: Unknown city (generates random weather)
 	fmt.Println("\n=== Example 3: Unknown City ===")
-	response3, err := client.RunFastSync(ctx, sessionID, "weather-assistant", "How's the weather in Reykjavik?")
+	response3, err := client.RunFastSync(ctx, sessionID, agent.ID, "How's the weather in Reykjavik?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

@@ -36,6 +36,13 @@ func (s *Service[TTx]) ListToolExecutions(ctx context.Context, params ToolExecut
 			d := exec.CompletedAt.Sub(*exec.StartedAt)
 			duration = &d
 		}
+		// Look up agent name from ID if this is an agent tool
+		var agentName *string
+		if exec.IsAgentTool && exec.AgentID != nil {
+			if agent, err := s.store.GetAgent(ctx, *exec.AgentID); err == nil {
+				agentName = &agent.Name
+			}
+		}
 		summaries = append(summaries, &ToolExecutionSummary{
 			ID:           exec.ID,
 			RunID:        exec.RunID,
@@ -43,7 +50,7 @@ func (s *Service[TTx]) ListToolExecutions(ctx context.Context, params ToolExecut
 			ToolName:     exec.ToolName,
 			State:        string(exec.State),
 			IsAgentTool:  exec.IsAgentTool,
-			AgentName:    exec.AgentName,
+			AgentName:    agentName,
 			ChildRunID:   exec.ChildRunID,
 			IsError:      exec.IsError,
 			AttemptCount: exec.AttemptCount,
@@ -81,10 +88,15 @@ func (s *Service[TTx]) GetToolExecutionDetail(ctx context.Context, id uuid.UUID)
 			d := run.FinalizedAt.Sub(*run.StartedAt)
 			duration = &d
 		}
+		// Look up agent name from ID
+		runAgentName := ""
+		if agent, agentErr := s.store.GetAgent(ctx, run.AgentID); agentErr == nil {
+			runAgentName = agent.Name
+		}
 		detail.Run = &RunSummary{
 			ID:             run.ID,
 			SessionID:      run.SessionID,
-			AgentName:      run.AgentName,
+			AgentName:      runAgentName,
 			RunMode:        run.RunMode,
 			State:          string(run.State),
 			Depth:          run.Depth,
@@ -128,10 +140,15 @@ func (s *Service[TTx]) GetToolExecutionDetail(ctx context.Context, id uuid.UUID)
 				d := childRun.FinalizedAt.Sub(*childRun.StartedAt)
 				duration = &d
 			}
+			// Look up agent name from ID
+			childAgentName := ""
+			if agent, agentErr := s.store.GetAgent(ctx, childRun.AgentID); agentErr == nil {
+				childAgentName = agent.Name
+			}
 			detail.ChildRun = &RunSummary{
 				ID:             childRun.ID,
 				SessionID:      childRun.SessionID,
-				AgentName:      childRun.AgentName,
+				AgentName:      childAgentName,
 				State:          string(childRun.State),
 				Depth:          childRun.Depth,
 				IterationCount: childRun.IterationCount,

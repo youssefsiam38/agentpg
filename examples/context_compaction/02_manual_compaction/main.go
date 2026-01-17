@@ -106,27 +106,28 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Register agent on the client (per-client registration)
-	maxTokens := 1024
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "manual-compaction-demo",
-		Description:  "Research assistant with manual compaction",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a research assistant. Use the search tool to find information. Keep responses brief.",
-		MaxTokens:    &maxTokens,
-		Tools:        []string{"search"}, // List tools this agent can use
-	}); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
-	}
-
 	// Register verbose search tool on the client
 	if err := client.RegisterTool(&VerboseSearchTool{}); err != nil {
 		log.Fatalf("Failed to register tool: %v", err)
 	}
 
-	// Start the client (must be after all registrations)
+	// Start the client (must be after all tool registrations)
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
+	}
+
+	// Create agent in the database (after client.Start)
+	maxTokens := 1024
+	agent, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "agent.ID",
+		Description:  "Research assistant with manual compaction",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a research assistant. Use the search tool to find information. Keep responses brief.",
+		MaxTokens:    &maxTokens,
+		Tools:        []string{"search"}, // List tools this agent can use
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
 	}
 	defer func() {
 		if err := client.Stop(context.Background()); err != nil {
@@ -164,7 +165,7 @@ func main() {
 	for i, query := range queries {
 		fmt.Printf("Query %d: %s\n", i+1, query)
 
-		response, err := client.RunFastSync(ctx, sessionID, "manual-compaction-demo", query)
+		response, err := client.RunFastSync(ctx, sessionID, agent.ID, query)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}
@@ -269,7 +270,7 @@ func main() {
 	fmt.Println("VERIFICATION: Conversation continues with context")
 	fmt.Println(strings.Repeat("=", 60))
 
-	response, err := client.RunFastSync(ctx, sessionID, "manual-compaction-demo", "Based on our previous discussion, what were the main topics we covered?")
+	response, err := client.RunFastSync(ctx, sessionID, agent.ID, "Based on our previous discussion, what were the main topics we covered?")
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

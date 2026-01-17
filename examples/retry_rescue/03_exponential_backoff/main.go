@@ -127,19 +127,21 @@ func main() {
 		log.Fatalf("Failed to register tool: %v", err)
 	}
 
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "assistant",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a helpful assistant. Use the external_api tool to make API calls.",
-		Tools:        []string{"external_api"},
-	}); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
-	}
-
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
 	}
 	defer client.Stop(context.Background())
+
+	// Create agent in the database
+	agent, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a helpful assistant. Use the external_api tool to make API calls.",
+		Tools:        []string{"external_api"},
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
+	}
 
 	log.Println("=== Exponential Backoff Demo ===")
 	log.Println("")
@@ -165,7 +167,7 @@ func main() {
 	log.Println("--- Starting request ---")
 	start := time.Now()
 
-	response, err := client.RunFastSync(ctx, sessionID, "assistant", "Call the external API endpoint '/users'")
+	response, err := client.RunFastSync(ctx, sessionID, agent.ID, "Call the external API endpoint '/users'")
 	elapsed := time.Since(start)
 
 	if err != nil {

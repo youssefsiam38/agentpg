@@ -135,11 +135,11 @@ func (w *toolWorker[TTx]) executeAgentTool(ctx context.Context, exec *driver.Too
 	store := w.client.driver.Store()
 	log := w.client.log()
 
-	if exec.AgentName == nil {
-		return w.completeToolExecution(ctx, exec.ID, "", true, "agent name is nil for agent tool")
+	if exec.AgentID == nil {
+		return w.completeToolExecution(ctx, exec.ID, "", true, "agent ID is nil for agent tool")
 	}
 
-	agentName := *exec.AgentName
+	agentID := *exec.AgentID
 
 	// Parse input to get task
 	var input struct {
@@ -158,7 +158,7 @@ func (w *toolWorker[TTx]) executeAgentTool(ctx context.Context, exec *driver.Too
 	// Create child run (inherit run mode from parent for consistent latency behavior)
 	childRun, err := store.CreateRun(ctx, driver.CreateRunParams{
 		SessionID:             parentRun.SessionID,
-		AgentName:             agentName,
+		AgentID:               agentID,
 		Prompt:                input.Task,
 		RunMode:               parentRun.RunMode, // Inherit from parent
 		ParentRunID:           &exec.RunID,
@@ -173,7 +173,7 @@ func (w *toolWorker[TTx]) executeAgentTool(ctx context.Context, exec *driver.Too
 	log.Info("created child run for agent tool",
 		"execution_id", exec.ID,
 		"child_run_id", childRun.ID,
-		"agent_name", agentName,
+		"agent_id", agentID,
 		"depth", childRun.Depth,
 	)
 
@@ -371,7 +371,7 @@ func (w *toolWorker[TTx]) checkForStuckRuns(ctx context.Context) {
 	}
 
 	for _, run := range runs {
-		log.Info("recovering stuck run", "run_id", run.ID, "agent_name", run.AgentName)
+		log.Info("recovering stuck run", "run_id", run.ID, "agent_id", run.AgentID)
 		w.handleAllToolsComplete(ctx, run.ID)
 	}
 }

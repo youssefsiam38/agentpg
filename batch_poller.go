@@ -371,7 +371,7 @@ func (p *batchPoller[TTx]) processResult(ctx context.Context, iter *driver.Itera
 		runUpdates["tool_iterations"] = run.ToolIterations + 1
 
 		// Build tool execution params
-		toolParams := p.buildToolParams(iter, run, msg.Content)
+		toolParams := p.buildToolParams(ctx, iter, run, msg.Content)
 
 		// Atomically create tool executions AND update run state
 		if len(toolParams) > 0 {
@@ -412,7 +412,7 @@ func (p *batchPoller[TTx]) processResult(ctx context.Context, iter *driver.Itera
 	return nil
 }
 
-func (p *batchPoller[TTx]) buildToolParams(iter *driver.Iteration, run *driver.Run, content []struct {
+func (p *batchPoller[TTx]) buildToolParams(ctx context.Context, iter *driver.Iteration, run *driver.Run, content []struct {
 	Type  string          `json:"type"`
 	Text  string          `json:"text,omitempty"`
 	ID    string          `json:"id,omitempty"`
@@ -425,13 +425,13 @@ func (p *batchPoller[TTx]) buildToolParams(iter *driver.Iteration, run *driver.R
 			continue
 		}
 
-		// Check if this is an agent-as-tool
+		// Check if this is an agent-as-tool by looking up in database
 		isAgentTool := false
-		var agentName *string
-		agent := p.client.GetAgent(block.Name)
+		var agentID *uuid.UUID
+		agent, _ := p.client.GetAgentByName(ctx, block.Name, nil)
 		if agent != nil {
 			isAgentTool = true
-			agentName = &block.Name
+			agentID = &agent.ID
 		}
 
 		params = append(params, driver.CreateToolExecutionParams{
@@ -441,7 +441,7 @@ func (p *batchPoller[TTx]) buildToolParams(iter *driver.Iteration, run *driver.R
 			ToolName:    block.Name,
 			ToolInput:   block.Input,
 			IsAgentTool: isAgentTool,
-			AgentName:   agentName,
+			AgentID:     agentID,
 			MaxAttempts: p.client.toolMaxAttempts(),
 		})
 	}

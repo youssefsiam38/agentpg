@@ -104,24 +104,26 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	maxTokens := 1024
-	if err := client.RegisterAgent(&agentpg.AgentDefinition{
-		Name:         "strategy-demo",
-		Description:  "Documentation assistant",
-		Model:        "claude-sonnet-4-5-20250929",
-		SystemPrompt: "You are a documentation assistant. Use the get_docs tool to retrieve documentation. Keep responses concise.",
-		MaxTokens:    &maxTokens,
-		Tools:        []string{"get_docs"},
-	}); err != nil {
-		log.Fatalf("Failed to register agent: %v", err)
-	}
-
 	if err := client.RegisterTool(&VerboseDocTool{}); err != nil {
 		log.Fatalf("Failed to register tool: %v", err)
 	}
 
 	if err := client.Start(ctx); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
+	}
+
+	// Create agent in the database (after client.Start)
+	maxTokens := 1024
+	agent, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+		Name:         "agent.ID",
+		Description:  "Documentation assistant",
+		Model:        "claude-sonnet-4-5-20250929",
+		SystemPrompt: "You are a documentation assistant. Use the get_docs tool to retrieve documentation. Keep responses concise.",
+		MaxTokens:    &maxTokens,
+		Tools:        []string{"get_docs"},
+	})
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
 	}
 	defer client.Stop(context.Background())
 
@@ -146,7 +148,7 @@ func main() {
 	}
 	fmt.Printf("\nSession: %s\n", sessionID1)
 
-	runConversation(ctx, client, sessionID1)
+	runConversation(ctx, client, sessionID1, agent.ID)
 	compactAndReport(ctx, client, sessionID1, "Hybrid")
 
 	// ==========================================================
@@ -164,7 +166,7 @@ func main() {
 	}
 	fmt.Printf("\nSession: %s\n", sessionID2)
 
-	runConversation(ctx, client, sessionID2)
+	runConversation(ctx, client, sessionID2, agent.ID)
 
 	// Use CompactWithConfig to override strategy for this session
 	fmt.Println("\nUsing CompactWithConfig with Summarization strategy...")
@@ -207,7 +209,7 @@ Summarization Strategy:
 	fmt.Println(strings.Repeat("=", 70))
 }
 
-func runConversation(ctx context.Context, client *agentpg.Client[pgx.Tx], sessionID uuid.UUID) {
+func runConversation(ctx context.Context, client *agentpg.Client[pgx.Tx], sessionID uuid.UUID, agentID uuid.UUID) {
 	topics := []string{
 		"Get documentation for Kubernetes deployment",
 		"Get documentation for Docker networking",
@@ -217,7 +219,7 @@ func runConversation(ctx context.Context, client *agentpg.Client[pgx.Tx], sessio
 	for i, topic := range topics {
 		fmt.Printf("\nQuery %d: %s\n", i+1, topic)
 
-		response, err := client.RunFastSync(ctx, sessionID, "strategy-demo", topic)
+		response, err := client.RunFastSync(ctx, sessionID, agentID, topic)
 		if err != nil {
 			log.Printf("Failed to run agent: %v", err)
 			continue
