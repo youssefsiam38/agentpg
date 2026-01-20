@@ -123,7 +123,7 @@ For simple questions, answer directly without delegation.`,
 	// Example 1: Simple question (no delegation needed)
 	// ==========================================================
 	fmt.Println("=== Example 1: Simple Question (No Delegation) ===")
-	response1, err := client.RunSync(ctx, sessionID, orchestrator.ID, "What is 2 + 2?")
+	response1, err := client.RunSync(ctx, sessionID, orchestrator.ID, "What is 2 + 2?", nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -138,7 +138,7 @@ For simple questions, answer directly without delegation.`,
 	// Example 2: Research question (triggers delegation)
 	// ==========================================================
 	fmt.Println("\n=== Example 2: Research Question (With Delegation) ===")
-	response2, err := client.RunSync(ctx, sessionID, orchestrator.ID, "Can you research and explain how neural networks learn? I'd like a detailed explanation.")
+	response2, err := client.RunSync(ctx, sessionID, orchestrator.ID, "Can you research and explain how neural networks learn? I'd like a detailed explanation.", nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -153,7 +153,7 @@ For simple questions, answer directly without delegation.`,
 	// Example 3: Another delegation with context
 	// ==========================================================
 	fmt.Println("\n=== Example 3: Research with Specific Context ===")
-	response3, err := client.RunSync(ctx, sessionID, orchestrator.ID, "Research the differences between SQL and NoSQL databases. Focus on when to use each one.")
+	response3, err := client.RunSync(ctx, sessionID, orchestrator.ID, "Research the differences between SQL and NoSQL databases. Focus on when to use each one.", nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

@@ -102,9 +102,9 @@ func main() {
         SystemPrompt: "You are a helpful assistant.",
     })
 
-    // Create session and run (uses agent UUID)
+    // Create session and run (uses agent UUID, nil for no variables)
     sessionID, _ := client.NewSession(ctx, nil, nil)
-    response, _ := client.RunSync(ctx, sessionID, agent.ID, "Hello!")
+    response, _ := client.RunSync(ctx, sessionID, agent.ID, "Hello!", nil)
     fmt.Println(response.Text)
 }
 ```

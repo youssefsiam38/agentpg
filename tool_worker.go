@@ -119,9 +119,22 @@ func (w *toolWorker[TTx]) executeTool(ctx context.Context, exec *driver.ToolExec
 		return w.completeToolExecution(ctx, exec.ID, "", true, fmt.Sprintf("tool not found: %s", exec.ToolName))
 	}
 
+	// Load run to get variables (metadata)
+	run, err := store.GetRun(ctx, exec.RunID)
+	if err != nil {
+		return fmt.Errorf("failed to get run for tool context: %w", err)
+	}
+
 	// Execute with timeout
 	execCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
+
+	// Enrich context with run information and variables
+	execCtx = tool.WithRunContext(execCtx, tool.RunContext{
+		RunID:     run.ID,
+		SessionID: run.SessionID,
+		Variables: run.Metadata,
+	})
 
 	output, err := t.Execute(execCtx, exec.ToolInput)
 	if err != nil {
@@ -155,16 +168,17 @@ func (w *toolWorker[TTx]) executeAgentTool(ctx context.Context, exec *driver.Too
 		return fmt.Errorf("failed to get parent run: %w", err)
 	}
 
-	// Create child run (inherit run mode from parent for consistent latency behavior)
+	// Create child run (inherit run mode and variables from parent for consistent behavior)
 	childRun, err := store.CreateRun(ctx, driver.CreateRunParams{
 		SessionID:             parentRun.SessionID,
 		AgentID:               agentID,
 		Prompt:                input.Task,
-		RunMode:               parentRun.RunMode, // Inherit from parent
+		RunMode:               parentRun.RunMode,    // Inherit from parent
 		ParentRunID:           &exec.RunID,
 		ParentToolExecutionID: &exec.ID,
 		Depth:                 parentRun.Depth + 1,
 		CreatedByInstanceID:   w.client.instanceID,
+		Metadata:              parentRun.Metadata,   // Propagate variables to child
 	})
 	if err != nil {
 		return w.completeToolExecution(ctx, exec.ID, "", true, fmt.Sprintf("failed to create child run: %v", err))

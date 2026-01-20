@@ -107,8 +107,8 @@ func main() {
         log.Fatal(err)
     }
 
-    // 6. Run the agent (using agent UUID)
-    response, err := client.RunSync(ctx, sessionID, agent.ID, "What is 2+2?")
+    // 6. Run the agent (using agent UUID, nil for no variables)
+    response, err := client.RunSync(ctx, sessionID, agent.ID, "What is 2+2?", nil)
     if err != nil {
         log.Fatal(err)
     }
@@ -230,7 +230,7 @@ mathAgent, _ := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
 Now the agent can use the calculator:
 
 ```go
-response, _ := client.RunSync(ctx, sessionID, mathAgent.ID, "What is 15 * 7?")
+response, _ := client.RunSync(ctx, sessionID, mathAgent.ID, "What is 15 * 7?", nil)
 // Agent will call calculator(operation="multiply", a=15, b=7)
 // Response: "15 * 7 = 105"
 ```
@@ -244,13 +244,13 @@ AgentPG supports two API modes for different use cases:
 Uses Claude's Batch API with 50% cost savings. Best for background processing.
 
 ```go
-// Async - returns immediately (uses agent UUID)
-runID, _ := client.Run(ctx, sessionID, agent.ID, "Analyze this data...")
+// Async - returns immediately (uses agent UUID, nil for no variables)
+runID, _ := client.Run(ctx, sessionID, agent.ID, "Analyze this data...", nil)
 // Do other work...
 response, _ := client.WaitForRun(ctx, runID)
 
 // Sync - waits for completion
-response, _ := client.RunSync(ctx, sessionID, agent.ID, "Hello!")
+response, _ := client.RunSync(ctx, sessionID, agent.ID, "Hello!", nil)
 ```
 
 ### Streaming API (Real-Time)
@@ -259,11 +259,11 @@ Uses Claude's Streaming API for lower latency. Best for interactive applications
 
 ```go
 // Async (uses agent UUID)
-runID, _ := client.RunFast(ctx, sessionID, agent.ID, "Quick question...")
+runID, _ := client.RunFast(ctx, sessionID, agent.ID, "Quick question...", nil)
 response, _ := client.WaitForRun(ctx, runID)
 
 // Sync (recommended for chat UIs)
-response, _ := client.RunFastSync(ctx, sessionID, agent.ID, "Hello!")
+response, _ := client.RunFastSync(ctx, sessionID, agent.ID, "Hello!", nil)
 ```
 
 | Feature | Batch API | Streaming API |

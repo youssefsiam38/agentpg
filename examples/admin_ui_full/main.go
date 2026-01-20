@@ -551,7 +551,7 @@ func handleCreateDemoSession(w http.ResponseWriter, r *http.Request, client *age
 	}
 
 	// Start a run with the assistant agent
-	runID, err := client.RunFast(ctx, sessionID, assistantAgentID, "Hello! Please introduce yourself and explain what you can help with.")
+	runID, err := client.RunFast(ctx, sessionID, assistantAgentID, "Hello! Please introduce yourself and explain what you can help with.", nil)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create run: %v", err), http.StatusInternalServerError)
 		return

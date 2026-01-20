@@ -82,8 +82,14 @@ sessionID, err := client.NewSession(ctx, nil, map[string]any{
 ### Run
 A `Run` is a single agent invocation. Runs are async by default and can span multiple iterations.
 ```go
-runID, err := client.Run(ctx, sessionID, agent.ID, "Hello!")  // Uses agent UUID
+runID, err := client.Run(ctx, sessionID, agent.ID, "Hello!", nil)  // Uses agent UUID, nil variables
 response, err := client.WaitForRun(ctx, runID)
+
+// With variables (passed to tools via context)
+runID, err := client.Run(ctx, sessionID, agent.ID, "Continue the story", map[string]any{
+    "story_id": "story-123",
+    "user_id":  "user-456",
+})
 ```
 
 ### Iteration
@@ -137,7 +143,7 @@ func main() {
     if err != nil { log.Fatal(err) }
 
     sessionID, _ := client.NewSession(ctx, nil, nil)
-    response, err := client.RunSync(ctx, sessionID, agent.ID, "What is 2+2?")
+    response, err := client.RunSync(ctx, sessionID, agent.ID, "What is 2+2?", nil)
     if err != nil { log.Fatal(err) }
     fmt.Println(response.Text)
 }
@@ -326,7 +332,7 @@ fullAgent, _ := client.CreateAgent(ctx, &agentpg.AgentDefinition{
 })
 
 // Step 4: Run using agent UUID
-response, _ := client.RunSync(ctx, sessionID, mathAgent.ID, "What is 2+2?")
+response, _ := client.RunSync(ctx, sessionID, mathAgent.ID, "What is 2+2?", nil)
 ```
 
 **Important**: An agent can only use tools that are registered on the client instance AND listed in the agent's `Tools` array.
@@ -386,6 +392,81 @@ projectManager, _ := client.CreateAgent(ctx, &agentpg.AgentDefinition{
 
 ---
 
+## Run Variables (Tool Context)
+
+Pass per-run variables to tools via the `variables` parameter. Tools access these via context helpers.
+
+### Passing Variables
+```go
+// Pass variables when creating a run
+response, _ := client.RunSync(ctx, sessionID, agent.ID, "Continue the story", map[string]any{
+    "story_id": "story-123",
+    "user_id":  "user-456",
+    "tenant_id": "tenant-1",
+})
+```
+
+### Accessing Variables in Tools
+```go
+import "github.com/youssefsiam38/agentpg/tool"
+
+type StoryTool struct {
+    db *pgxpool.Pool
+}
+
+func (t *StoryTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    // Get a single variable with type safety
+    storyID, ok := tool.GetVariable[string](ctx, "story_id")
+    if !ok {
+        return "", errors.New("story_id not provided")
+    }
+
+    // Get with default value
+    maxChapters := tool.GetVariableOr[int](ctx, "max_chapters", 10)
+
+    // Get all variables
+    vars := tool.GetVariables(ctx)
+
+    // Get full run context (includes RunID, SessionID)
+    runCtx, ok := tool.GetRunContext(ctx)
+    if ok {
+        fmt.Printf("Run: %s, Session: %s\n", runCtx.RunID, runCtx.SessionID)
+    }
+
+    // Use in database query
+    var content string
+    err := t.db.QueryRow(ctx,
+        "SELECT content FROM chapters WHERE story_id = $1 LIMIT $2",
+        storyID, maxChapters,
+    ).Scan(&content)
+
+    return content, err
+}
+```
+
+### Context Helper Functions
+| Function | Description |
+|----------|-------------|
+| `tool.GetVariable[T](ctx, key)` | Get typed variable, returns (value, ok) |
+| `tool.GetVariableOr[T](ctx, key, default)` | Get variable or default value |
+| `tool.MustGetVariable[T](ctx, key)` | Get variable or panic |
+| `tool.GetVariables(ctx)` | Get all variables as map |
+| `tool.GetRunContext(ctx)` | Get full context (RunID, SessionID, Variables) |
+| `tool.GetRunID(ctx)` | Get just the run ID |
+| `tool.GetSessionID(ctx)` | Get just the session ID |
+
+### Variable Inheritance
+Variables are automatically propagated to child runs in agent-as-tool hierarchies:
+```go
+// Parent run with variables
+response, _ := client.RunSync(ctx, sessionID, manager.ID, "Research topic X", map[string]any{
+    "project_id": "proj-123",
+})
+// When manager delegates to researcher agent, researcher's tools also receive project_id
+```
+
+---
+
 ## Sessions and Runs
 
 ### Creating Sessions
@@ -397,20 +478,27 @@ childSessionID, _ := client.NewSession(ctx, &parentSessionID, nil)  // Child ses
 
 ### Running Agents
 
-All Run methods accept an agent UUID (not name string).
+All Run methods accept an agent UUID (not name string) and an optional variables map.
 
 #### Batch API (Cost-Effective, Higher Latency)
 ```go
-runID, _ := client.Run(ctx, sessionID, agent.ID, "Hello!")  // Async
-response, _ := client.RunSync(ctx, sessionID, agent.ID, "Hello!")  // Convenience
-runID, _ := client.RunTx(ctx, tx, sessionID, agent.ID, "Hello!")  // With transaction
+runID, _ := client.Run(ctx, sessionID, agent.ID, "Hello!", nil)  // Async
+response, _ := client.RunSync(ctx, sessionID, agent.ID, "Hello!", nil)  // Convenience
+runID, _ := client.RunTx(ctx, tx, sessionID, agent.ID, "Hello!", nil)  // With transaction
 ```
 
 #### Streaming API (Real-Time, Lower Latency)
 ```go
-runID, _ := client.RunFast(ctx, sessionID, agent.ID, "Hello!")  // Async
-response, _ := client.RunFastSync(ctx, sessionID, agent.ID, "Hello!")  // Recommended for interactive
-runID, _ := client.RunFastTx(ctx, tx, sessionID, agent.ID, "Hello!")  // With transaction
+runID, _ := client.RunFast(ctx, sessionID, agent.ID, "Hello!", nil)  // Async
+response, _ := client.RunFastSync(ctx, sessionID, agent.ID, "Hello!", nil)  // Recommended for interactive
+runID, _ := client.RunFastTx(ctx, tx, sessionID, agent.ID, "Hello!", nil)  // With transaction
+```
+
+#### With Variables
+```go
+// Variables are passed to tools via context during execution
+vars := map[string]any{"story_id": "story-123", "tenant_id": "tenant-1"}
+response, _ := client.RunSync(ctx, sessionID, agent.ID, "Continue the story", vars)
 ```
 
 | Feature | Batch API (`Run*`) | Streaming API (`RunFast*`) |
@@ -446,7 +534,8 @@ func CreateOrderWithNotification(ctx context.Context, client *agentpg.Client, po
     orderID, _ := insertOrder(ctx, tx, order)
     sessionID, _ := client.NewSessionTx(ctx, tx, nil, map[string]any{"order_id": orderID})
     runID, _ := client.RunTx(ctx, tx, sessionID, agentID,  // Use agent UUID
-        fmt.Sprintf("Process order %s: %v", orderID, order))
+        fmt.Sprintf("Process order %s: %v", orderID, order),
+        map[string]any{"order_id": orderID})  // Variables for tools
 
     tx.Commit(ctx)  // Commit first
     client.WaitForRun(ctx, runID)  // Then wait
@@ -717,7 +806,7 @@ func TestAgentRun(t *testing.T) {
     })
 
     sessionID, _ := client.NewSession(ctx, nil, nil)
-    response, err := client.RunSync(ctx, sessionID, agent.ID, "Say OK")
+    response, err := client.RunSync(ctx, sessionID, agent.ID, "Say OK", nil)
     require.NoError(t, err)
     assert.Contains(t, response.Text, "OK")
 }
@@ -793,8 +882,9 @@ See [Go documentation](https://pkg.go.dev/github.com/youssefsiam38/agentpg).
 - `RegisterTool()` - Tool registration (before Start)
 - `CreateAgent()`, `GetOrCreateAgent()`, `GetAgentByID()`, `GetAgentByName()`, `ListAgents()`, `UpdateAgent()`, `DeleteAgent()` - Agent management (after Start)
 - `NewSession()`, `NewSessionTx()` - Create sessions
-- `Run()`, `RunTx()`, `RunSync()` - Execute agents (Batch API, takes agent UUID)
-- `RunFast()`, `RunFastTx()`, `RunFastSync()` - Execute agents (Streaming API, takes agent UUID)
+- `Run()`, `RunTx()`, `RunSync()` - Execute agents (Batch API, takes agent UUID and variables)
+- `RunFast()`, `RunFastTx()`, `RunFastSync()` - Execute agents (Streaming API, takes agent UUID and variables)
+- `tool.GetVariable()`, `tool.GetVariableOr()`, `tool.GetRunContext()` - Access run variables in tools
 - `WaitForRun()`, `GetRun()`, `GetSession()` - Query state
 - `Compact()`, `CompactWithConfig()`, `CompactIfNeeded()` - Manual compaction
 - `NeedsCompaction()`, `GetCompactionStats()` - Compaction queries

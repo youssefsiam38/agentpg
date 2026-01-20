@@ -11,8 +11,9 @@ Tools allow agents to perform actions, access external services, and interact wi
 5. [Error Handling](#error-handling)
 6. [Retry Configuration](#retry-configuration)
 7. [Database-Aware Tools](#database-aware-tools)
-8. [Best Practices](#best-practices)
-9. [Examples](#examples)
+8. [Run Variables (Tool Context)](#run-variables-tool-context)
+9. [Best Practices](#best-practices)
+10. [Examples](#examples)
 
 ---
 
@@ -422,6 +423,98 @@ func (t *UserLookupTool) Execute(ctx context.Context, input json.RawMessage) (st
 
 // Register with database connection
 client.RegisterTool(NewUserLookupTool(pool))
+```
+
+---
+
+## Run Variables (Tool Context)
+
+Tools can access per-run variables passed when creating a run. This is useful for passing context like `storyId`, `tenantId`, `userId`, etc. without hardcoding them in the tool.
+
+### Passing Variables
+
+Variables are passed as the last parameter to Run methods:
+
+```go
+// Pass variables when creating a run
+response, _ := client.RunSync(ctx, sessionID, agent.ID, "Continue the story", map[string]any{
+    "story_id":  "story-123",
+    "tenant_id": "tenant-1",
+    "user_id":   "user-456",
+})
+
+// Without variables, pass nil
+response, _ := client.RunSync(ctx, sessionID, agent.ID, "Hello!", nil)
+```
+
+### Accessing Variables in Tools
+
+Use the `tool` package helpers to access variables:
+
+```go
+import "github.com/youssefsiam38/agentpg/tool"
+
+type StoryTool struct {
+    db *pgxpool.Pool
+}
+
+func (t *StoryTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    // Get a typed variable (returns value, ok)
+    storyID, ok := tool.GetVariable[string](ctx, "story_id")
+    if !ok {
+        return "", errors.New("story_id not provided in run variables")
+    }
+
+    // Get with default value
+    maxChapters := tool.GetVariableOr[int](ctx, "max_chapters", 10)
+
+    // Get or panic (use when variable is guaranteed)
+    tenantID := tool.MustGetVariable[string](ctx, "tenant_id")
+
+    // Get all variables
+    vars := tool.GetVariables(ctx)
+
+    // Get full run context
+    runCtx, ok := tool.GetRunContext(ctx)
+    if ok {
+        fmt.Printf("Run: %s, Session: %s\n", runCtx.RunID, runCtx.SessionID)
+    }
+
+    // Use in database query
+    var content string
+    err := t.db.QueryRow(ctx,
+        "SELECT content FROM chapters WHERE story_id = $1 AND tenant_id = $2 LIMIT $3",
+        storyID, tenantID, maxChapters,
+    ).Scan(&content)
+
+    return content, err
+}
+```
+
+### Context Helper Functions
+
+| Function | Description |
+|----------|-------------|
+| `tool.GetVariable[T](ctx, key)` | Get typed variable, returns `(value, ok)` |
+| `tool.GetVariableOr[T](ctx, key, default)` | Get variable or return default value |
+| `tool.MustGetVariable[T](ctx, key)` | Get variable or panic if not found |
+| `tool.GetVariables(ctx)` | Get all variables as `map[string]any` |
+| `tool.GetRunContext(ctx)` | Get full context (RunID, SessionID, Variables) |
+| `tool.GetRunID(ctx)` | Get just the run ID |
+| `tool.GetSessionID(ctx)` | Get just the session ID |
+
+### Variable Inheritance
+
+Variables are automatically propagated to child runs in agent-as-tool hierarchies:
+
+```go
+// Parent run with variables
+response, _ := client.RunSync(ctx, sessionID, manager.ID, "Research topic X", map[string]any{
+    "project_id": "proj-123",
+})
+
+// When manager delegates to researcher agent via AgentIDs,
+// the researcher's tools also receive project_id
 ```
 
 ---

@@ -194,7 +194,7 @@ func main() {
 
 	// Run the agent with a math question
 	log.Println("\n--- Running agent with math question ---")
-	response, err := client.RunSync(ctx, sessionID, chatAgent.ID, "What is 42 * 17?")
+	response, err := client.RunSync(ctx, sessionID, chatAgent.ID, "What is 42 * 17?", nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -213,7 +213,7 @@ func main() {
 
 	// Continue the conversation
 	log.Println("\n--- Continuing conversation ---")
-	response, err = client.RunSync(ctx, sessionID, chatAgent.ID, "Now divide that result by 7")
+	response, err = client.RunSync(ctx, sessionID, chatAgent.ID, "Now divide that result by 7", nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

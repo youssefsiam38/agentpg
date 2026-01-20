@@ -243,6 +243,39 @@ JOIN agentpg_sessions s ON r.session_id = s.id
 WHERE s.metadata->>'request_id' = 'req-123';
 ```
 
+### Run Variables (Tool Context)
+
+Pass dynamic variables to tools at runtime:
+
+```go
+// Pass variables when creating a run
+response, _ := client.RunSync(ctx, sessionID, agent.ID, "Continue the story", map[string]any{
+    "story_id":  "story-123",
+    "tenant_id": "tenant-1",
+    "user_id":   "user-456",
+})
+
+// Access variables in tools
+func (t *StoryTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    storyID, ok := tool.GetVariable[string](ctx, "story_id")
+    if !ok {
+        return "", errors.New("story_id required")
+    }
+
+    maxChapters := tool.GetVariableOr[int](ctx, "max_chapters", 10)
+    runID, _ := tool.GetRunID(ctx)
+    sessionID, _ := tool.GetSessionID(ctx)
+
+    return t.processStory(storyID, maxChapters), nil
+}
+```
+
+**Key features:**
+- Variables are passed as the last parameter to all `Run*()` functions
+- Use `nil` when no variables are needed
+- Variables are automatically propagated to child runs (agent-as-tool)
+- Type-safe access via `tool.GetVariable[T]()`, `tool.GetVariableOr[T]()`, `tool.MustGetVariable[T]()`
+
 ---
 
 ## Tool Error Handling
@@ -481,7 +514,7 @@ client.CompactWithConfig(ctx, sessionID, &compaction.Config{
 
 ### For Application Context
 
-Use metadata fields on sessions, runs, and messages:
+Use metadata fields on sessions for queryable data:
 
 ```go
 client.NewSession(ctx, nil, map[string]any{
@@ -489,6 +522,16 @@ client.NewSession(ctx, nil, map[string]any{
     "user_id":        "my-user",
     "correlation_id": requestID,
     "user_metadata":  userInfo,
+})
+```
+
+Use run variables for dynamic tool context:
+
+```go
+// Pass per-run variables that tools can access
+response, _ := client.RunSync(ctx, sessionID, agent.ID, prompt, map[string]any{
+    "story_id":    storyID,
+    "max_chapters": 10,
 })
 ```
 

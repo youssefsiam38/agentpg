@@ -359,7 +359,7 @@ func main() {
 
 	// Example 1: Create task with all fields
 	fmt.Println("=== Example 1: Full Task Creation ===")
-	response1, err := client.RunFastSync(ctx, sessionID, agent.ID, `Create a high priority task called "Implement user authentication" with score 85, tags ["security", "backend", "urgent"], and assign it to John Smith (john@example.com). Add a description about implementing OAuth2.`)
+	response1, err := client.RunFastSync(ctx, sessionID, agent.ID, `Create a high priority task called "Implement user authentication" with score 85, tags ["security", "backend", "urgent"], and assign it to John Smith (john@example.com). Add a description about implementing OAuth2.`, nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -372,7 +372,7 @@ func main() {
 
 	// Example 2: Create minimal task (only required fields)
 	fmt.Println("\n=== Example 2: Minimal Task ===")
-	response2, err := client.RunFastSync(ctx, sessionID, agent.ID, `Create a low priority task called "Update documentation"`)
+	response2, err := client.RunFastSync(ctx, sessionID, agent.ID, `Create a low priority task called "Update documentation"`, nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -385,7 +385,7 @@ func main() {
 
 	// Example 3: Create critical task with array of tags
 	fmt.Println("\n=== Example 3: Critical Task with Tags ===")
-	response3, err := client.RunFastSync(ctx, sessionID, agent.ID, `Create a critical priority task "Fix production database issue" with score 100 and tags ["production", "database", "emergency"]`)
+	response3, err := client.RunFastSync(ctx, sessionID, agent.ID, `Create a critical priority task "Fix production database issue" with score 100 and tags ["production", "database", "emergency"]`, nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -398,7 +398,7 @@ func main() {
 
 	// Example 4: List all tasks
 	fmt.Println("\n=== Example 4: List All Tasks ===")
-	response4, err := client.RunFastSync(ctx, sessionID, agent.ID, "Show me all the tasks we've created")
+	response4, err := client.RunFastSync(ctx, sessionID, agent.ID, "Show me all the tasks we've created", nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -411,7 +411,7 @@ func main() {
 
 	// Example 5: Filter by priority
 	fmt.Println("\n=== Example 5: Filter by Priority ===")
-	response5, err := client.RunFastSync(ctx, sessionID, agent.ID, "List only the critical priority tasks")
+	response5, err := client.RunFastSync(ctx, sessionID, agent.ID, "List only the critical priority tasks", nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

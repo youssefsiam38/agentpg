@@ -498,7 +498,7 @@ func (c *Client[TTx]) GetSession(ctx context.Context, id uuid.UUID) (*Session, e
 // Run creates a new asynchronous agent run and returns immediately.
 // Use WaitForRun to wait for completion.
 // The agentID must reference an agent that exists in the database.
-func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error) {
+func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (uuid.UUID, error) {
 	c.mu.RLock()
 	started := c.started
 	c.mu.RUnlock()
@@ -513,6 +513,7 @@ func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentID uuid
 		Prompt:              prompt,
 		Depth:               0,
 		CreatedByInstanceID: c.instanceID,
+		Metadata:            variables,
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create run: %w", err)
@@ -524,7 +525,8 @@ func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentID uuid
 // RunTx creates a new asynchronous agent run within a transaction.
 // The run won't be visible to workers until the transaction commits.
 // The agentID must reference an agent that exists in the database.
-func (c *Client[TTx]) RunTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error) {
+// Variables are passed to tools via context during execution.
+func (c *Client[TTx]) RunTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (uuid.UUID, error) {
 	c.mu.RLock()
 	started := c.started
 	c.mu.RUnlock()
@@ -539,6 +541,7 @@ func (c *Client[TTx]) RunTx(ctx context.Context, tx TTx, sessionID uuid.UUID, ag
 		Prompt:              prompt,
 		Depth:               0,
 		CreatedByInstanceID: c.instanceID,
+		Metadata:            variables,
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create run: %w", err)
@@ -646,8 +649,9 @@ func (c *Client[TTx]) WaitForRun(ctx context.Context, runID uuid.UUID) (*Respons
 // RunSync creates a run and waits for completion. This is a convenience wrapper
 // around Run and WaitForRun.
 // Note: Do not use RunSync inside a transaction as it will deadlock.
-func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (*Response, error) {
-	runID, err := c.Run(ctx, sessionID, agentID, prompt)
+// Variables are passed to tools via context during execution.
+func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (*Response, error) {
+	runID, err := c.Run(ctx, sessionID, agentID, prompt, variables)
 	if err != nil {
 		return nil, err
 	}
@@ -659,7 +663,8 @@ func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentID 
 // This provides faster response times compared to the batch API.
 // Use WaitForRun to wait for completion.
 // The agentID must reference an agent that exists in the database.
-func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error) {
+// Variables are passed to tools via context during execution.
+func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (uuid.UUID, error) {
 	c.mu.RLock()
 	started := c.started
 	c.mu.RUnlock()
@@ -675,6 +680,7 @@ func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentID 
 		RunMode:             string(RunModeStreaming),
 		Depth:               0,
 		CreatedByInstanceID: c.instanceID,
+		Metadata:            variables,
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create streaming run: %w", err)
@@ -686,7 +692,8 @@ func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentID 
 // RunFastTx creates a new asynchronous agent run using the streaming API within a transaction.
 // The run won't be visible to workers until the transaction commits.
 // The agentID must reference an agent that exists in the database.
-func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error) {
+// Variables are passed to tools via context during execution.
+func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (uuid.UUID, error) {
 	c.mu.RLock()
 	started := c.started
 	c.mu.RUnlock()
@@ -702,6 +709,7 @@ func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID
 		RunMode:             string(RunModeStreaming),
 		Depth:               0,
 		CreatedByInstanceID: c.instanceID,
+		Metadata:            variables,
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create streaming run: %w", err)
@@ -713,8 +721,9 @@ func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID
 // RunFastSync creates a streaming run and waits for completion.
 // This is a convenience wrapper around RunFast and WaitForRun.
 // Note: Do not use RunFastSync inside a transaction as it will deadlock.
-func (c *Client[TTx]) RunFastSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (*Response, error) {
-	runID, err := c.RunFast(ctx, sessionID, agentID, prompt)
+// Variables are passed to tools via context during execution.
+func (c *Client[TTx]) RunFastSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (*Response, error) {
+	runID, err := c.RunFast(ctx, sessionID, agentID, prompt, variables)
 	if err != nil {
 		return nil, err
 	}

@@ -347,7 +347,7 @@ func fibonacci(n int) int {
     return fibonacci(n-1) + fibonacci(n-2)
 }
 `
-	response1, err := client.RunSync(ctx, sessionID, orchestrator.ID, codeQuestion)
+	response1, err := client.RunSync(ctx, sessionID, orchestrator.ID, codeQuestion, nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -362,7 +362,7 @@ func fibonacci(n int) int {
 	// Example 2: Data question (Data Agent)
 	// ==========================================================
 	fmt.Println("\n=== Example 2: Data Analysis ===")
-	response2, err := client.RunSync(ctx, sessionID, orchestrator.ID, "What are our total sales and how many users do we have?")
+	response2, err := client.RunSync(ctx, sessionID, orchestrator.ID, "What are our total sales and how many users do we have?", nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -377,7 +377,7 @@ func fibonacci(n int) int {
 	// Example 3: Research question (Research Agent)
 	// ==========================================================
 	fmt.Println("\n=== Example 3: Research Query ===")
-	response3, err := client.RunSync(ctx, sessionID, orchestrator.ID, "Research best practices for API design")
+	response3, err := client.RunSync(ctx, sessionID, orchestrator.ID, "Research best practices for API design", nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -392,7 +392,7 @@ func fibonacci(n int) int {
 	// Example 4: Multi-specialist question
 	// ==========================================================
 	fmt.Println("\n=== Example 4: Multi-Specialist Query ===")
-	response4, err := client.RunSync(ctx, sessionID, orchestrator.ID, "I'm building a new feature. Research best practices for user authentication, and also check our current user metrics to see how many users we have.")
+	response4, err := client.RunSync(ctx, sessionID, orchestrator.ID, "I'm building a new feature. Research best practices for user authentication, and also check our current user metrics to see how many users we have.", nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

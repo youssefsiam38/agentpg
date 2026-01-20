@@ -167,7 +167,7 @@ func main() {
 	log.Println("--- Starting request ---")
 	start := time.Now()
 
-	response, err := client.RunFastSync(ctx, sessionID, agent.ID, "Call the external API endpoint '/users'")
+	response, err := client.RunFastSync(ctx, sessionID, agent.ID, "Call the external API endpoint '/users'", nil)
 	elapsed := time.Since(start)
 
 	if err != nil {

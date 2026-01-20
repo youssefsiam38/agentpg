@@ -176,7 +176,7 @@ Retrieves session by ID.
 #### Run
 
 ```go
-func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error)
+func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (uuid.UUID, error)
 ```
 
 Creates async run using Claude Batch API. Returns immediately with run ID.
@@ -186,11 +186,12 @@ Creates async run using Claude Batch API. Returns immediately with run ID.
 | `sessionID` | Session UUID |
 | `agentID` | Agent UUID (from `GetOrCreateAgent`) |
 | `prompt` | User message |
+| `variables` | Per-run variables accessible to tools via context (or `nil`) |
 
 #### RunTx
 
 ```go
-func (c *Client[TTx]) RunTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error)
+func (c *Client[TTx]) RunTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (uuid.UUID, error)
 ```
 
 Creates run within transaction. Run not visible to workers until transaction commits.
@@ -198,7 +199,7 @@ Creates run within transaction. Run not visible to workers until transaction com
 #### RunSync
 
 ```go
-func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (*Response, error)
+func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (*Response, error)
 ```
 
 Convenience wrapper: creates run and waits for completion. **Do NOT use inside transaction (deadlock risk).**
@@ -212,7 +213,7 @@ Real-time responses, standard pricing. Best for interactive applications.
 #### RunFast
 
 ```go
-func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error)
+func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (uuid.UUID, error)
 ```
 
 Creates async run using Claude Streaming API. Returns immediately with run ID.
@@ -220,7 +221,7 @@ Creates async run using Claude Streaming API. Returns immediately with run ID.
 #### RunFastTx
 
 ```go
-func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (uuid.UUID, error)
+func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (uuid.UUID, error)
 ```
 
 Creates streaming run within transaction.
@@ -228,7 +229,7 @@ Creates streaming run within transaction.
 #### RunFastSync
 
 ```go
-func (c *Client[TTx]) RunFastSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string) (*Response, error)
+func (c *Client[TTx]) RunFastSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (*Response, error)
 ```
 
 Convenience wrapper for streaming. Recommended for interactive applications.
@@ -928,6 +929,58 @@ type ToolResult struct {
     ToolUseID string  // ID from tool_use block
     Content   string  // Tool output text
     IsError   bool    // Execution failed
+}
+```
+
+### Run Context Helpers
+
+Tools can access per-run variables and context information using these helpers:
+
+```go
+// RunContext contains run information passed to tools
+type RunContext struct {
+    RunID     uuid.UUID
+    SessionID uuid.UUID
+    Variables map[string]any
+}
+
+// Context enrichment (used internally by tool_worker)
+func WithRunContext(ctx context.Context, rc RunContext) context.Context
+
+// Get full run context
+func GetRunContext(ctx context.Context) (RunContext, bool)
+
+// Type-safe variable access
+func GetVariable[T any](ctx context.Context, key string) (T, bool)
+func GetVariableOr[T any](ctx context.Context, key string, defaultValue T) T
+func MustGetVariable[T any](ctx context.Context, key string) T  // Panics if not found
+
+// Get all variables
+func GetVariables(ctx context.Context) map[string]any
+
+// Convenience getters
+func GetRunID(ctx context.Context) (uuid.UUID, bool)
+func GetSessionID(ctx context.Context) (uuid.UUID, bool)
+```
+
+**Usage in tools:**
+
+```go
+func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    // Get typed variable
+    storyID, ok := tool.GetVariable[string](ctx, "story_id")
+    if !ok {
+        return "", errors.New("story_id required")
+    }
+
+    // Get with default
+    maxItems := tool.GetVariableOr[int](ctx, "max_items", 10)
+
+    // Get run/session IDs
+    runID, _ := tool.GetRunID(ctx)
+    sessionID, _ := tool.GetSessionID(ctx)
+
+    return fmt.Sprintf("Processing story %s in run %s", storyID, runID), nil
 }
 ```
 

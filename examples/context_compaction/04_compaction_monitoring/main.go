@@ -241,7 +241,7 @@ func main() {
 		fmt.Printf("\n--- Query %d/%d ---\n", i+1, len(prompts))
 		fmt.Printf("Prompt: %s\n", truncate(prompt, 60))
 
-		response, err := client.RunFastSync(ctx, sessionID, agent.ID, prompt)
+		response, err := client.RunFastSync(ctx, sessionID, agent.ID, prompt, nil)
 		if err != nil {
 			log.Fatalf("Failed to run agent: %v", err)
 		}

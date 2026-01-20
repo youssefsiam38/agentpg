@@ -201,7 +201,7 @@ func main() {
 
 	start := time.Now()
 	response, err := client.RunFastSync(ctx, sessionID, agent.ID,
-		"Fetch the user profile from the database, the cache, and the API. The query for all should be 'user-123'. Call all three fetch_data tools in your response.")
+		"Fetch the user profile from the database, the cache, and the API. The query for all should be 'user-123'. Call all three fetch_data tools in your response.", nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

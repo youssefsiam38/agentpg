@@ -369,7 +369,7 @@ When given a task:
 	// ==========================================================
 	fmt.Println("=== Example 1: Full Project Status ===")
 	response1, err := client.RunFastSync(ctx, sessionID, projectManager.ID,
-		"I need a complete status update on the user authentication feature. Check with engineering on code quality and tests, and with design on the login page accessibility.")
+		"I need a complete status update on the user authentication feature. Check with engineering on code quality and tests, and with design on the login page accessibility.", nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -389,7 +389,7 @@ When given a task:
 	// ==========================================================
 	fmt.Println("\n=== Example 2: Engineering Focus ===")
 	response2, err := client.RunFastSync(ctx, sessionID, projectManager.ID,
-		"We need to deploy a database migration and ensure all backend tests pass. Please coordinate with the engineering team.")
+		"We need to deploy a database migration and ensure all backend tests pass. Please coordinate with the engineering team.", nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}
@@ -409,7 +409,7 @@ When given a task:
 	// ==========================================================
 	fmt.Println("\n=== Example 3: Design Focus ===")
 	response3, err := client.RunFastSync(ctx, sessionID, projectManager.ID,
-		"Please have the design team review the new dashboard component for accessibility compliance.")
+		"Please have the design team review the new dashboard component for accessibility compliance.", nil)
 	if err != nil {
 		log.Fatalf("Failed to run agent: %v", err)
 	}

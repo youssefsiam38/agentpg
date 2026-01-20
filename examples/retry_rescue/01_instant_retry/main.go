@@ -139,7 +139,7 @@ func main() {
 	log.Println("")
 
 	start := time.Now()
-	response, err := client.RunFastSync(ctx, sessionID, agent.ID, "Query the service for 'weather forecast' once, never retry, if it fails. if it succeeds, provide the result.")
+	response, err := client.RunFastSync(ctx, sessionID, agent.ID, "Query the service for 'weather forecast' once, never retry, if it fails. if it succeeds, provide the result.", nil)
 	elapsed := time.Since(start)
 
 	if err != nil {

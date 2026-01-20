@@ -250,10 +250,15 @@ Executes tool calls from agent responses.
 
 **Flow:**
 1. Claims pending tool executions
-2. For regular tools: calls `tool.Execute()`
-3. For agent tools: creates child run and waits
+2. For regular tools: calls `tool.Execute()` with enriched context
+3. For agent tools: creates child run (inherits parent's variables) and waits
 4. Marks execution as completed/failed
 5. When all tools done: creates tool_result message
+
+**Context Enrichment:**
+- Tools receive run context via `tool.GetVariable()`, `tool.GetRunID()`, etc.
+- Variables passed to `Run()` are available to all tools in that run
+- Child runs (agent-as-tool) inherit variables from parent run
 
 ### Batch Poller
 

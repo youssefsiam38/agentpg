@@ -194,7 +194,7 @@ func main() {
 		log.Printf("\n--- Demo: %s ---\n", demo.name)
 		apiTool.callCount = 0
 
-		response, err := client.RunFastSync(ctx, sessionID, agent.ID, demo.prompt)
+		response, err := client.RunFastSync(ctx, sessionID, agent.ID, demo.prompt, nil)
 		if err != nil {
 			log.Printf("Error: %v", err)
 		} else {

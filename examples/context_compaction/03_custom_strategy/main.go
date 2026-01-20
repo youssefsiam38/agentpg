@@ -219,7 +219,7 @@ func runConversation(ctx context.Context, client *agentpg.Client[pgx.Tx], sessio
 	for i, topic := range topics {
 		fmt.Printf("\nQuery %d: %s\n", i+1, topic)
 
-		response, err := client.RunFastSync(ctx, sessionID, agentID, topic)
+		response, err := client.RunFastSync(ctx, sessionID, agentID, topic, nil)
 		if err != nil {
 			log.Printf("Failed to run agent: %v", err)
 			continue

@@ -657,7 +657,7 @@ func (rt *router[TTx]) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use streaming API for lower latency
-	runID, err := rt.client.RunFast(r.Context(), sessionID, agent.ID, message)
+	runID, err := rt.client.RunFast(r.Context(), sessionID, agent.ID, message, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

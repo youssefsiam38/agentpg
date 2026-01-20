@@ -396,7 +396,7 @@ client.Start(ctx)
 
 // Long conversation...
 for i := 0; i < 100; i++ {
-    response, _ := client.RunSync(ctx, sessionID, "assistant", userPrompt)
+    response, _ := client.RunSync(ctx, sessionID, agent.ID, userPrompt, nil)
     // Auto-compaction triggers when threshold exceeded
 }
 ```
