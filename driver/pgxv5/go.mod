@@ -7,7 +7,7 @@ toolchain go1.25.4
 require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.6
-	github.com/youssefsiam38/agentpg v0.0.0
+	github.com/youssefsiam38/agentpg v0.2.1
 )
 
 require (
@@ -18,5 +18,3 @@ require (
 	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/text v0.27.0 // indirect
 )
-
-replace github.com/youssefsiam38/agentpg => ../..
