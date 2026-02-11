@@ -90,7 +90,7 @@ func (rt *router[TTx]) logError(msg string, err error) {
 // Main page handlers
 
 func (rt *router[TTx]) handleRedirectToDashboard(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/dashboard", http.StatusTemporaryRedirect)
+	http.Redirect(w, r, rt.config.BasePath+"/dashboard", http.StatusTemporaryRedirect)
 }
 
 func (rt *router[TTx]) handleDashboard(w http.ResponseWriter, r *http.Request) {
