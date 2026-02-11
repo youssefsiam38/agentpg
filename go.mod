@@ -10,8 +10,8 @@ require (
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/lib/pq v1.10.9
 	github.com/microcosm-cc/bluemonday v1.0.27
-	github.com/youssefsiam38/agentpg/driver/databasesql v0.2.1
-	github.com/youssefsiam38/agentpg/driver/pgxv5 v0.2.1
+	github.com/youssefsiam38/agentpg/driver/databasesql v0.2.2
+	github.com/youssefsiam38/agentpg/driver/pgxv5 v0.2.2
 	github.com/yuin/goldmark v1.7.13
 	golang.org/x/crypto v0.40.0
 )
