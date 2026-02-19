@@ -108,6 +108,26 @@ go get github.com/youssefsiam38/agentpg
 psql $DATABASE_URL -f storage/migrations/001_agentpg_migration.up.sql
 ```
 
+### Sub-Modules
+
+AgentPG is a **multi-module repository** with 3 sub-modules that have their own `go.mod`. Each is imported separately to keep dependencies optional:
+
+| Module | Import Path | Purpose |
+|--------|-------------|---------|
+| `driver/pgxv5` | `github.com/youssefsiam38/agentpg/driver/pgxv5` | pgx/v5 database driver (recommended) |
+| `driver/databasesql` | `github.com/youssefsiam38/agentpg/driver/databasesql` | database/sql driver |
+| `mcp` | `github.com/youssefsiam38/agentpg/mcp` | MCP server tool integration |
+
+Each sub-module is tagged and versioned independently (e.g., `driver/pgxv5/v0.2.3`, `mcp/v0.2.3`). All sub-modules depend on the root `github.com/youssefsiam38/agentpg` module for the `tool` package and driver interfaces.
+
+```bash
+# Install a driver (required — pick one)
+go get github.com/youssefsiam38/agentpg/driver/pgxv5
+
+# Install MCP support (optional)
+go get github.com/youssefsiam38/agentpg/mcp
+```
+
 ### Basic Example
 ```go
 package main
@@ -209,7 +229,8 @@ type AgentDefinition struct {
 agent, err := client.CreateAgent(ctx, &agentpg.AgentDefinition{...})
 fmt.Println(agent.ID)  // uuid.UUID
 
-// Get or create (idempotent) - returns existing or creates new
+// Get or create (idempotent upsert) - creates if new, updates if exists
+// Safe to call on every startup: updates tools, model, system prompt, etc. to match the definition.
 agent, err := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
     Name:  "assistant",
     Model: "claude-sonnet-4-5-20250929",
@@ -336,6 +357,148 @@ response, _ := client.RunSync(ctx, sessionID, mathAgent.ID, "What is 2+2?", nil)
 ```
 
 **Important**: An agent can only use tools that are registered on the client instance AND listed in the agent's `Tools` array.
+
+---
+
+## MCP Server Tools
+
+Register tools from external [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) servers. The `mcp` sub-module discovers tools automatically and bridges them into AgentPG's `tool.Tool` interface.
+
+### Installation
+```bash
+go get github.com/youssefsiam38/agentpg/mcp
+```
+
+```go
+import agentmcp "github.com/youssefsiam38/agentpg/mcp"
+```
+
+### Basic Usage (Stdio Transport)
+```go
+// Register MCP server (before client.Start)
+mcpServer, err := agentmcp.RegisterServer(ctx, client, &agentmcp.MCPServerConfig{
+    Name: "github",
+    Stdio: &agentmcp.StdioTransportConfig{
+        Command: "npx",
+        Args:    []string{"-y", "@modelcontextprotocol/server-github"},
+        Env:     []string{"GITHUB_PERSONAL_ACCESS_TOKEN=" + token},
+    },
+    ToolFilter: func(name string) bool {
+        return name == "search_repositories" || name == "get_file_contents"
+    },
+})
+if err != nil { log.Fatal(err) }
+defer mcpServer.Close()
+
+// Inspect discovered tools
+for _, t := range mcpServer.Tools() {
+    fmt.Printf("%s - %s\n", t.Name(), t.Description())
+}
+
+// Start client (syncs local + MCP tools to database)
+client.Start(ctx)
+
+// Collect tool names for agent
+var toolNames []string
+for _, t := range mcpServer.Tools() {
+    toolNames = append(toolNames, t.Name())
+}
+
+agent, _ := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
+    Name:  "github-assistant",
+    Model: "claude-sonnet-4-5-20250929",
+    Tools: toolNames,  // e.g. ["github__search_repositories", "github__get_file_contents"]
+})
+```
+
+### HTTP Transport
+```go
+mcpServer, err := agentmcp.RegisterServer(ctx, client, &agentmcp.MCPServerConfig{
+    Name: "api",
+    HTTP: &agentmcp.HTTPTransportConfig{
+        URL: "https://mcp-server.internal/mcp",
+        HeaderFunc: func() (map[string]string, error) {
+            token, err := oauthProvider.FreshToken()
+            return map[string]string{"Authorization": "Bearer " + token}, err
+        },
+    },
+})
+defer mcpServer.Close()
+```
+
+### Tool Namespacing
+
+Tools are prefixed with `{serverName}__{toolName}` by default:
+- `github` server, `search_code` tool → `github__search_code`
+- `fs` server, `read_file` tool → `fs__read_file`
+
+Set `DisableToolPrefix: true` to use original names (risk of collision).
+
+### Authentication Options
+
+| Method | Use Case |
+|--------|----------|
+| `StdioTransportConfig.Env` | Pass API keys/tokens as env vars to subprocess |
+| `HTTPTransportConfig.Headers` | Static auth headers (e.g., `{"Authorization": "Bearer xxx"}`) |
+| `HTTPTransportConfig.HeaderFunc` | Dynamic/rotating tokens (called before each request) |
+| `HTTPTransportConfig.HTTPClient` | Full control: mTLS, custom RoundTripper, timeouts |
+
+### Configuration Types
+```go
+type MCPServerConfig struct {
+    Name              string                    // Required. Namespace prefix for tools
+    Stdio             *StdioTransportConfig     // Stdio transport (mutually exclusive with HTTP)
+    HTTP              *HTTPTransportConfig      // HTTP transport (mutually exclusive with Stdio)
+    DisableToolPrefix bool                      // Default: false (tools prefixed with Name__)
+    ToolFilter        func(toolName string) bool // Optional: filter which tools to expose
+    Reconnect         *ReconnectConfig          // Optional: auto-reconnect on disconnect
+}
+
+type StdioTransportConfig struct {
+    Command string   // MCP server executable
+    Args    []string // Command arguments
+    Env     []string // Additional env vars (appended to os.Environ())
+    Dir     string   // Working directory
+}
+
+type HTTPTransportConfig struct {
+    URL        string            // MCP server endpoint
+    HTTPClient *http.Client      // Custom HTTP client
+    Headers    map[string]string // Static headers
+    HeaderFunc func() (map[string]string, error) // Dynamic headers (overrides static)
+}
+
+type ReconnectConfig struct {
+    MaxRetries   int           // 0 = unlimited
+    InitialDelay time.Duration // Default: 1s
+    MaxDelay     time.Duration // Default: 30s
+}
+```
+
+### Integration Flow
+```
+1. client := agentpg.NewClient(drv, config)
+2. client.RegisterTool(&LocalTool{})            // Local tools (optional)
+3. mcpServer := agentmcp.RegisterServer(...)    // MCP tools (before Start)
+4. client.Start(ctx)                             // Syncs all tools to database
+5. agent := client.GetOrCreateAgent(ctx, def)   // Agent with MCP tool names
+6. client.RunFastSync(ctx, ...)                  // Agent uses MCP tools transparently
+7. defer mcpServer.Close()                       // Shutdown MCP connection
+```
+
+**Important**: `RegisterServer()` must be called **before** `client.Start()`.
+
+### MCP Error Handling
+
+MCP errors are automatically mapped to AgentPG tool error types:
+
+| MCP Error | AgentPG Mapping | Behavior |
+|-----------|-----------------|----------|
+| Connection refused/timeout/EOF | `tool.ToolSnooze(10s)` | Retry after delay |
+| Rate limited (429) | `tool.ToolSnooze(30s)` | Retry after longer delay |
+| Auth errors (401, 403) | `tool.ToolCancel` | No retry |
+| Invalid params | `tool.ToolDiscard` | No retry |
+| MCP `isError: true` result | Returned as tool result text | Claude sees error and adjusts |
 
 ---
 
@@ -880,6 +1043,7 @@ See [Go documentation](https://pkg.go.dev/github.com/youssefsiam38/agentpg).
 ### Key Methods
 - `NewClient()`, `Start()`, `Stop()` - Lifecycle
 - `RegisterTool()` - Tool registration (before Start)
+- `agentmcp.RegisterServer()` - Register MCP server tools (mcp sub-module, before Start)
 - `CreateAgent()`, `GetOrCreateAgent()`, `GetAgentByID()`, `GetAgentByName()`, `ListAgents()`, `UpdateAgent()`, `DeleteAgent()` - Agent management (after Start)
 - `NewSession()`, `NewSessionTx()` - Create sessions
 - `Run()`, `RunTx()`, `RunSync()` - Execute agents (Batch API, takes agent UUID and variables)
