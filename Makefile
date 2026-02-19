@@ -2,7 +2,7 @@
 
 GO_VERSION := 1.24
 GO_TOOLCHAIN := go1.25.4
-GO_MOD_DIRS := . driver/pgxv5 driver/databasesql
+GO_MOD_DIRS := . driver/pgxv5 driver/databasesql mcp
 
 all: lint test build
 

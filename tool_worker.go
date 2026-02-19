@@ -363,9 +363,12 @@ func (w *toolWorker[TTx]) handleAllToolsComplete(ctx context.Context, runID uuid
 		return
 	}
 
-	// Trigger run worker to pick up the run
+	// Trigger run workers to pick up the run
 	if w.client.runWorker != nil {
 		w.client.runWorker.trigger()
+	}
+	if w.client.streamingWorker != nil {
+		w.client.streamingWorker.trigger()
 	}
 }
 

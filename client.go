@@ -278,8 +278,13 @@ func (c *Client[TTx]) GetOrCreateAgent(ctx context.Context, def *AgentDefinition
 	}
 
 	if existing != nil {
-		// Agent exists, return it
-		return convertDriverAgent(existing), nil
+		// Agent exists — update it to match the provided definition
+		def.ID = existing.ID
+		if err := c.UpdateAgent(ctx, def); err != nil {
+			return nil, fmt.Errorf("failed to update existing agent: %w", err)
+		}
+		def.ID = existing.ID
+		return def, nil
 	}
 
 	// Agent doesn't exist, create it

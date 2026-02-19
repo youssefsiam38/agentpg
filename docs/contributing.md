@@ -78,6 +78,12 @@ agentpg/
 │       ├── driver.go
 │       └── store.go
 │
+├── mcp/               # MCP server integration (sub-module)
+│   ├── config.go      # MCPServerConfig, transport configs
+│   ├── server.go      # MCPServer lifecycle, RegisterServer
+│   ├── bridge.go      # MCPTool (tool.Tool adapter), schema conversion
+│   └── errors.go      # Error mapping to tool error types
+│
 ├── tool/              # Tool system
 │   ├── tool.go        # Tool interface
 │   ├── registry.go    # Tool registry

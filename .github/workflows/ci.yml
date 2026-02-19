@@ -87,6 +87,7 @@ jobs:
           - .
           - driver/pgxv5
           - driver/databasesql
+          - mcp
     env:
       GOTOOLCHAIN: local
     permissions:
