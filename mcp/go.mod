@@ -6,7 +6,7 @@ toolchain go1.25.4
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.3.1
-	github.com/youssefsiam38/agentpg v0.2.2
+	github.com/youssefsiam38/agentpg v0.2.3
 )
 
 require (
