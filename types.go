@@ -151,10 +151,30 @@ type Run struct {
 	// Metadata
 	Metadata map[string]any `json:"metadata,omitempty"`
 
+	// Per-run options (instruction overrides)
+	Options *RunOptions `json:"options,omitempty"`
+
 	// Timestamps
 	CreatedAt   time.Time  `json:"created_at"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	FinalizedAt *time.Time `json:"finalized_at,omitempty"`
+}
+
+// RunOptions provides per-run configuration that modifies agent behavior.
+// Instruction overrides do NOT propagate to child runs in agent-as-tool hierarchies.
+// Variables are propagated to child runs.
+type RunOptions struct {
+	// Variables are passed to tools via context during execution.
+	// Accessed in tools using tool.GetVariable, tool.GetVariableOr, etc.
+	Variables map[string]any `json:"variables,omitempty"`
+
+	// OverrideInstructions completely replaces the agent's system prompt for this run.
+	// If set, AppendInstructions is ignored.
+	OverrideInstructions string `json:"override_instructions,omitempty"`
+
+	// AppendInstructions is appended to the agent's system prompt for this run.
+	// Ignored if OverrideInstructions is set.
+	AppendInstructions string `json:"append_instructions,omitempty"`
 }
 
 // Usage returns the cumulative token usage for this run.

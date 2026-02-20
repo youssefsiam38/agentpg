@@ -503,7 +503,8 @@ func (c *Client[TTx]) GetSession(ctx context.Context, id uuid.UUID) (*Session, e
 // Run creates a new asynchronous agent run and returns immediately.
 // Use WaitForRun to wait for completion.
 // The agentID must reference an agent that exists in the database.
-func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (uuid.UUID, error) {
+// Options can provide variables for tools and override/append to the agent's system prompt.
+func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, opts *RunOptions) (uuid.UUID, error) {
 	c.mu.RLock()
 	started := c.started
 	c.mu.RUnlock()
@@ -518,7 +519,8 @@ func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentID uuid
 		Prompt:              prompt,
 		Depth:               0,
 		CreatedByInstanceID: c.instanceID,
-		Metadata:            variables,
+		Metadata:            runOptsVariables(opts),
+		Options:             runOptsToMap(opts),
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create run: %w", err)
@@ -530,8 +532,8 @@ func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentID uuid
 // RunTx creates a new asynchronous agent run within a transaction.
 // The run won't be visible to workers until the transaction commits.
 // The agentID must reference an agent that exists in the database.
-// Variables are passed to tools via context during execution.
-func (c *Client[TTx]) RunTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (uuid.UUID, error) {
+// Options can provide variables for tools and override/append to the agent's system prompt.
+func (c *Client[TTx]) RunTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string, opts *RunOptions) (uuid.UUID, error) {
 	c.mu.RLock()
 	started := c.started
 	c.mu.RUnlock()
@@ -546,7 +548,8 @@ func (c *Client[TTx]) RunTx(ctx context.Context, tx TTx, sessionID uuid.UUID, ag
 		Prompt:              prompt,
 		Depth:               0,
 		CreatedByInstanceID: c.instanceID,
-		Metadata:            variables,
+		Metadata:            runOptsVariables(opts),
+		Options:             runOptsToMap(opts),
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create run: %w", err)
@@ -629,6 +632,7 @@ func (c *Client[TTx]) WaitForRun(ctx context.Context, runID uuid.UUID) (*Respons
 				ClaimedByInstanceID:      finalRun.ClaimedByInstanceID,
 				ClaimedAt:                finalRun.ClaimedAt,
 				Metadata:                 finalRun.Metadata,
+				Options:                  runOptsToMap(finalRun.Options),
 				CreatedAt:                finalRun.CreatedAt,
 				StartedAt:                finalRun.StartedAt,
 				FinalizedAt:              finalRun.FinalizedAt,
@@ -654,9 +658,9 @@ func (c *Client[TTx]) WaitForRun(ctx context.Context, runID uuid.UUID) (*Respons
 // RunSync creates a run and waits for completion. This is a convenience wrapper
 // around Run and WaitForRun.
 // Note: Do not use RunSync inside a transaction as it will deadlock.
-// Variables are passed to tools via context during execution.
-func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (*Response, error) {
-	runID, err := c.Run(ctx, sessionID, agentID, prompt, variables)
+// Options can provide variables for tools and override/append to the agent's system prompt.
+func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, opts *RunOptions) (*Response, error) {
+	runID, err := c.Run(ctx, sessionID, agentID, prompt, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -668,8 +672,8 @@ func (c *Client[TTx]) RunSync(ctx context.Context, sessionID uuid.UUID, agentID 
 // This provides faster response times compared to the batch API.
 // Use WaitForRun to wait for completion.
 // The agentID must reference an agent that exists in the database.
-// Variables are passed to tools via context during execution.
-func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (uuid.UUID, error) {
+// Options can provide variables for tools and override/append to the agent's system prompt.
+func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, opts *RunOptions) (uuid.UUID, error) {
 	c.mu.RLock()
 	started := c.started
 	c.mu.RUnlock()
@@ -685,7 +689,8 @@ func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentID 
 		RunMode:             string(RunModeStreaming),
 		Depth:               0,
 		CreatedByInstanceID: c.instanceID,
-		Metadata:            variables,
+		Metadata:            runOptsVariables(opts),
+		Options:             runOptsToMap(opts),
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create streaming run: %w", err)
@@ -697,8 +702,8 @@ func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentID 
 // RunFastTx creates a new asynchronous agent run using the streaming API within a transaction.
 // The run won't be visible to workers until the transaction commits.
 // The agentID must reference an agent that exists in the database.
-// Variables are passed to tools via context during execution.
-func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (uuid.UUID, error) {
+// Options can provide variables for tools and override/append to the agent's system prompt.
+func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID, agentID uuid.UUID, prompt string, opts *RunOptions) (uuid.UUID, error) {
 	c.mu.RLock()
 	started := c.started
 	c.mu.RUnlock()
@@ -714,7 +719,8 @@ func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID
 		RunMode:             string(RunModeStreaming),
 		Depth:               0,
 		CreatedByInstanceID: c.instanceID,
-		Metadata:            variables,
+		Metadata:            runOptsVariables(opts),
+		Options:             runOptsToMap(opts),
 	})
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create streaming run: %w", err)
@@ -726,9 +732,9 @@ func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID
 // RunFastSync creates a streaming run and waits for completion.
 // This is a convenience wrapper around RunFast and WaitForRun.
 // Note: Do not use RunFastSync inside a transaction as it will deadlock.
-// Variables are passed to tools via context during execution.
-func (c *Client[TTx]) RunFastSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, variables map[string]any) (*Response, error) {
-	runID, err := c.RunFast(ctx, sessionID, agentID, prompt, variables)
+// Options can provide variables for tools and override/append to the agent's system prompt.
+func (c *Client[TTx]) RunFastSync(ctx context.Context, sessionID uuid.UUID, agentID uuid.UUID, prompt string, opts *RunOptions) (*Response, error) {
+	runID, err := c.RunFast(ctx, sessionID, agentID, prompt, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -1220,8 +1226,83 @@ func (c *Client[TTx]) toolMaxAttempts() int {
 
 // Helper functions
 
+// buildSystemPrompt constructs the system prompt for a run, applying run-level instruction overrides.
+// If options contains "override_instructions", it replaces the agent's system prompt entirely.
+// If options contains "append_instructions", it appends to the agent's system prompt.
+// OverrideInstructions takes precedence if both are set.
+func buildSystemPrompt(agent *AgentDefinition, runOptions map[string]any) []anthropic.TextBlockParam {
+	systemPrompt := agent.SystemPrompt
+
+	if runOptions != nil {
+		if override, ok := runOptions["override_instructions"].(string); ok && override != "" {
+			systemPrompt = override
+		} else if appendInstr, ok := runOptions["append_instructions"].(string); ok && appendInstr != "" {
+			if systemPrompt != "" {
+				systemPrompt = systemPrompt + "\n\n" + appendInstr
+			} else {
+				systemPrompt = appendInstr
+			}
+		}
+	}
+
+	if systemPrompt == "" {
+		return nil
+	}
+	return []anthropic.TextBlockParam{
+		{Text: systemPrompt},
+	}
+}
+
 func isTerminalState(state RunState) bool {
 	return state == RunStateCompleted || state == RunStateFailed || state == RunStateCancelled
+}
+
+// runOptsVariables extracts Variables from RunOptions for storage in run metadata.
+func runOptsVariables(opts *RunOptions) map[string]any {
+	if opts == nil {
+		return nil
+	}
+	return opts.Variables
+}
+
+// runOptsToMap converts RunOptions instruction fields to a map for storage in the options column.
+func runOptsToMap(opts *RunOptions) map[string]any {
+	if opts == nil {
+		return nil
+	}
+	m := make(map[string]any)
+	if opts.OverrideInstructions != "" {
+		m["override_instructions"] = opts.OverrideInstructions
+	}
+	if opts.AppendInstructions != "" {
+		m["append_instructions"] = opts.AppendInstructions
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+// mapToRunOptions converts stored options map and metadata back to RunOptions.
+func mapToRunOptions(options map[string]any, metadata map[string]any) *RunOptions {
+	hasOptions := len(options) > 0
+	hasMetadata := len(metadata) > 0
+	if !hasOptions && !hasMetadata {
+		return nil
+	}
+	opts := &RunOptions{}
+	if hasMetadata {
+		opts.Variables = metadata
+	}
+	if hasOptions {
+		if v, ok := options["override_instructions"].(string); ok {
+			opts.OverrideInstructions = v
+		}
+		if v, ok := options["append_instructions"].(string); ok {
+			opts.AppendInstructions = v
+		}
+	}
+	return opts
 }
 
 func convertRun(r *driver.Run) *Run {
@@ -1255,6 +1336,7 @@ func convertRun(r *driver.Run) *Run {
 		ClaimedByInstanceID:      r.ClaimedByInstanceID,
 		ClaimedAt:                r.ClaimedAt,
 		Metadata:                 r.Metadata,
+		Options:                  mapToRunOptions(r.Options, r.Metadata),
 		CreatedAt:                r.CreatedAt,
 		StartedAt:                r.StartedAt,
 		FinalizedAt:              r.FinalizedAt,

@@ -82,13 +82,15 @@ sessionID, err := client.NewSession(ctx, nil, map[string]any{
 ### Run
 A `Run` is a single agent invocation. Runs are async by default and can span multiple iterations.
 ```go
-runID, err := client.Run(ctx, sessionID, agent.ID, "Hello!", nil)  // Uses agent UUID, nil variables
+runID, err := client.Run(ctx, sessionID, agent.ID, "Hello!", nil)  // Uses agent UUID, nil options
 response, err := client.WaitForRun(ctx, runID)
 
-// With variables (passed to tools via context)
-runID, err := client.Run(ctx, sessionID, agent.ID, "Continue the story", map[string]any{
-    "story_id": "story-123",
-    "user_id":  "user-456",
+// With options (variables passed to tools via context, instruction overrides)
+runID, err := client.Run(ctx, sessionID, agent.ID, "Continue the story", &agentpg.RunOptions{
+    Variables: map[string]any{
+        "story_id": "story-123",
+        "user_id":  "user-456",
+    },
 })
 ```
 
@@ -555,17 +557,29 @@ projectManager, _ := client.CreateAgent(ctx, &agentpg.AgentDefinition{
 
 ---
 
-## Run Variables (Tool Context)
+## Run Options
 
-Pass per-run variables to tools via the `variables` parameter. Tools access these via context helpers.
+`RunOptions` provides per-run configuration: variables for tools and instruction overrides for the system prompt.
+
+```go
+type RunOptions struct {
+    Variables            map[string]any // Passed to tools via context
+    OverrideInstructions string         // Replaces agent's system prompt for this run
+    AppendInstructions   string         // Appended to agent's system prompt for this run
+}
+```
+
+If `OverrideInstructions` is set, it completely replaces the agent's system prompt. `AppendInstructions` is ignored if `OverrideInstructions` is set. Instruction overrides do NOT propagate to child runs in agent-as-tool hierarchies. Variables ARE propagated to child runs.
 
 ### Passing Variables
 ```go
 // Pass variables when creating a run
-response, _ := client.RunSync(ctx, sessionID, agent.ID, "Continue the story", map[string]any{
-    "story_id": "story-123",
-    "user_id":  "user-456",
-    "tenant_id": "tenant-1",
+response, _ := client.RunSync(ctx, sessionID, agent.ID, "Continue the story", &agentpg.RunOptions{
+    Variables: map[string]any{
+        "story_id":  "story-123",
+        "user_id":   "user-456",
+        "tenant_id": "tenant-1",
+    },
 })
 ```
 
@@ -622,10 +636,11 @@ func (t *StoryTool) Execute(ctx context.Context, input json.RawMessage) (string,
 Variables are automatically propagated to child runs in agent-as-tool hierarchies:
 ```go
 // Parent run with variables
-response, _ := client.RunSync(ctx, sessionID, manager.ID, "Research topic X", map[string]any{
-    "project_id": "proj-123",
+response, _ := client.RunSync(ctx, sessionID, manager.ID, "Research topic X", &agentpg.RunOptions{
+    Variables: map[string]any{"project_id": "proj-123"},
 })
 // When manager delegates to researcher agent, researcher's tools also receive project_id
+// Note: OverrideInstructions and AppendInstructions do NOT propagate to child runs
 ```
 
 ---
@@ -641,7 +656,7 @@ childSessionID, _ := client.NewSession(ctx, &parentSessionID, nil)  // Child ses
 
 ### Running Agents
 
-All Run methods accept an agent UUID (not name string) and an optional variables map.
+All Run methods accept an agent UUID (not name string) and an optional `*RunOptions`.
 
 #### Batch API (Cost-Effective, Higher Latency)
 ```go
@@ -657,11 +672,22 @@ response, _ := client.RunFastSync(ctx, sessionID, agent.ID, "Hello!", nil)  // R
 runID, _ := client.RunFastTx(ctx, tx, sessionID, agent.ID, "Hello!", nil)  // With transaction
 ```
 
-#### With Variables
+#### With RunOptions
 ```go
 // Variables are passed to tools via context during execution
-vars := map[string]any{"story_id": "story-123", "tenant_id": "tenant-1"}
-response, _ := client.RunSync(ctx, sessionID, agent.ID, "Continue the story", vars)
+response, _ := client.RunSync(ctx, sessionID, agent.ID, "Continue the story", &agentpg.RunOptions{
+    Variables: map[string]any{"story_id": "story-123", "tenant_id": "tenant-1"},
+})
+
+// Override the agent's system prompt for this run
+response, _ := client.RunFastSync(ctx, sessionID, agent.ID, "Translate this", &agentpg.RunOptions{
+    OverrideInstructions: "You are a French translator. Translate all input to French.",
+})
+
+// Append additional context to the agent's system prompt
+response, _ := client.RunFastSync(ctx, sessionID, agent.ID, "Help the user", &agentpg.RunOptions{
+    AppendInstructions: "The user is a premium subscriber. Provide detailed responses.",
+})
 ```
 
 | Feature | Batch API (`Run*`) | Streaming API (`RunFast*`) |
@@ -698,7 +724,7 @@ func CreateOrderWithNotification(ctx context.Context, client *agentpg.Client, po
     sessionID, _ := client.NewSessionTx(ctx, tx, nil, map[string]any{"order_id": orderID})
     runID, _ := client.RunTx(ctx, tx, sessionID, agentID,  // Use agent UUID
         fmt.Sprintf("Process order %s: %v", orderID, order),
-        map[string]any{"order_id": orderID})  // Variables for tools
+        &agentpg.RunOptions{Variables: map[string]any{"order_id": orderID}})
 
     tx.Commit(ctx)  // Commit first
     client.WaitForRun(ctx, runID)  // Then wait
@@ -1046,8 +1072,8 @@ See [Go documentation](https://pkg.go.dev/github.com/youssefsiam38/agentpg).
 - `agentmcp.RegisterServer()` - Register MCP server tools (mcp sub-module, before Start)
 - `CreateAgent()`, `GetOrCreateAgent()`, `GetAgentByID()`, `GetAgentByName()`, `ListAgents()`, `UpdateAgent()`, `DeleteAgent()` - Agent management (after Start)
 - `NewSession()`, `NewSessionTx()` - Create sessions
-- `Run()`, `RunTx()`, `RunSync()` - Execute agents (Batch API, takes agent UUID and variables)
-- `RunFast()`, `RunFastTx()`, `RunFastSync()` - Execute agents (Streaming API, takes agent UUID and variables)
+- `Run()`, `RunTx()`, `RunSync()` - Execute agents (Batch API, takes agent UUID and optional *RunOptions)
+- `RunFast()`, `RunFastTx()`, `RunFastSync()` - Execute agents (Streaming API, takes agent UUID and optional *RunOptions)
 - `tool.GetVariable()`, `tool.GetVariableOr()`, `tool.GetRunContext()` - Access run variables in tools
 - `WaitForRun()`, `GetRun()`, `GetSession()` - Query state
 - `Compact()`, `CompactWithConfig()`, `CompactIfNeeded()` - Manual compaction

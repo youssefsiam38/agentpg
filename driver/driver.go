@@ -230,6 +230,7 @@ type CreateRunParams struct {
 	Depth                 int
 	CreatedByInstanceID   string
 	Metadata              map[string]any
+	Options               map[string]any
 }
 
 // CreateIterationParams contains parameters for creating an iteration.
@@ -409,6 +410,8 @@ type (
 		// Rescue tracking
 		RescueAttempts int
 		LastRescueAt   *time.Time
+		// Per-run options (instruction overrides)
+		Options map[string]any
 	}
 
 	RunState = string

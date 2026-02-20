@@ -152,13 +152,8 @@ func (w *streamingWorker[TTx]) processRun(ctx context.Context, run *driver.Run) 
 		return fmt.Errorf("failed to build tools: %w", err)
 	}
 
-	// Build system prompt
-	var system []anthropic.TextBlockParam
-	if agent.SystemPrompt != "" {
-		system = []anthropic.TextBlockParam{
-			{Text: agent.SystemPrompt},
-		}
-	}
+	// Build system prompt (applying run-level instruction overrides if any)
+	system := buildSystemPrompt(agent, run.Options)
 
 	// Build streaming request parameters
 	maxTokens := int64(4096)

@@ -541,6 +541,14 @@ rescue_attempts INTEGER NOT NULL DEFAULT 0,
 last_rescue_at TIMESTAMPTZ,
 
 -- ==========================================================================
+-- PER-RUN OPTIONS (instruction overrides, stored separately from metadata)
+-- ==========================================================================
+
+-- Per-run configuration (override_instructions, append_instructions).
+-- Stored separately from metadata so it doesn't leak into tool context or child runs.
+options JSONB NOT NULL DEFAULT '{}',
+
+-- ==========================================================================
 -- CONSTRAINTS
 -- ==========================================================================
 

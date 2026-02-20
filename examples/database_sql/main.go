@@ -214,7 +214,7 @@ func main() {
 	fmt.Println("  client, _ := agentpg.NewClient(drv, &agentpg.ClientConfig{APIKey: apiKey})")
 	fmt.Println("  client.RegisterAgent(&agentpg.AgentDefinition{...})")
 	fmt.Println("  client.Start(ctx)")
-	fmt.Println("  response, _ := client.RunSync(ctx, sessionID, \"agent-name\", prompt)")
+	fmt.Println("  response, _ := client.RunSync(ctx, sessionID, agent.ID, prompt, nil)")
 	fmt.Println()
 	fmt.Println("=== Demo Complete ===")
 }

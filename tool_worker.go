@@ -168,7 +168,8 @@ func (w *toolWorker[TTx]) executeAgentTool(ctx context.Context, exec *driver.Too
 		return fmt.Errorf("failed to get parent run: %w", err)
 	}
 
-	// Create child run (inherit run mode and variables from parent for consistent behavior)
+	// Create child run (inherit run mode and variables from parent for consistent behavior).
+	// Options (instruction overrides) are deliberately NOT propagated — each child agent uses its own system prompt.
 	childRun, err := store.CreateRun(ctx, driver.CreateRunParams{
 		SessionID:             parentRun.SessionID,
 		AgentID:               agentID,

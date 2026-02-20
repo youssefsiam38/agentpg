@@ -546,6 +546,7 @@ func (s *Store) CreateRunTx(ctx context.Context, tx pgx.Tx, params driver.Create
 func (s *Store) createRun(ctx context.Context, e executor, params driver.CreateRunParams) (*driver.Run, error) {
 	var run driver.Run
 	metadata, _ := json.Marshal(params.Metadata)
+	options, _ := json.Marshal(params.Options)
 
 	// Default run_mode to "batch" if not specified
 	runMode := params.RunMode
@@ -554,41 +555,42 @@ func (s *Store) createRun(ctx context.Context, e executor, params driver.CreateR
 	}
 
 	err := e.QueryRow(ctx, `
-		INSERT INTO agentpg_runs (session_id, agent_id, prompt, run_mode, parent_run_id, parent_tool_execution_id, depth, created_by_instance_id, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO agentpg_runs (session_id, agent_id, prompt, run_mode, parent_run_id, parent_tool_execution_id, depth, created_by_instance_id, metadata, options)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, session_id, agent_id, run_mode, parent_run_id, parent_tool_execution_id, depth, state, previous_state,
 			prompt, current_iteration, current_iteration_id, response_text, stop_reason,
 			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 			iteration_count, tool_iterations, error_message, error_type,
 			created_by_instance_id, claimed_by_instance_id, claimed_at, metadata, created_at, started_at, finalized_at,
-			rescue_attempts, last_rescue_at
+			rescue_attempts, last_rescue_at, options
 	`, params.SessionID, params.AgentID, params.Prompt, runMode, params.ParentRunID,
-		params.ParentToolExecutionID, params.Depth, params.CreatedByInstanceID, metadata).Scan(
+		params.ParentToolExecutionID, params.Depth, params.CreatedByInstanceID, metadata, options).Scan(
 		&run.ID, &run.SessionID, &run.AgentID, &run.RunMode, &run.ParentRunID, &run.ParentToolExecutionID, &run.Depth,
 		&run.State, &run.PreviousState, &run.Prompt, &run.CurrentIteration, &run.CurrentIterationID,
 		&run.ResponseText, &run.StopReason, &run.InputTokens, &run.OutputTokens,
 		&run.CacheCreationInputTokens, &run.CacheReadInputTokens, &run.IterationCount, &run.ToolIterations,
 		&run.ErrorMessage, &run.ErrorType, &run.CreatedByInstanceID, &run.ClaimedByInstanceID, &run.ClaimedAt,
 		&metadata, &run.CreatedAt, &run.StartedAt, &run.FinalizedAt,
-		&run.RescueAttempts, &run.LastRescueAt,
+		&run.RescueAttempts, &run.LastRescueAt, &options,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create run: %w", err)
 	}
 	_ = json.Unmarshal(metadata, &run.Metadata)
+	_ = json.Unmarshal(options, &run.Options)
 	return &run, nil
 }
 
 func (s *Store) GetRun(ctx context.Context, id uuid.UUID) (*driver.Run, error) {
 	var run driver.Run
-	var metadata []byte
+	var metadata, options []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, session_id, agent_id, run_mode, parent_run_id, parent_tool_execution_id, depth, state, previous_state,
 			prompt, current_iteration, current_iteration_id, response_text, stop_reason,
 			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 			iteration_count, tool_iterations, error_message, error_type,
 			created_by_instance_id, claimed_by_instance_id, claimed_at, metadata, created_at, started_at, finalized_at,
-			rescue_attempts, last_rescue_at
+			rescue_attempts, last_rescue_at, options
 		FROM agentpg_runs WHERE id = $1
 	`, id).Scan(
 		&run.ID, &run.SessionID, &run.AgentID, &run.RunMode, &run.ParentRunID, &run.ParentToolExecutionID, &run.Depth,
@@ -597,7 +599,7 @@ func (s *Store) GetRun(ctx context.Context, id uuid.UUID) (*driver.Run, error) {
 		&run.CacheCreationInputTokens, &run.CacheReadInputTokens, &run.IterationCount, &run.ToolIterations,
 		&run.ErrorMessage, &run.ErrorType, &run.CreatedByInstanceID, &run.ClaimedByInstanceID, &run.ClaimedAt,
 		&metadata, &run.CreatedAt, &run.StartedAt, &run.FinalizedAt,
-		&run.RescueAttempts, &run.LastRescueAt,
+		&run.RescueAttempts, &run.LastRescueAt, &options,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -606,6 +608,7 @@ func (s *Store) GetRun(ctx context.Context, id uuid.UUID) (*driver.Run, error) {
 		return nil, err
 	}
 	_ = json.Unmarshal(metadata, &run.Metadata)
+	_ = json.Unmarshal(options, &run.Options)
 	return &run, nil
 }
 
@@ -676,7 +679,7 @@ func (s *Store) GetRunsBySession(ctx context.Context, sessionID uuid.UUID, limit
 			input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
 			iteration_count, tool_iterations, error_message, error_type,
 			created_by_instance_id, claimed_by_instance_id, claimed_at, metadata, created_at, started_at, finalized_at,
-			rescue_attempts, last_rescue_at
+			rescue_attempts, last_rescue_at, options
 		FROM agentpg_runs WHERE session_id = $1 ORDER BY created_at DESC LIMIT $2
 	`, sessionID, limit)
 	if err != nil {
@@ -696,7 +699,7 @@ func (s *Store) GetStuckPendingToolsRuns(ctx context.Context, limit int) ([]*dri
 			r.input_tokens, r.output_tokens, r.cache_creation_input_tokens, r.cache_read_input_tokens,
 			r.iteration_count, r.tool_iterations, r.error_message, r.error_type,
 			r.created_by_instance_id, r.claimed_by_instance_id, r.claimed_at, r.metadata, r.created_at, r.started_at, r.finalized_at,
-			r.rescue_attempts, r.last_rescue_at
+			r.rescue_attempts, r.last_rescue_at, r.options
 		FROM agentpg_runs r
 		WHERE r.state = 'pending_tools'
 		  AND r.current_iteration_id IS NOT NULL
@@ -724,7 +727,7 @@ func (s *Store) ListRuns(ctx context.Context, params driver.ListRunsParams) ([]*
 			r.input_tokens, r.output_tokens, r.cache_creation_input_tokens, r.cache_read_input_tokens,
 			r.iteration_count, r.tool_iterations, r.error_message, r.error_type,
 			r.created_by_instance_id, r.claimed_by_instance_id, r.claimed_at, r.metadata, r.created_at, r.started_at, r.finalized_at,
-			r.rescue_attempts, r.last_rescue_at
+			r.rescue_attempts, r.last_rescue_at, r.options
 		FROM agentpg_runs r`
 
 	countQuery := "SELECT COUNT(*) FROM agentpg_runs r"
@@ -2095,7 +2098,7 @@ func collectRuns(rows pgx.Rows) ([]*driver.Run, error) {
 	var runs []*driver.Run
 	for rows.Next() {
 		var run driver.Run
-		var metadata []byte
+		var metadata, options []byte
 		if err := rows.Scan(
 			&run.ID, &run.SessionID, &run.AgentID, &run.RunMode, &run.ParentRunID, &run.ParentToolExecutionID, &run.Depth,
 			&run.State, &run.PreviousState, &run.Prompt, &run.CurrentIteration, &run.CurrentIterationID,
@@ -2103,11 +2106,12 @@ func collectRuns(rows pgx.Rows) ([]*driver.Run, error) {
 			&run.CacheCreationInputTokens, &run.CacheReadInputTokens, &run.IterationCount, &run.ToolIterations,
 			&run.ErrorMessage, &run.ErrorType, &run.CreatedByInstanceID, &run.ClaimedByInstanceID, &run.ClaimedAt,
 			&metadata, &run.CreatedAt, &run.StartedAt, &run.FinalizedAt,
-			&run.RescueAttempts, &run.LastRescueAt,
+			&run.RescueAttempts, &run.LastRescueAt, &options,
 		); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(metadata, &run.Metadata)
+		_ = json.Unmarshal(options, &run.Options)
 		runs = append(runs, &run)
 	}
 	return runs, rows.Err()
