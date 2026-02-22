@@ -7,7 +7,7 @@ toolchain go1.25.4
 require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.6
-	github.com/youssefsiam38/agentpg v0.3.0
+	github.com/youssefsiam38/agentpg v0.3.1
 )
 
 require (

@@ -185,6 +185,19 @@ func (w *runWorker[TTx]) processRun(ctx context.Context, run *driver.Run) error 
 		"iteration_id", iteration.ID,
 	)
 
+	// Check if run was cancelled during batch submission
+	currentRun, checkErr := store.GetRun(ctx, run.ID)
+	if checkErr == nil && currentRun != nil && currentRun.State == string(RunStateCancelled) {
+		log.Info("run was cancelled during batch submission, cancelling batch", "run_id", run.ID, "batch_id", batch.ID)
+		go func() {
+			_, cancelErr := w.client.anthropic.Messages.Batches.Cancel(context.Background(), batch.ID)
+			if cancelErr != nil {
+				w.client.log().Warn("failed to cancel batch after run cancellation", "batch_id", batch.ID, "error", cancelErr)
+			}
+		}()
+		return nil
+	}
+
 	// Update iteration with batch info
 	batchStatus := BatchStatusInProgress
 	now := time.Now()

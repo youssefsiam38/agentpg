@@ -269,6 +269,13 @@ func (p *batchPoller[TTx]) processResult(ctx context.Context, iter *driver.Itera
 	store := p.client.driver.Store()
 	log := p.client.log()
 
+	// Check if run was cancelled before processing batch result
+	run, runErr := store.GetRun(ctx, iter.RunID)
+	if runErr == nil && run != nil && run.State == string(RunStateCancelled) {
+		log.Info("run was cancelled, discarding batch result", "run_id", iter.RunID)
+		return nil
+	}
+
 	if result.Result.Message == nil {
 		return fmt.Errorf("no message in result")
 	}

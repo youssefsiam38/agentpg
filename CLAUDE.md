@@ -711,6 +711,48 @@ type Response struct {
 ### Run States
 `pending`, `batch_submitting`, `batch_pending`, `batch_processing`, `pending_tools`, `awaiting_input`, `completed` (terminal), `cancelled` (terminal), `failed` (terminal)
 
+### Cancel and Regenerate Runs
+
+#### CancelRun
+Cancels a running agent mid-execution. Works for any run including child runs in agent-as-tool hierarchies, with automatic cascade.
+
+```go
+err := client.CancelRun(ctx, runID)
+```
+
+| Run State | Behavior |
+|-----------|----------|
+| `pending`, `batch_*`, `streaming`, `pending_tools` | Cancelled immediately |
+| `completed`, `failed`, `cancelled` | No-op (idempotent) |
+
+- Atomically cancels the run, skips pending/running tool executions, and recursively cancels child runs
+- If a batch is in progress, the batch API cancel is triggered asynchronously
+- Unblocks any `WaitForRun` callers waiting on this run
+- Safe to call concurrently from multiple instances (uses `SELECT FOR UPDATE`)
+
+#### RegenerateRun
+Re-creates a cancelled or failed run by deleting all messages from the original run and creating a fresh run with the same parameters.
+
+```go
+newRunID, err := client.RegenerateRun(ctx, runID)
+response, err := client.WaitForRun(ctx, newRunID)
+```
+
+- Only works on terminal runs (`completed`, `cancelled`, `failed`)
+- Deletes ALL messages (user + assistant) from the original run
+- Creates a new run with the same `SessionID`, `AgentID`, `Prompt`, `RunMode`, `Metadata`, and `Options`
+- The new run starts fresh in the same session, preserving conversation history from other runs
+
+#### Continuation After Cancel
+```go
+// Cancel a run
+client.CancelRun(ctx, runID)
+
+// Send a new message to the same session - conversation continues normally
+newRunID, _ := client.RunFast(ctx, sessionID, agent.ID, "Do something else instead", nil)
+response, _ := client.WaitForRun(ctx, newRunID)
+```
+
 ---
 
 ## Transaction-First API
@@ -1075,6 +1117,8 @@ See [Go documentation](https://pkg.go.dev/github.com/youssefsiam38/agentpg).
 - `Run()`, `RunTx()`, `RunSync()` - Execute agents (Batch API, takes agent UUID and optional *RunOptions)
 - `RunFast()`, `RunFastTx()`, `RunFastSync()` - Execute agents (Streaming API, takes agent UUID and optional *RunOptions)
 - `tool.GetVariable()`, `tool.GetVariableOr()`, `tool.GetRunContext()` - Access run variables in tools
+- `CancelRun()` - Cancel a running agent (cascades to child runs)
+- `RegenerateRun()` - Re-create a terminal run with clean messages
 - `WaitForRun()`, `GetRun()`, `GetSession()` - Query state
 - `Compact()`, `CompactWithConfig()`, `CompactIfNeeded()` - Manual compaction
 - `NeedsCompaction()`, `GetCompactionStats()` - Compaction queries

@@ -916,6 +916,22 @@ func (rt *router[TTx]) handleChatSession(w http.ResponseWriter, r *http.Request)
 		sessionList = sessions.Sessions
 	}
 
+	// Find last run's ID and state for Regenerate button
+	var lastRunID *uuid.UUID
+	var lastRunState string
+	{
+		lastRuns, lastRunsErr := rt.svc.ListRuns(r.Context(), service.RunListParams{
+			SessionID: &sessionID,
+			Limit:     1,
+			OrderBy:   "created_at",
+			OrderDir:  "desc",
+		})
+		if lastRunsErr == nil && lastRuns != nil && len(lastRuns.Runs) > 0 {
+			lastRunID = &lastRuns.Runs[0].ID
+			lastRunState = lastRuns.Runs[0].State
+		}
+	}
+
 	data := map[string]any{
 		"Title":                    "Chat: " + session.Session.ID.String()[:8],
 		"Session":                  session,
@@ -927,11 +943,115 @@ func (rt *router[TTx]) handleChatSession(w http.ResponseWriter, r *http.Request)
 		"PendingRunID":             pendingRunID,
 		"PendingRunState":          pendingRunState,
 		"PendingToolExecutions":    pendingToolExecutions,
+		"LastRunID":                lastRunID,
+		"LastRunState":             lastRunState,
 	}
 
 	if err := rt.renderer.render(w, r, "chat/interface.html", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func (rt *router[TTx]) handleChatCancel(w http.ResponseWriter, r *http.Request) {
+	if rt.config.ReadOnly || rt.client == nil {
+		http.Error(w, "Chat is disabled", http.StatusForbidden)
+		return
+	}
+
+	runID, err := parseUUID(r.PathValue("runId"))
+	if err != nil {
+		http.Error(w, "Invalid run ID", http.StatusBadRequest)
+		return
+	}
+
+	if err := rt.client.CancelRun(r.Context(), runID); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to cancel run: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Get the run to find the session ID for message reload
+	run, err := rt.svc.Store().GetRun(r.Context(), runID)
+	if err != nil {
+		http.Error(w, "Run not found", http.StatusNotFound)
+		return
+	}
+
+	// Return a fragment that triggers a full message reload
+	data := map[string]any{
+		"BasePath":  rt.config.BasePath,
+		"SessionID": run.SessionID,
+		"RunID":     runID,
+		"State":     "cancelled",
+	}
+
+	if err := rt.renderer.renderFragment(w, "chat/cancelled.html", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (rt *router[TTx]) handleChatRegenerate(w http.ResponseWriter, r *http.Request) {
+	if rt.config.ReadOnly || rt.client == nil {
+		http.Error(w, "Chat is disabled", http.StatusForbidden)
+		return
+	}
+
+	runID, err := parseUUID(r.PathValue("runId"))
+	if err != nil {
+		http.Error(w, "Invalid run ID", http.StatusBadRequest)
+		return
+	}
+
+	newRunID, err := rt.client.RegenerateRun(r.Context(), runID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to regenerate run: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Get the new run to find session ID
+	newRun, err := rt.svc.Store().GetRun(r.Context(), newRunID)
+	if err != nil {
+		http.Error(w, "New run not found", http.StatusNotFound)
+		return
+	}
+
+	// Get view mode from form value
+	viewMode := r.FormValue("view_mode")
+	if viewMode != "hierarchy" {
+		viewMode = "top-level"
+	}
+
+	// Return a polling fragment for the regenerated run
+	data := map[string]any{
+		"BasePath":  rt.config.BasePath,
+		"RunID":     newRunID,
+		"SessionID": newRun.SessionID,
+		"State":     "pending",
+		"ViewMode":  viewMode,
+	}
+
+	if err := rt.renderer.renderFragment(w, "chat/regenerate-pending.html", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (rt *router[TTx]) handleCancelRun(w http.ResponseWriter, r *http.Request) {
+	if rt.config.ReadOnly || rt.client == nil {
+		http.Error(w, "Operations disabled", http.StatusForbidden)
+		return
+	}
+
+	runID, err := parseUUID(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "Invalid run ID", http.StatusBadRequest)
+		return
+	}
+
+	if err := rt.client.CancelRun(r.Context(), runID); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to cancel run: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 // Fragment handlers for HTMX

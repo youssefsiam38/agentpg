@@ -1914,3 +1914,124 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION agentpg_complete_tools_and_continue_run IS 'Atomically creates tool_result message and transitions run to pending for next iteration. Race-safe: returns NULL if run is not in pending_tools state.';
+
+-- -----------------------------------------------------------------------------
+-- Cancel a run (with cascade to child runs)
+-- -----------------------------------------------------------------------------
+-- Atomically cancels a run and all its child runs.
+-- Uses SELECT FOR UPDATE to prevent race conditions.
+-- Returns whether the run was cancelled, the batch_id for async API cancellation,
+-- the previous state, and any child run IDs that were also cancelled.
+--
+-- USAGE:
+--   SELECT * FROM agentpg_cancel_run('run-uuid');
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION agentpg_cancel_run(p_run_id UUID)
+RETURNS TABLE (
+    cancelled BOOLEAN,
+    batch_id TEXT,
+    previous_state agentpg_run_state,
+    child_run_ids UUID[]
+) AS $$
+DECLARE
+    v_run agentpg_runs;
+    v_batch_id TEXT;
+    v_child_ids UUID[] := '{}';
+    v_child_run RECORD;
+    v_child_result RECORD;
+BEGIN
+    -- Lock the run row
+    SELECT * INTO v_run
+    FROM agentpg_runs
+    WHERE id = p_run_id
+    FOR UPDATE;
+
+    -- If not found or already terminal, return false
+    IF v_run.id IS NULL OR v_run.state IN ('completed', 'cancelled', 'failed') THEN
+        RETURN QUERY SELECT
+            FALSE,
+            NULL::TEXT,
+            v_run.state,
+            '{}'::UUID[];
+        RETURN;
+    END IF;
+
+    -- Capture batch_id from current iteration (for async API cancellation)
+    SELECT i.batch_id INTO v_batch_id
+    FROM agentpg_iterations i
+    WHERE i.run_id = p_run_id
+      AND i.batch_status = 'in_progress'
+    ORDER BY i.iteration_number DESC
+    LIMIT 1;
+
+    -- Update run to cancelled state
+    UPDATE agentpg_runs
+    SET state = 'cancelled',
+        previous_state = v_run.state,
+        finalized_at = NOW(),
+        error_message = 'Run cancelled by user'
+    WHERE id = p_run_id;
+
+    -- Skip all pending/running tool executions for this run
+    UPDATE agentpg_tool_executions
+    SET state = 'skipped',
+        completed_at = NOW()
+    WHERE run_id = p_run_id
+      AND state IN ('pending', 'running');
+
+    -- Recursively cancel child runs (found via tool_executions.child_run_id)
+    FOR v_child_run IN
+        SELECT child_run_id
+        FROM agentpg_tool_executions
+        WHERE run_id = p_run_id
+          AND child_run_id IS NOT NULL
+    LOOP
+        -- Recursively cancel each child run
+        SELECT * INTO v_child_result
+        FROM agentpg_cancel_run(v_child_run.child_run_id);
+
+        IF v_child_result.cancelled THEN
+            v_child_ids := v_child_ids || v_child_run.child_run_id;
+        END IF;
+    END LOOP;
+
+    RETURN QUERY SELECT
+        TRUE,
+        v_batch_id,
+        v_run.state,
+        v_child_ids;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION agentpg_cancel_run IS 'Atomically cancels a run and all its child runs. Race-safe with FOR UPDATE. Returns batch_id for async API cancellation.';
+
+-- -----------------------------------------------------------------------------
+-- Delete all messages belonging to a run
+-- -----------------------------------------------------------------------------
+-- Deletes content blocks and messages for a specific run.
+-- Used by RegenerateRun to clean up messages before re-creating the run.
+--
+-- USAGE:
+--   SELECT agentpg_delete_run_messages('run-uuid');
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION agentpg_delete_run_messages(p_run_id UUID)
+RETURNS INTEGER AS $$
+DECLARE
+    v_deleted INTEGER;
+BEGIN
+    -- Delete content blocks for messages belonging to the run
+    DELETE FROM agentpg_content_blocks
+    WHERE message_id IN (
+        SELECT id FROM agentpg_messages WHERE run_id = p_run_id
+    );
+
+    -- Delete messages belonging to the run
+    DELETE FROM agentpg_messages
+    WHERE run_id = p_run_id;
+
+    GET DIAGNOSTICS v_deleted = ROW_COUNT;
+    RETURN v_deleted;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION agentpg_delete_run_messages IS 'Deletes all messages and content blocks for a run. Used by RegenerateRun for clean re-creation.';

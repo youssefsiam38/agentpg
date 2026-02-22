@@ -31,6 +31,7 @@ var (
 	ErrInvalidStateTransition = errors.New("invalid state transition")
 	ErrRunAlreadyFinalized    = errors.New("run already finalized")
 	ErrRunCancelled           = errors.New("run was cancelled")
+	ErrRunNotCancellable      = errors.New("run is not in a cancellable state")
 
 	// Tool errors
 	ErrInvalidToolSchema   = errors.New("invalid tool schema")

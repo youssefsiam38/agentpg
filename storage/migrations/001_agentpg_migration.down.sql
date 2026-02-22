@@ -56,6 +56,10 @@ DROP FUNCTION IF EXISTS agentpg_notify_run_state_change ();
 DROP FUNCTION IF EXISTS agentpg_notify_run_created ();
 
 -- Stored procedures
+DROP FUNCTION IF EXISTS agentpg_delete_run_messages (UUID);
+
+DROP FUNCTION IF EXISTS agentpg_cancel_run (UUID);
+
 DROP FUNCTION IF EXISTS agentpg_complete_tools_and_continue_run (UUID, UUID, JSONB);
 
 DROP FUNCTION IF EXISTS agentpg_create_tool_executions_and_update_run (

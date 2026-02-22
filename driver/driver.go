@@ -82,6 +82,14 @@ type Store[TTx any] interface {
 	// Returns (runs, totalCount, error). Used by admin UI for browsing all runs.
 	ListRuns(ctx context.Context, params ListRunsParams) ([]*Run, int, error)
 
+	// CancelRun atomically cancels a run and all its child runs.
+	// Returns whether the run was cancelled and the batch_id for async API cancellation.
+	// If the run is already in a terminal state, returns cancelled=false with no error (idempotent).
+	CancelRun(ctx context.Context, id uuid.UUID) (cancelled bool, batchID string, previousState string, err error)
+	// DeleteRunMessages deletes all messages and content blocks for a run.
+	// Returns the number of deleted messages.
+	DeleteRunMessages(ctx context.Context, runID uuid.UUID) (int, error)
+
 	// Iteration operations
 	CreateIteration(ctx context.Context, params CreateIterationParams) (*Iteration, error)
 	GetIteration(ctx context.Context, id uuid.UUID) (*Iteration, error)

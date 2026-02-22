@@ -191,6 +191,11 @@
                         </div>
                         {{end}}
                         {{end}}
+                        <button hx-post="{{$.BasePath}}/chat/cancel/{{.Data.PendingRunID}}"
+                                hx-swap="outerHTML" hx-target="#run-{{.Data.PendingRunID}}"
+                                class="mt-2 inline-flex items-center px-2 py-1 text-xs text-red-400 bg-red-900/30 border border-red-800 rounded hover:bg-red-900/50">
+                            Stop
+                        </button>
                     </div>
                 </div>
                 {{end}}
@@ -202,6 +207,21 @@
         <!-- Input Form -->
         {{if not $.ReadOnly}}
         <div class="flex-shrink-0 bg-gray-800/50 border-t border-gray-700 p-4">
+            {{if and .Data.LastRunID (or (eq .Data.LastRunState "cancelled") (eq .Data.LastRunState "failed"))}}
+            <div class="mb-3 flex items-center justify-center">
+                <form hx-post="{{$.BasePath}}/chat/regenerate/{{.Data.LastRunID}}"
+                      hx-target="#pending-response"
+                      hx-swap="innerHTML">
+                    <input type="hidden" name="view_mode" value="{{.Data.ViewMode}}">
+                    <button type="submit" class="inline-flex items-center px-3 py-1.5 text-xs text-amber-400 bg-amber-900/30 border border-amber-800 rounded hover:bg-amber-900/50">
+                        <svg class="w-3.5 h-3.5 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                        </svg>
+                        Regenerate last response
+                    </button>
+                </form>
+            </div>
+            {{end}}
             <form id="chat-form"
                   hx-post="{{$.BasePath}}/chat/send"
                   hx-target="#pending-response"

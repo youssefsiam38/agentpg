@@ -1,0 +1,12 @@
+{{define "chat/regenerate-pending.html"}}
+<!-- Regenerating run - poll for completion -->
+<div id="run-{{.RunID}}"
+     class="flex justify-start"
+     hx-get="{{.BasePath}}/chat/poll/{{.RunID}}?view={{.ViewMode}}"
+     hx-trigger="every 1s"
+     hx-swap="outerHTML">
+    <div class="max-w-3xl bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 shadow-sm">
+        {{template "processing-indicator" (dict "State" .State)}}
+    </div>
+</div>
+{{end}}

@@ -2111,5 +2111,45 @@ func (s *Store) RescueRun(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+// CancelRun atomically cancels a run and all its child runs via stored procedure.
+func (s *Store) CancelRun(ctx context.Context, id uuid.UUID) (bool, string, string, error) {
+	var cancelled bool
+	var batchID *string
+	var previousState *string
+	var childRunIDs []byte // JSON array from pq
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT cancelled, batch_id, previous_state, child_run_ids FROM agentpg_cancel_run($1)`,
+		id,
+	).Scan(&cancelled, &batchID, &previousState, &childRunIDs)
+	if err != nil {
+		return false, "", "", fmt.Errorf("failed to cancel run: %w", err)
+	}
+
+	batchIDStr := ""
+	if batchID != nil {
+		batchIDStr = *batchID
+	}
+	prevState := ""
+	if previousState != nil {
+		prevState = *previousState
+	}
+
+	return cancelled, batchIDStr, prevState, nil
+}
+
+// DeleteRunMessages deletes all messages and content blocks for a run.
+func (s *Store) DeleteRunMessages(ctx context.Context, runID uuid.UUID) (int, error) {
+	var deleted int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT agentpg_delete_run_messages($1)`,
+		runID,
+	).Scan(&deleted)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete run messages: %w", err)
+	}
+	return deleted, nil
+}
+
 // Compile-time check
 var _ driver.Store[*sql.Tx] = (*Store)(nil)

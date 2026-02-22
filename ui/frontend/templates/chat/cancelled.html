@@ -1,0 +1,7 @@
+{{define "chat/cancelled.html"}}
+<!-- Run cancelled - trigger message reload -->
+<div hx-get="{{.BasePath}}/chat/session/{{.SessionID}}/messages"
+     hx-trigger="load"
+     hx-swap="none">
+</div>
+{{end}}

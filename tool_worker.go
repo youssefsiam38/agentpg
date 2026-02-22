@@ -92,6 +92,16 @@ func (w *toolWorker[TTx]) executeTool(ctx context.Context, exec *driver.ToolExec
 	store := w.client.driver.Store()
 	log := w.client.log()
 
+	// Check if run was cancelled before executing
+	run, runErr := store.GetRun(ctx, exec.RunID)
+	if runErr == nil && run != nil && run.State == string(RunStateCancelled) {
+		log.Info("run was cancelled, skipping tool execution",
+			"execution_id", exec.ID,
+			"tool_name", exec.ToolName,
+		)
+		return nil
+	}
+
 	log.Debug("executing tool",
 		"execution_id", exec.ID,
 		"tool_name", exec.ToolName,
@@ -309,12 +319,18 @@ func (w *toolWorker[TTx]) handleAllToolsComplete(ctx context.Context, runID uuid
 		return
 	}
 
-	// Verify run is in pending_tools state
+	// Verify run is in pending_tools state (also handles cancelled runs)
 	if run.State != string(RunStatePendingTools) {
 		log.Debug("run not in pending_tools state, skipping",
 			"run_id", runID,
 			"state", run.State,
 		)
+		return
+	}
+
+	// Double-check: skip if run was cancelled (race between cancel and tools complete)
+	if run.State == string(RunStateCancelled) {
+		log.Info("run was cancelled, skipping tools continuation", "run_id", runID)
 		return
 	}
 

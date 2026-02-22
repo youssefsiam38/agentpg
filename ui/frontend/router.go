@@ -132,6 +132,11 @@ func NewRouter[TTx any](svc *service.Service[TTx], client *agentpg.Client[TTx], 
 	mux.HandleFunc("GET /chat/poll/{runId}", r.handleChatPoll)
 	mux.HandleFunc("GET /chat/session/{sessionId}", r.handleChatSession)
 	mux.HandleFunc("GET /chat/session/{sessionId}/messages", r.handleChatMessages)
+	mux.HandleFunc("POST /chat/cancel/{runId}", r.handleChatCancel)
+	mux.HandleFunc("POST /chat/regenerate/{runId}", r.handleChatRegenerate)
+
+	// Run actions
+	mux.HandleFunc("POST /runs/{id}/cancel", r.handleCancelRun)
 
 	// HTMX fragments
 	mux.HandleFunc("GET /fragments/dashboard-stats", r.handleFragmentDashboardStats)

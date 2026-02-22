@@ -22,6 +22,11 @@
         </div>
         {{end}}
         {{template "processing-indicator" (dict "State" .State)}}
+        <button hx-post="{{.BasePath}}/chat/cancel/{{.RunID}}"
+                hx-swap="outerHTML" hx-target="#run-{{.RunID}}"
+                class="mt-2 inline-flex items-center px-2 py-1 text-xs text-red-400 bg-red-900/30 border border-red-800 rounded hover:bg-red-900/50">
+            Stop
+        </button>
     </div>
 </div>
 {{end}}

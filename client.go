@@ -840,6 +840,120 @@ func (c *Client[TTx]) GetRun(ctx context.Context, id uuid.UUID) (*Run, error) {
 	return convertRun(run), nil
 }
 
+// CancelRun cancels a running or pending run and all its child runs.
+// If the run is already in a terminal state, this is a no-op (idempotent).
+// Any in-progress batch API requests will be cancelled asynchronously.
+// WaitForRun callers will be unblocked with a cancelled error.
+func (c *Client[TTx]) CancelRun(ctx context.Context, runID uuid.UUID) error {
+	c.mu.RLock()
+	started := c.started
+	c.mu.RUnlock()
+
+	if !started {
+		return ErrClientNotStarted
+	}
+
+	store := c.driver.Store()
+
+	// Atomically cancel the run in the database
+	cancelled, batchID, _, err := store.CancelRun(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("failed to cancel run: %w", err)
+	}
+
+	// Already terminal — idempotent no-op
+	if !cancelled {
+		return nil
+	}
+
+	// If there was an active batch, cancel it asynchronously via API
+	if batchID != "" {
+		go func() {
+			_, cancelErr := c.anthropic.Messages.Batches.Cancel(context.Background(), batchID)
+			if cancelErr != nil {
+				c.log().Warn("failed to cancel batch API request",
+					"batch_id", batchID,
+					"run_id", runID,
+					"error", cancelErr,
+				)
+			} else {
+				c.log().Info("cancelled batch API request",
+					"batch_id", batchID,
+					"run_id", runID,
+				)
+			}
+		}()
+	}
+
+	// Fetch updated run and notify waiters
+	run, err := store.GetRun(ctx, runID)
+	if err == nil && run != nil {
+		c.notifyRunWaiters(runID, convertRun(run))
+	}
+
+	c.log().Info("run cancelled", "run_id", runID)
+	return nil
+}
+
+// RegenerateRun re-creates a run that was previously cancelled or failed.
+// It deletes all messages from the original run and creates a new run with
+// the same session, agent, prompt, mode, and options.
+// The original run must be in a terminal state (completed, cancelled, or failed).
+// Returns the new run ID.
+func (c *Client[TTx]) RegenerateRun(ctx context.Context, runID uuid.UUID) (uuid.UUID, error) {
+	c.mu.RLock()
+	started := c.started
+	c.mu.RUnlock()
+
+	if !started {
+		return uuid.Nil, ErrClientNotStarted
+	}
+
+	store := c.driver.Store()
+
+	// Get the original run
+	run, err := store.GetRun(ctx, runID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to get run: %w", err)
+	}
+	if run == nil {
+		return uuid.Nil, ErrRunNotFound
+	}
+
+	// Must be in a terminal state
+	if !isTerminalState(RunState(run.State)) {
+		return uuid.Nil, ErrInvalidStateTransition
+	}
+
+	// Delete all messages from the cancelled/failed run
+	_, err = store.DeleteRunMessages(ctx, runID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to delete run messages: %w", err)
+	}
+
+	// Create a new run with the same parameters
+	newRun, err := store.CreateRun(ctx, driver.CreateRunParams{
+		SessionID:           run.SessionID,
+		AgentID:             run.AgentID,
+		Prompt:              run.Prompt,
+		RunMode:             run.RunMode,
+		Depth:               0,
+		CreatedByInstanceID: c.instanceID,
+		Metadata:            run.Metadata,
+		Options:             run.Options,
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create regenerated run: %w", err)
+	}
+
+	c.log().Info("run regenerated",
+		"original_run_id", runID,
+		"new_run_id", newRun.ID,
+	)
+
+	return newRun.ID, nil
+}
+
 // Internal methods
 
 func (c *Client[TTx]) validateReferences() error {

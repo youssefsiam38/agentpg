@@ -209,6 +209,13 @@ func (w *streamingWorker[TTx]) processRun(ctx context.Context, run *driver.Run) 
 		"stop_reason", message.StopReason,
 	)
 
+	// Check if run was cancelled during streaming — discard result if so
+	currentRun, checkErr := store.GetRun(ctx, run.ID)
+	if checkErr == nil && currentRun != nil && currentRun.State == string(RunStateCancelled) {
+		log.Info("run was cancelled during streaming, discarding result", "run_id", run.ID)
+		return nil
+	}
+
 	// Process the accumulated response
 	return w.processResult(ctx, iteration, run, &message)
 }
