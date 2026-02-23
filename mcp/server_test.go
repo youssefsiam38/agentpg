@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -234,15 +235,16 @@ func TestToolExecutionError(t *testing.T) {
 func TestToolExecutionNotConnected(t *testing.T) {
 	s := &MCPServer{
 		config:    &MCPServerConfig{Name: "test"},
-		connected: false,
+		connected: true, // bypass EnsureConnected
+		// session is nil — simulates a disconnected state where session was lost
 	}
 
 	_, err := s.callTool(context.Background(), "echo", json.RawMessage(`{}`))
 	if err == nil {
-		t.Fatal("expected error when not connected")
+		t.Fatal("expected error when session is nil")
 	}
 
-	// Should be mapped to a snooze error (connection issue = transient)
+	// Should be mapped to a snooze error (nil session = ErrNotConnected = transient)
 	if !tool.IsToolSnooze(err) {
 		t.Errorf("expected ToolSnooze error, got: %v", err)
 	}
@@ -535,10 +537,16 @@ func TestNewMCPServerValidation(t *testing.T) {
 			Name:  "test",
 			Stdio: &StdioTransportConfig{},
 		}, true},
-		{"http no url", &MCPServerConfig{
+		{"http no url or urlfunc", &MCPServerConfig{
 			Name: "test",
 			HTTP: &HTTPTransportConfig{},
 		}, true},
+		{"valid http with urlfunc only", &MCPServerConfig{
+			Name: "test",
+			HTTP: &HTTPTransportConfig{
+				URLFunc: func(ctx context.Context) (string, error) { return "http://test", nil },
+			},
+		}, false},
 		{"valid stdio", &MCPServerConfig{
 			Name:  "test",
 			Stdio: &StdioTransportConfig{Command: "cmd"},
@@ -948,7 +956,7 @@ func TestCallToolWithHTTPNoURLFunc(t *testing.T) {
 }
 
 func TestNewMCPServerValidationWithURLFunc(t *testing.T) {
-	// URL is still required even when URLFunc is set (needed for discovery).
+	// URLFunc-only is valid (URL resolved lazily via EnsureConnected).
 	_, err := NewMCPServer(&MCPServerConfig{
 		Name: "test",
 		HTTP: &HTTPTransportConfig{
@@ -957,11 +965,11 @@ func TestNewMCPServerValidationWithURLFunc(t *testing.T) {
 			},
 		},
 	})
-	if err == nil {
-		t.Fatal("expected error when HTTP.URL is empty even with URLFunc")
+	if err != nil {
+		t.Fatalf("expected no error with URLFunc-only, got: %v", err)
 	}
 
-	// Valid: both URL and URLFunc set.
+	// Also valid: both URL and URLFunc set.
 	_, err = NewMCPServer(&MCPServerConfig{
 		Name: "test",
 		HTTP: &HTTPTransportConfig{
@@ -973,6 +981,108 @@ func TestNewMCPServerValidationWithURLFunc(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("expected no error with URL + URLFunc, got: %v", err)
+	}
+}
+
+func TestRegisterServerLazy(t *testing.T) {
+	registrar := newMockRegistrar()
+
+	server, err := RegisterServerLazy(registrar, &MCPServerConfig{
+		Name: "lazy-test",
+		HTTP: &HTTPTransportConfig{
+			URLFunc: func(ctx context.Context) (string, error) {
+				return "http://example.com/mcp", nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RegisterServerLazy failed: %v", err)
+	}
+	defer server.Close()
+
+	// Not connected yet.
+	if server.connected {
+		t.Error("expected server to not be connected after RegisterServerLazy")
+	}
+
+	// Registrar is set for lazy registration.
+	if server.registrar == nil {
+		t.Error("expected registrar to be set")
+	}
+
+	// No tools discovered yet.
+	if len(server.Tools()) != 0 {
+		t.Errorf("expected 0 tools before connection, got %d", len(server.Tools()))
+	}
+
+	// No tools registered with registrar.
+	if len(registrar.tools) != 0 {
+		t.Errorf("expected 0 registered tools, got %d", len(registrar.tools))
+	}
+}
+
+func TestRegisterServerLazyValidation(t *testing.T) {
+	registrar := newMockRegistrar()
+
+	// Invalid config should still be rejected.
+	_, err := RegisterServerLazy(registrar, &MCPServerConfig{
+		Name: "test",
+		HTTP: &HTTPTransportConfig{}, // no URL or URLFunc
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid config")
+	}
+}
+
+func TestEnsureConnectedIdempotent(t *testing.T) {
+	session := startTestServer(t, map[string]mcpsdk.ToolHandler{
+		"ping": func(_ context.Context, _ *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			return &mcpsdk.CallToolResult{
+				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "pong"}},
+			}, nil
+		},
+	})
+
+	s := &MCPServer{
+		config:    &MCPServerConfig{Name: "test"},
+		session:   session,
+		connected: true,
+	}
+
+	// EnsureConnected should return immediately since already connected.
+	err := s.EnsureConnected(context.Background())
+	if err != nil {
+		t.Fatalf("EnsureConnected on connected server should return nil, got: %v", err)
+	}
+
+	if !s.connected {
+		t.Error("expected server to still be connected")
+	}
+}
+
+func TestCallToolAutoConnect(t *testing.T) {
+	// Server NOT connected with URLFunc that fails — callTool should trigger
+	// EnsureConnected, which resolves URLFunc for discovery and fails.
+	s := &MCPServer{
+		config: &MCPServerConfig{
+			Name: "test",
+			HTTP: &HTTPTransportConfig{
+				URLFunc: func(ctx context.Context) (string, error) {
+					return "", errors.New("no URL available")
+				},
+			},
+		},
+		connected: false,
+	}
+
+	_, err := s.callTool(context.Background(), "echo", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected error from callTool when EnsureConnected fails")
+	}
+
+	// The error is from URLFunc resolution during EnsureConnected.
+	if !strings.Contains(err.Error(), "URLFunc") {
+		t.Errorf("expected URLFunc error, got: %v", err)
 	}
 }
 

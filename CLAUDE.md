@@ -217,7 +217,7 @@ type AgentDefinition struct {
     Description  string            // Shown when agent is used as tool
     Model        string            // Required Claude model ID
     SystemPrompt string            // Agent behavior definition
-    Tools        []string          // Tool names this agent can use (must be registered)
+    Tools        []string          // Tool names this agent can use (nil = all registered tools, empty = no tools)
     AgentIDs     []uuid.UUID       // Agent UUIDs for delegation (agent-as-tool)
     Metadata     map[string]any    // App-specific data (tenant_id, tags, etc.)
     MaxTokens    *int
@@ -335,7 +335,7 @@ func (t *UserLookupTool) Execute(ctx context.Context, input json.RawMessage) (st
 
 ### Registering Tools and Creating Agents
 ```go
-// Step 1: Register tools on client (before Start)
+// Step 1: Register tools on client (before or after Start)
 client.RegisterTool(&CalculatorTool{})
 client.RegisterTool(&UserLookupTool{db: pool})
 client.RegisterTool(&WeatherTool{apiKey: weatherAPIKey})
@@ -354,11 +354,22 @@ fullAgent, _ := client.CreateAgent(ctx, &agentpg.AgentDefinition{
     Tools: []string{"calculator", "lookup_user", "get_weather"},
 })
 
+// Agent with nil Tools = uses ALL registered tools
+flexAgent, _ := client.CreateAgent(ctx, &agentpg.AgentDefinition{
+    Name:  "flex-assistant", Model: "claude-sonnet-4-5-20250929",
+    // Tools: nil — uses all registered tools on the client instance
+})
+
 // Step 4: Run using agent UUID
 response, _ := client.RunSync(ctx, sessionID, mathAgent.ID, "What is 2+2?", nil)
 ```
 
-**Important**: An agent can only use tools that are registered on the client instance AND listed in the agent's `Tools` array.
+**Tool semantics**:
+- `Tools: []string{"a", "b"}` — agent can only use the listed tools
+- `Tools: nil` (omitted) — agent can use **all** tools registered on the client instance
+- `Tools: []string{}` (explicit empty) — agent has no tools
+
+**Important**: When `Tools` is set (non-nil), an agent can only use tools that are registered on the client instance AND listed in the agent's `Tools` array. `RegisterTool()` can be called before or after `Start()` — tools registered after `Start()` are synced to the database immediately.
 
 ---
 
@@ -377,7 +388,7 @@ import agentmcp "github.com/youssefsiam38/agentpg/mcp"
 
 ### Basic Usage (Stdio Transport)
 ```go
-// Register MCP server (before client.Start)
+// Register MCP server eagerly (before client.Start)
 mcpServer, err := agentmcp.RegisterServer(ctx, client, &agentmcp.MCPServerConfig{
     Name: "github",
     Stdio: &agentmcp.StdioTransportConfig{
@@ -464,7 +475,7 @@ type StdioTransportConfig struct {
 }
 
 type HTTPTransportConfig struct {
-    URL        string            // MCP server endpoint (also used for discovery when URLFunc is set)
+    URL        string            // MCP server endpoint. Optional when URLFunc is set (resolved lazily)
     URLFunc    func(ctx context.Context) (string, error) // Dynamic URL per tool execution (for multi-tenant)
     HTTPClient *http.Client      // Custom HTTP client
     Headers    map[string]string // Static headers
@@ -479,9 +490,11 @@ type ReconnectConfig struct {
 ```
 
 ### Integration Flow
+
+**Eager (tools discovered at boot):**
 ```
 1. client := agentpg.NewClient(drv, config)
-2. client.RegisterTool(&LocalTool{})            // Local tools (optional)
+2. client.RegisterTool(&LocalTool{})            // Local tools (before or after Start)
 3. mcpServer := agentmcp.RegisterServer(...)    // MCP tools (before Start)
 4. client.Start(ctx)                             // Syncs all tools to database
 5. agent := client.GetOrCreateAgent(ctx, def)   // Agent with MCP tool names
@@ -489,7 +502,17 @@ type ReconnectConfig struct {
 7. defer mcpServer.Close()                       // Shutdown MCP connection
 ```
 
-**Important**: `RegisterServer()` must be called **before** `client.Start()`.
+**Lazy (tools discovered on first use):**
+```
+1. client := agentpg.NewClient(drv, config)
+2. client.Start(ctx)
+3. mcpServer := agentmcp.RegisterServerLazy(...) // No connection yet
+4. agent with Tools: nil                          // Uses all registered tools
+5. client.RunFastSync(ctx, ...)                   // First call triggers EnsureConnected
+6. defer mcpServer.Close()
+```
+
+**Important**: `RegisterServer()` connects eagerly and must be called **before** `client.Start()`. Use `RegisterServerLazy()` for deferred connection (e.g., when the MCP URL is only known at request time via `URLFunc`).
 
 ### Multi-Tenant MCP (Dynamic URL Routing)
 
@@ -534,12 +557,34 @@ response, err := client.RunFastSync(ctx, sessionID, agentID, prompt, &agentpg.Ru
 })
 ```
 
+**Lazy connection** — When `URL` is not known at boot (e.g., dynamic tenants), use `RegisterServerLazy` with `URLFunc` only:
+```go
+mcpServer, err := agentmcp.RegisterServerLazy(client, &agentmcp.MCPServerConfig{
+    Name: "hms",
+    HTTP: &agentmcp.HTTPTransportConfig{
+        // No static URL — resolved lazily from URLFunc on first tool call.
+        URLFunc: func(ctx context.Context) (string, error) {
+            tenantID, ok := tool.GetVariable[float64](ctx, "tenant_id")
+            if !ok { return "", fmt.Errorf("tenant_id not in context") }
+            return fmt.Sprintf("http://hms/api/mcp/%d/", int(tenantID)), nil
+        },
+    },
+})
+
+// Create agent with nil Tools (uses all tools, including those discovered lazily)
+agent, _ := client.GetOrCreateAgent(ctx, &agentpg.AgentDefinition{
+    Name: "hms-agent", Model: "claude-sonnet-4-5-20250929",
+    // Tools: nil = all registered tools
+})
+```
+
 **How it works:**
-- `URL` is used once at startup for tool discovery (schema, names)
+- `URL` is used once at startup for tool discovery (schema, names). When omitted, `URLFunc` resolves the discovery URL lazily on the first tool call via `EnsureConnected`
 - `URLFunc` is called on every tool execution to resolve the target URL
 - Sessions are pooled and reused per resolved URL (not created per request)
 - `HeaderFunc`, `Headers`, and `HTTPClient` are shared across all pooled sessions
 - `URLFunc` is HTTP-only; Stdio transport is unaffected
+- `RegisterServerLazy` defers connection until first use; `EnsureConnected` is idempotent and thread-safe
 
 ### MCP Error Handling
 
@@ -1161,8 +1206,10 @@ See [Go documentation](https://pkg.go.dev/github.com/youssefsiam38/agentpg).
 
 ### Key Methods
 - `NewClient()`, `Start()`, `Stop()` - Lifecycle
-- `RegisterTool()` - Tool registration (before Start)
-- `agentmcp.RegisterServer()` - Register MCP server tools (mcp sub-module, before Start)
+- `RegisterTool()` - Tool registration (before or after Start)
+- `GetAllToolNames()` - List all registered tool names
+- `agentmcp.RegisterServer()` - Register MCP server tools eagerly (mcp sub-module, before Start)
+- `agentmcp.RegisterServerLazy()` - Register MCP server for lazy connection (mcp sub-module, before or after Start)
 - `CreateAgent()`, `GetOrCreateAgent()`, `GetAgentByID()`, `GetAgentByName()`, `ListAgents()`, `UpdateAgent()`, `DeleteAgent()` - Agent management (after Start)
 - `NewSession()`, `NewSessionTx()` - Create sessions
 - `Run()`, `RunTx()`, `RunSync()` - Execute agents (Batch API, takes agent UUID and optional *RunOptions)

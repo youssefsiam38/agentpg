@@ -264,7 +264,7 @@ system_prompt TEXT,
 max_tokens INTEGER, temperature REAL, top_k INTEGER, top_p REAL,
 
 -- Tool names this agent can use (references agentpg_tools.name)
-tool_names TEXT [] NOT NULL DEFAULT '{}',
+tool_names TEXT [] DEFAULT '{}',
 
 -- Agent IDs for agent-as-tool delegation (references other agents by UUID)
 -- When this agent calls another agent as a tool, the target agent's ID is here
@@ -295,7 +295,7 @@ COMMENT ON COLUMN agentpg_agents.id IS 'UUID primary key. Use this to reference 
 
 COMMENT ON COLUMN agentpg_agents.name IS 'Display name. Must be unique within same metadata context.';
 
-COMMENT ON COLUMN agentpg_agents.tool_names IS 'Array of tool names this agent can invoke.';
+COMMENT ON COLUMN agentpg_agents.tool_names IS 'Array of tool names this agent can invoke. NULL = all registered tools, empty = no tools.';
 
 COMMENT ON COLUMN agentpg_agents.agent_ids IS 'UUIDs of agents this agent can delegate to (agent-as-tool pattern).';
 
@@ -1304,7 +1304,7 @@ CREATE INDEX agentpg_idx_archive_session ON agentpg_message_archive (session_id,
 --
 -- ROUTING LOGIC (tool-based):
 -- - An instance can process a run if it has ALL the tools that the agent requires
--- - Agents with no tools (tool_names = '{}') can be processed by any instance
+-- - Agents with no tools (tool_names = '{}') or all tools (tool_names IS NULL) can be processed by any instance
 -- - This allows specialized workers (e.g., code tools on specific instances)
 --
 -- p_run_mode: Optional filter for run mode ('batch', 'streaming', or NULL for any)
@@ -1334,9 +1334,10 @@ BEGIN
           -- Filter by run mode if specified
           AND (p_run_mode IS NULL OR r.run_mode = p_run_mode)
           -- Only claim if instance has ALL tools required by this agent
-          -- Agents with no tools (empty array) can be processed by any instance
+          -- Agents with NULL tool_names (all tools) or empty array can be processed by any instance
           AND (
-              a.tool_names = '{}'
+              a.tool_names IS NULL
+              OR a.tool_names = '{}'
               OR NOT EXISTS (
                   -- Find any tool required by agent that instance doesn't have
                   SELECT 1 FROM unnest(a.tool_names) AS required_tool
@@ -1407,7 +1408,8 @@ BEGIN
               OR
               -- Agent tools: check if instance has ALL tools required by the target agent
               (te.is_agent_tool = TRUE AND (
-                  a.tool_names = '{}'
+                  a.tool_names IS NULL
+                  OR a.tool_names = '{}'
                   OR NOT EXISTS (
                       -- Find any tool required by target agent that instance doesn't have
                       SELECT 1 FROM unnest(a.tool_names) AS required_tool

@@ -283,6 +283,11 @@ func (w *runWorker[TTx]) buildMessages(ctx context.Context, run *driver.Run) ([]
 }
 
 func (w *runWorker[TTx]) buildTools(ctx context.Context, agent *AgentDefinition) ([]anthropic.ToolUnionParam, error) {
+	// nil Tools = all registered tools (opt-in via Tools: nil in AgentDefinition)
+	if agent.Tools == nil {
+		return w.buildAllTools(ctx, agent)
+	}
+
 	if len(agent.Tools) == 0 && len(agent.AgentIDs) == 0 {
 		return nil, nil
 	}
@@ -312,6 +317,58 @@ func (w *runWorker[TTx]) buildTools(ctx context.Context, agent *AgentDefinition)
 		}
 		tools = append(tools, anthropic.ToolUnionParam{OfTool: &toolParam})
 	}
+
+	// Add agent-as-tool entries
+	for _, delegateID := range agent.AgentIDs {
+		delegateAgent, err := w.client.GetAgentByID(ctx, delegateID)
+		if err != nil || delegateAgent == nil {
+			continue
+		}
+
+		inputSchema := anthropic.ToolInputSchemaParam{
+			Type: "object",
+			Properties: map[string]any{
+				"task": map[string]any{
+					"type":        "string",
+					"description": "The task to delegate to this agent",
+				},
+			},
+			Required: []string{"task"},
+		}
+
+		toolParam := anthropic.ToolParam{
+			Name:        delegateAgent.Name,
+			Description: anthropic.String(delegateAgent.Description),
+			InputSchema: inputSchema,
+		}
+		tools = append(tools, anthropic.ToolUnionParam{OfTool: &toolParam})
+	}
+
+	return tools, nil
+}
+
+// buildAllTools returns all registered tools (used when agent.Tools is nil).
+func (w *runWorker[TTx]) buildAllTools(ctx context.Context, agent *AgentDefinition) ([]anthropic.ToolUnionParam, error) {
+	var tools []anthropic.ToolUnionParam
+
+	w.client.tools.Range(func(_, value any) bool {
+		t := value.(tool.Tool)
+		schema := t.InputSchema()
+		inputSchema := anthropic.ToolInputSchemaParam{
+			Type:       "object",
+			Properties: schemaPropertiesToMap(schema.Properties),
+		}
+		if len(schema.Required) > 0 {
+			inputSchema.Required = schema.Required
+		}
+		toolParam := anthropic.ToolParam{
+			Name:        t.Name(),
+			Description: anthropic.String(t.Description()),
+			InputSchema: inputSchema,
+		}
+		tools = append(tools, anthropic.ToolUnionParam{OfTool: &toolParam})
+		return true
+	})
 
 	// Add agent-as-tool entries
 	for _, delegateID := range agent.AgentIDs {

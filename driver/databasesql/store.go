@@ -236,11 +236,8 @@ func (s *Store) CreateAgent(ctx context.Context, agent *driver.AgentDefinition) 
 	config, _ := json.Marshal(agent.Config)
 	metadata, _ := json.Marshal(agent.Metadata)
 
-	// Ensure non-nil slices to avoid NULL constraint violations
+	// tool_names: nil = all registered tools (NULL in DB), non-nil = explicit list
 	toolNames := agent.ToolNames
-	if toolNames == nil {
-		toolNames = []string{}
-	}
 	agentIDs := agent.AgentIDs
 	if agentIDs == nil {
 		agentIDs = []uuid.UUID{}
@@ -272,11 +269,8 @@ func (s *Store) UpdateAgent(ctx context.Context, agent *driver.AgentDefinition) 
 	config, _ := json.Marshal(agent.Config)
 	metadata, _ := json.Marshal(agent.Metadata)
 
-	// Ensure non-nil slices to avoid NULL constraint violations
+	// tool_names: nil = all registered tools (NULL in DB), non-nil = explicit list
 	toolNames := agent.ToolNames
-	if toolNames == nil {
-		toolNames = []string{}
-	}
 	agentIDs := agent.AgentIDs
 	if agentIDs == nil {
 		agentIDs = []uuid.UUID{}

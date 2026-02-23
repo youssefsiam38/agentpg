@@ -27,8 +27,9 @@ type MCPServer struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
-	sessionPool sync.Map    // URL -> *mcpsdk.ClientSession (for URLFunc routing)
+	sessionPool sync.Map     // URL -> *mcpsdk.ClientSession (for URLFunc routing)
 	httpClient  *http.Client // Shared HTTP client (with header injection) for pooled sessions
+	registrar   ToolRegistrar // For lazy tool registration (set by RegisterServerLazy)
 }
 
 // RegisterServer connects to an MCP server, discovers tools, and registers
@@ -57,6 +58,96 @@ func RegisterServer(ctx context.Context, registrar ToolRegistrar, config *MCPSer
 	return server, nil
 }
 
+// RegisterServerLazy creates an MCPServer without connecting.
+// Tools are discovered and registered lazily on the first tool call
+// (or via an explicit EnsureConnected call).
+// This is useful for multi-tenant setups where the MCP URL is only
+// known at request time via URLFunc.
+func RegisterServerLazy(registrar ToolRegistrar, config *MCPServerConfig) (*MCPServer, error) {
+	server, err := NewMCPServer(config)
+	if err != nil {
+		return nil, err
+	}
+	server.registrar = registrar
+	return server, nil
+}
+
+// EnsureConnected connects to the MCP server if not already connected.
+// Idempotent and thread-safe — safe to call from multiple goroutines.
+// When URLFunc is set and URL is empty, the first call resolves the
+// discovery URL from URLFunc(ctx).
+func (s *MCPServer) EnsureConnected(ctx context.Context) error {
+	s.mu.RLock()
+	if s.connected {
+		s.mu.RUnlock()
+		return nil
+	}
+	s.mu.RUnlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Double-check after lock upgrade.
+	if s.connected {
+		return nil
+	}
+
+	// Resolve discovery URL from URLFunc if no static URL is set.
+	if s.config.HTTP != nil && s.config.HTTP.URL == "" && s.config.HTTP.URLFunc != nil {
+		url, err := s.config.HTTP.URLFunc(ctx)
+		if err != nil {
+			return fmt.Errorf("URLFunc failed for discovery: %w", err)
+		}
+		s.config.HTTP.URL = url
+	}
+
+	s.ctx, s.cancel = context.WithCancel(ctx)
+
+	s.client = mcpsdk.NewClient(
+		&mcpsdk.Implementation{
+			Name:    "agentpg",
+			Version: "1.0.0",
+		},
+		nil,
+	)
+
+	transport, err := s.buildTransport()
+	if err != nil {
+		return fmt.Errorf("failed to build transport for %q: %w", s.config.Name, err)
+	}
+
+	session, err := s.client.Connect(s.ctx, transport, nil)
+	if err != nil {
+		return fmt.Errorf("failed to connect to MCP server %q: %w", s.config.Name, err)
+	}
+	s.session = session
+
+	if err := s.discoverTools(s.ctx); err != nil {
+		_ = session.Close()
+		s.session = nil
+		return fmt.Errorf("failed to discover tools from %q: %w", s.config.Name, err)
+	}
+
+	s.connected = true
+
+	// Register discovered tools with the registrar (safe after client.Start()).
+	if s.registrar != nil {
+		for _, t := range s.tools {
+			if err := s.registrar.RegisterTool(t); err != nil {
+				// Non-fatal: tool may already be registered from a previous connection.
+				continue
+			}
+		}
+	}
+
+	if s.config.Reconnect != nil {
+		s.wg.Add(1)
+		go s.reconnectLoop()
+	}
+
+	return nil
+}
+
 // NewMCPServer creates a new MCP server connection manager.
 // Does not connect yet — call Connect() to establish the connection,
 // or use RegisterServer() for convenience.
@@ -76,8 +167,8 @@ func NewMCPServer(config *MCPServerConfig) (*MCPServer, error) {
 	if config.Stdio != nil && config.Stdio.Command == "" {
 		return nil, fmt.Errorf("%w: stdio command is required", ErrInvalidConfig)
 	}
-	if config.HTTP != nil && config.HTTP.URL == "" {
-		return nil, fmt.Errorf("%w: HTTP URL is required", ErrInvalidConfig)
+	if config.HTTP != nil && config.HTTP.URL == "" && config.HTTP.URLFunc == nil {
+		return nil, fmt.Errorf("%w: HTTP URL or URLFunc is required", ErrInvalidConfig)
 	}
 
 	return &MCPServer{
@@ -304,7 +395,13 @@ func (s *MCPServer) getOrCreateSession(ctx context.Context, url string) (*mcpsdk
 }
 
 // callTool delegates a tool call to the MCP server.
+// If the server was created via RegisterServerLazy, auto-connects on first call.
 func (s *MCPServer) callTool(ctx context.Context, mcpToolName string, input json.RawMessage) (string, error) {
+	// Auto-connect if lazy-registered and not yet connected.
+	if err := s.EnsureConnected(ctx); err != nil {
+		return "", mapMCPError(s.config.Name, mcpToolName, err)
+	}
+
 	s.mu.RLock()
 	connected := s.connected
 	s.mu.RUnlock()

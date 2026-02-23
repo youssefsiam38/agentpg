@@ -29,9 +29,9 @@ type Client[TTx any] struct {
 	started    bool
 	mu         sync.RWMutex
 
-	// Registered tools (pre-Start)
-	// Tools remain in-memory because they contain executable code
-	tools map[string]tool.Tool
+	// Registered tools (in-memory, thread-safe).
+	// Tools can be registered before or after Start().
+	tools sync.Map // string -> tool.Tool
 
 	// Background workers
 	runWorker       *runWorker[TTx]
@@ -101,7 +101,6 @@ func NewClient[TTx any](drv driver.Driver[TTx], config *ClientConfig) (*Client[T
 		config:     config,
 		anthropic:  anthropicClient,
 		instanceID: instanceID,
-		tools:      make(map[string]tool.Tool),
 		runWaiters: make(map[uuid.UUID][]chan *Run),
 		compactor:  comp,
 	}, nil
@@ -211,15 +210,9 @@ func (c *Client[TTx]) ListAgents(ctx context.Context, metadata map[string]any, l
 }
 
 // RegisterTool registers a tool with the client.
-// Must be called before Start().
+// Can be called before or after Start(). When called after Start(),
+// the tool is also synced to the database immediately.
 func (c *Client[TTx]) RegisterTool(t tool.Tool) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.started {
-		return ErrClientAlreadyStarted
-	}
-
 	if t == nil {
 		return fmt.Errorf("%w: tool is nil", ErrInvalidConfig)
 	}
@@ -229,7 +222,16 @@ func (c *Client[TTx]) RegisterTool(t tool.Tool) error {
 		return fmt.Errorf("%w: tool name is required", ErrInvalidConfig)
 	}
 
-	c.tools[name] = t
+	c.tools.Store(name, t)
+
+	// If client already started, sync to DB immediately.
+	// Reading c.started without lock is safe: it transitions false→true once, never back.
+	if c.started {
+		if err := c.syncToolToDatabase(context.Background(), t); err != nil {
+			return fmt.Errorf("failed to sync tool %q to database: %w", name, err)
+		}
+	}
+
 	c.log().Debug("registered tool", "name", name)
 	return nil
 }
@@ -293,9 +295,20 @@ func (c *Client[TTx]) GetOrCreateAgent(ctx context.Context, def *AgentDefinition
 
 // GetTool returns the registered tool by name.
 func (c *Client[TTx]) GetTool(name string) tool.Tool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.tools[name]
+	if v, ok := c.tools.Load(name); ok {
+		return v.(tool.Tool)
+	}
+	return nil
+}
+
+// GetAllToolNames returns the names of all registered tools.
+func (c *Client[TTx]) GetAllToolNames() []string {
+	var names []string
+	c.tools.Range(func(key, _ any) bool {
+		names = append(names, key.(string))
+		return true
+	})
+	return names
 }
 
 // Start initializes the client and begins background processing.
@@ -378,7 +391,7 @@ func (c *Client[TTx]) Start(ctx context.Context) error {
 	}()
 
 	c.started = true
-	c.log().Info("client started", "instance_id", c.instanceID, "tools", len(c.tools))
+	c.log().Info("client started", "instance_id", c.instanceID, "tools", len(c.GetAllToolNames()))
 	return nil
 }
 
@@ -978,31 +991,41 @@ func (c *Client[TTx]) registerInstance(ctx context.Context) error {
 }
 
 func (c *Client[TTx]) syncRegistrations(ctx context.Context) error {
-	store := c.driver.Store()
-
 	// Sync tools to database and register instance capabilities
 	// Note: Agents are now managed via CRUD API (CreateAgent, etc.) not auto-synced
-	for name, t := range c.tools {
-		schema := t.InputSchema()
-		schemaMap := map[string]any{
-			"type":       schema.Type,
-			"properties": schema.Properties,
-			"required":   schema.Required,
+	var syncErr error
+	c.tools.Range(func(_, value any) bool {
+		t := value.(tool.Tool)
+		if err := c.syncToolToDatabase(ctx, t); err != nil {
+			syncErr = err
+			return false
 		}
+		return true
+	})
+	return syncErr
+}
 
-		if err := store.UpsertTool(ctx, &driver.ToolDefinition{
-			Name:        name,
-			Description: t.Description(),
-			InputSchema: schemaMap,
-			IsAgentTool: false,
-		}); err != nil {
-			return fmt.Errorf("failed to upsert tool %q: %w", name, err)
-		}
+// syncToolToDatabase upserts a tool definition and registers instance capability.
+func (c *Client[TTx]) syncToolToDatabase(ctx context.Context, t tool.Tool) error {
+	store := c.driver.Store()
+	schema := t.InputSchema()
+	schemaMap := map[string]any{
+		"type":       schema.Type,
+		"properties": schema.Properties,
+		"required":   schema.Required,
+	}
 
-		// Register instance capability for this tool
-		if err := store.RegisterInstanceTool(ctx, c.instanceID, name); err != nil {
-			return fmt.Errorf("failed to register instance tool %q: %w", name, err)
-		}
+	if err := store.UpsertTool(ctx, &driver.ToolDefinition{
+		Name:        t.Name(),
+		Description: t.Description(),
+		InputSchema: schemaMap,
+		IsAgentTool: false,
+	}); err != nil {
+		return fmt.Errorf("failed to upsert tool %q: %w", t.Name(), err)
+	}
+
+	if err := store.RegisterInstanceTool(ctx, c.instanceID, t.Name()); err != nil {
+		return fmt.Errorf("failed to register instance tool %q: %w", t.Name(), err)
 	}
 
 	return nil
