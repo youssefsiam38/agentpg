@@ -16,6 +16,8 @@ github.com/yosida95/uritemplate/v3 v3.0.2 h1:Ed3Oyj9yrmi9087+NczuL5BwkIc4wvTb5zI
 github.com/yosida95/uritemplate/v3 v3.0.2/go.mod h1:ILOh0sOhIJR3+L/8afwt/kE++YT040gmv5BQTMR2HP4=
 github.com/youssefsiam38/agentpg v0.2.2 h1:NWwwe/KKa8ED8RzkkxNjHMmOmC2Nkym/pftJl46BKTQ=
 github.com/youssefsiam38/agentpg v0.2.2/go.mod h1:xPw5Vhf6JIBD5COxN21UFa+KAV7aK1PLZPsaqmbHr9o=
+github.com/youssefsiam38/agentpg v0.3.1 h1:0OBsNvuZn67QTrHWD+5NwiR7p+poLKLV1q1iyMKmcMo=
+github.com/youssefsiam38/agentpg v0.3.1/go.mod h1:whY2H7RUACrnHVoBviaXdfqynzUhcjQyyb9YaB+p5Mc=
 golang.org/x/oauth2 v0.30.0 h1:dnDm7JmhM45NNpd8FDDeLhK6FwqbOf4MLCM9zb1BOHI=
 golang.org/x/oauth2 v0.30.0/go.mod h1:B++QgG3ZKulg6sRPGD/mqlHQs5rB3Ml9erfeDY7xKlU=
 golang.org/x/sys v0.35.0 h1:vz1N37gP5bs89s7He8XuIYXpyY0+QlsKmzipCbUtyxI=

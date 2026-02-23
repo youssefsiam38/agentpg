@@ -18,15 +18,17 @@ import (
 // It manages the connection lifecycle and exposes discovered tools
 // as tool.Tool implementations.
 type MCPServer struct {
-	config    *MCPServerConfig
-	client    *mcpsdk.Client
-	session   *mcpsdk.ClientSession
-	tools     []*MCPTool
-	mu        sync.RWMutex
-	connected bool
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	config      *MCPServerConfig
+	client      *mcpsdk.Client
+	session     *mcpsdk.ClientSession // Discovery/default session
+	tools       []*MCPTool
+	mu          sync.RWMutex
+	connected   bool
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	sessionPool sync.Map    // URL -> *mcpsdk.ClientSession (for URLFunc routing)
+	httpClient  *http.Client // Shared HTTP client (with header injection) for pooled sessions
 }
 
 // RegisterServer connects to an MCP server, discovers tools, and registers
@@ -141,7 +143,7 @@ func (s *MCPServer) Tools() []tool.Tool {
 	return tools
 }
 
-// Close shuts down the MCP server connection.
+// Close shuts down the MCP server connection and all pooled sessions.
 func (s *MCPServer) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -157,6 +159,15 @@ func (s *MCPServer) Close() error {
 		_ = s.session.Close()
 		s.session = nil
 	}
+
+	// Close all pooled sessions.
+	s.sessionPool.Range(func(key, value any) bool {
+		if session, ok := value.(*mcpsdk.ClientSession); ok {
+			_ = session.Close()
+		}
+		s.sessionPool.Delete(key)
+		return true
+	})
 
 	s.connected = false
 	return nil
@@ -186,7 +197,9 @@ func (s *MCPServer) buildStdioTransport() (mcpsdk.Transport, error) {
 	return &mcpsdk.CommandTransport{Command: cmd}, nil
 }
 
-func (s *MCPServer) buildHTTPTransport() (mcpsdk.Transport, error) {
+// buildHTTPClient constructs the shared HTTP client with header injection.
+// This client is reused for both the discovery session and pooled sessions.
+func (s *MCPServer) buildHTTPClient() *http.Client {
 	cfg := s.config.HTTP
 
 	httpClient := cfg.HTTPClient
@@ -212,10 +225,26 @@ func (s *MCPServer) buildHTTPTransport() (mcpsdk.Transport, error) {
 		}
 	}
 
+	return httpClient
+}
+
+func (s *MCPServer) buildHTTPTransport() (mcpsdk.Transport, error) {
+	httpClient := s.buildHTTPClient()
+	s.httpClient = httpClient
+
 	return &mcpsdk.StreamableClientTransport{
-		Endpoint:   cfg.URL,
+		Endpoint:   s.config.HTTP.URL,
 		HTTPClient: httpClient,
 	}, nil
+}
+
+// buildHTTPTransportForURL creates a transport for a specific URL,
+// reusing the shared HTTP client. Used by the session pool for URLFunc routing.
+func (s *MCPServer) buildHTTPTransportForURL(url string) mcpsdk.Transport {
+	return &mcpsdk.StreamableClientTransport{
+		Endpoint:   url,
+		HTTPClient: s.httpClient,
+	}
 }
 
 // discoverTools fetches tools from the MCP server and creates MCPTool bridges.
@@ -249,14 +278,38 @@ func (s *MCPServer) discoverTools(ctx context.Context) error {
 	return nil
 }
 
+// getOrCreateSession returns a pooled session for the given URL, creating one if needed.
+func (s *MCPServer) getOrCreateSession(ctx context.Context, url string) (*mcpsdk.ClientSession, error) {
+	// Fast path: session already exists.
+	if val, ok := s.sessionPool.Load(url); ok {
+		return val.(*mcpsdk.ClientSession), nil
+	}
+
+	// Slow path: create new session.
+	transport := s.buildHTTPTransportForURL(url)
+	session, err := s.client.Connect(ctx, transport, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to MCP server at %q: %w", url, err)
+	}
+
+	// Store or return existing if another goroutine raced us.
+	actual, loaded := s.sessionPool.LoadOrStore(url, session)
+	if loaded {
+		// Another goroutine created the session first; close ours.
+		_ = session.Close()
+		return actual.(*mcpsdk.ClientSession), nil
+	}
+
+	return session, nil
+}
+
 // callTool delegates a tool call to the MCP server.
 func (s *MCPServer) callTool(ctx context.Context, mcpToolName string, input json.RawMessage) (string, error) {
 	s.mu.RLock()
-	session := s.session
 	connected := s.connected
 	s.mu.RUnlock()
 
-	if !connected || session == nil {
+	if !connected {
 		return "", mapMCPError(s.config.Name, mcpToolName, ErrNotConnected)
 	}
 
@@ -265,6 +318,27 @@ func (s *MCPServer) callTool(ctx context.Context, mcpToolName string, input json
 		if err := json.Unmarshal(input, &arguments); err != nil {
 			return "", mapMCPError(s.config.Name, mcpToolName,
 				fmt.Errorf("invalid tool input: %w", err))
+		}
+	}
+
+	// Resolve session: use URLFunc for dynamic routing, else default session.
+	var session *mcpsdk.ClientSession
+	if s.config.HTTP != nil && s.config.HTTP.URLFunc != nil {
+		url, err := s.config.HTTP.URLFunc(ctx)
+		if err != nil {
+			return "", mapMCPError(s.config.Name, mcpToolName,
+				fmt.Errorf("URLFunc failed: %w", err))
+		}
+		session, err = s.getOrCreateSession(ctx, url)
+		if err != nil {
+			return "", mapMCPError(s.config.Name, mcpToolName, err)
+		}
+	} else {
+		s.mu.RLock()
+		session = s.session
+		s.mu.RUnlock()
+		if session == nil {
+			return "", mapMCPError(s.config.Name, mcpToolName, ErrNotConnected)
 		}
 	}
 

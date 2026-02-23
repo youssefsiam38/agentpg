@@ -464,7 +464,8 @@ type StdioTransportConfig struct {
 }
 
 type HTTPTransportConfig struct {
-    URL        string            // MCP server endpoint
+    URL        string            // MCP server endpoint (also used for discovery when URLFunc is set)
+    URLFunc    func(ctx context.Context) (string, error) // Dynamic URL per tool execution (for multi-tenant)
     HTTPClient *http.Client      // Custom HTTP client
     Headers    map[string]string // Static headers
     HeaderFunc func() (map[string]string, error) // Dynamic headers (overrides static)
@@ -489,6 +490,56 @@ type ReconnectConfig struct {
 ```
 
 **Important**: `RegisterServer()` must be called **before** `client.Start()`.
+
+### Multi-Tenant MCP (Dynamic URL Routing)
+
+For multi-tenant SaaS where the MCP server URL varies per tenant (e.g., `/api/mcp/1/`, `/api/mcp/42/`), use `URLFunc` on `HTTPTransportConfig`. All tenants share the same tool definitions, but execution routes to the correct tenant endpoint.
+
+```go
+mcpServer, err := agentmcp.RegisterServer(ctx, client, &agentmcp.MCPServerConfig{
+    Name: "hms",
+    HTTP: &agentmcp.HTTPTransportConfig{
+        // Used for initial tool discovery at startup
+        URL: "http://hms/api/mcp/1/",
+
+        // Used for per-execution routing
+        URLFunc: func(ctx context.Context) (string, error) {
+            tenantID, ok := tool.GetVariable[float64](ctx, "tenant_id")
+            if !ok {
+                return "", fmt.Errorf("tenant_id not in context")
+            }
+            return fmt.Sprintf("http://hms/api/mcp/%d/", int(tenantID)), nil
+        },
+
+        HeaderFunc: func() (map[string]string, error) {
+            token, err := tokenManager.GetToken(context.Background())
+            if err != nil {
+                return nil, err
+            }
+            return map[string]string{"X-Token": token}, nil
+        },
+    },
+    DisableToolPrefix: true,
+})
+defer mcpServer.Close()
+```
+
+Pass the tenant context via run variables:
+```go
+response, err := client.RunFastSync(ctx, sessionID, agentID, prompt, &agentpg.RunOptions{
+    Variables: map[string]any{
+        "tenant_id": tenantID,  // from JWT or request context
+        "user_id":   userID,
+    },
+})
+```
+
+**How it works:**
+- `URL` is used once at startup for tool discovery (schema, names)
+- `URLFunc` is called on every tool execution to resolve the target URL
+- Sessions are pooled and reused per resolved URL (not created per request)
+- `HeaderFunc`, `Headers`, and `HTTPClient` are shared across all pooled sessions
+- `URLFunc` is HTTP-only; Stdio transport is unaffected
 
 ### MCP Error Handling
 

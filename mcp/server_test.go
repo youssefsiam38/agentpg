@@ -756,3 +756,269 @@ func TestMCPToolInterface(t *testing.T) {
 		t.Errorf("expected required=[input], got %v", schema.Required)
 	}
 }
+
+// urlCtxKey is a context key for passing tenant URL in URLFunc tests.
+type urlCtxKey struct{}
+
+func TestCallToolWithURLFunc(t *testing.T) {
+	// Create two in-memory MCP servers simulating two tenants.
+	session1 := startTestServer(t, map[string]mcpsdk.ToolHandler{
+		"greet": func(_ context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			return &mcpsdk.CallToolResult{
+				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "hello from tenant-1"}},
+			}, nil
+		},
+	})
+
+	session2 := startTestServer(t, map[string]mcpsdk.ToolHandler{
+		"greet": func(_ context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			return &mcpsdk.CallToolResult{
+				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "hello from tenant-2"}},
+			}, nil
+		},
+	})
+
+	s := &MCPServer{
+		config: &MCPServerConfig{
+			Name: "test",
+			HTTP: &HTTPTransportConfig{
+				URL: "http://discovery",
+				URLFunc: func(ctx context.Context) (string, error) {
+					url, _ := ctx.Value(urlCtxKey{}).(string)
+					return url, nil
+				},
+			},
+		},
+		connected: true,
+	}
+
+	// Pre-populate session pool.
+	s.sessionPool.Store("http://tenant-1/mcp", session1)
+	s.sessionPool.Store("http://tenant-2/mcp", session2)
+
+	// Call tenant 1.
+	ctx1 := context.WithValue(context.Background(), urlCtxKey{}, "http://tenant-1/mcp")
+	result1, err := s.callTool(ctx1, "greet", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("callTool tenant-1 failed: %v", err)
+	}
+	if result1 != "hello from tenant-1" {
+		t.Errorf("expected 'hello from tenant-1', got %q", result1)
+	}
+
+	// Call tenant 2.
+	ctx2 := context.WithValue(context.Background(), urlCtxKey{}, "http://tenant-2/mcp")
+	result2, err := s.callTool(ctx2, "greet", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("callTool tenant-2 failed: %v", err)
+	}
+	if result2 != "hello from tenant-2" {
+		t.Errorf("expected 'hello from tenant-2', got %q", result2)
+	}
+}
+
+func TestCallToolWithURLFuncError(t *testing.T) {
+	s := &MCPServer{
+		config: &MCPServerConfig{
+			Name: "test",
+			HTTP: &HTTPTransportConfig{
+				URL: "http://discovery",
+				URLFunc: func(ctx context.Context) (string, error) {
+					return "", errors.New("tenant not found")
+				},
+			},
+		},
+		connected: true,
+	}
+
+	_, err := s.callTool(context.Background(), "greet", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected error from URLFunc failure")
+	}
+	// URLFunc errors are mapped through mapMCPError; "tenant not found" is a generic error.
+	if tool.IsToolSnooze(err) || tool.IsToolCancel(err) || tool.IsToolDiscard(err) {
+		t.Errorf("expected generic error for URLFunc failure, got specialized: %v", err)
+	}
+}
+
+func TestCallToolWithURLFuncSessionReuse(t *testing.T) {
+	session := startTestServer(t, map[string]mcpsdk.ToolHandler{
+		"ping": func(_ context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			return &mcpsdk.CallToolResult{
+				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "pong"}},
+			}, nil
+		},
+	})
+
+	s := &MCPServer{
+		config: &MCPServerConfig{
+			Name: "test",
+			HTTP: &HTTPTransportConfig{
+				URL: "http://discovery",
+				URLFunc: func(ctx context.Context) (string, error) {
+					return "http://same-url/mcp", nil
+				},
+			},
+		},
+		connected: true,
+	}
+
+	// Pre-populate pool with one session.
+	s.sessionPool.Store("http://same-url/mcp", session)
+
+	// Call twice — both should use the same pooled session.
+	result1, err := s.callTool(context.Background(), "ping", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+	if result1 != "pong" {
+		t.Errorf("expected 'pong', got %q", result1)
+	}
+
+	result2, err := s.callTool(context.Background(), "ping", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("second call failed: %v", err)
+	}
+	if result2 != "pong" {
+		t.Errorf("expected 'pong', got %q", result2)
+	}
+
+	// Verify only one session in pool.
+	count := 0
+	s.sessionPool.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	if count != 1 {
+		t.Errorf("expected 1 session in pool, got %d", count)
+	}
+}
+
+func TestCallToolWithoutURLFunc(t *testing.T) {
+	// Without URLFunc, callTool should use the default session (existing behavior).
+	session := startTestServer(t, map[string]mcpsdk.ToolHandler{
+		"echo": func(_ context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			return &mcpsdk.CallToolResult{
+				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "default session"}},
+			}, nil
+		},
+	})
+
+	s := &MCPServer{
+		config:    &MCPServerConfig{Name: "test"},
+		session:   session,
+		connected: true,
+	}
+
+	result, err := s.callTool(context.Background(), "echo", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("callTool failed: %v", err)
+	}
+	if result != "default session" {
+		t.Errorf("expected 'default session', got %q", result)
+	}
+}
+
+func TestCallToolWithHTTPNoURLFunc(t *testing.T) {
+	// HTTP config without URLFunc should use the default session.
+	session := startTestServer(t, map[string]mcpsdk.ToolHandler{
+		"echo": func(_ context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			return &mcpsdk.CallToolResult{
+				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "static url"}},
+			}, nil
+		},
+	})
+
+	s := &MCPServer{
+		config: &MCPServerConfig{
+			Name: "test",
+			HTTP: &HTTPTransportConfig{URL: "http://static"},
+		},
+		session:   session,
+		connected: true,
+	}
+
+	result, err := s.callTool(context.Background(), "echo", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("callTool failed: %v", err)
+	}
+	if result != "static url" {
+		t.Errorf("expected 'static url', got %q", result)
+	}
+}
+
+func TestNewMCPServerValidationWithURLFunc(t *testing.T) {
+	// URL is still required even when URLFunc is set (needed for discovery).
+	_, err := NewMCPServer(&MCPServerConfig{
+		Name: "test",
+		HTTP: &HTTPTransportConfig{
+			URLFunc: func(ctx context.Context) (string, error) {
+				return "http://dynamic", nil
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error when HTTP.URL is empty even with URLFunc")
+	}
+
+	// Valid: both URL and URLFunc set.
+	_, err = NewMCPServer(&MCPServerConfig{
+		Name: "test",
+		HTTP: &HTTPTransportConfig{
+			URL: "http://discovery",
+			URLFunc: func(ctx context.Context) (string, error) {
+				return "http://dynamic", nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error with URL + URLFunc, got: %v", err)
+	}
+}
+
+func TestCloseWithPooledSessions(t *testing.T) {
+	session1 := startTestServer(t, map[string]mcpsdk.ToolHandler{
+		"ping": func(_ context.Context, _ *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			return &mcpsdk.CallToolResult{
+				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "pong"}},
+			}, nil
+		},
+	})
+	session2 := startTestServer(t, map[string]mcpsdk.ToolHandler{
+		"ping": func(_ context.Context, _ *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			return &mcpsdk.CallToolResult{
+				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "pong"}},
+			}, nil
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &MCPServer{
+		config:    &MCPServerConfig{Name: "test"},
+		connected: true,
+		ctx:       ctx,
+		cancel:    cancel,
+	}
+
+	s.sessionPool.Store("http://tenant-1/mcp", session1)
+	s.sessionPool.Store("http://tenant-2/mcp", session2)
+
+	err := s.Close()
+	if err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Verify pool is empty after close.
+	count := 0
+	s.sessionPool.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	if count != 0 {
+		t.Errorf("expected empty pool after close, got %d entries", count)
+	}
+
+	if s.connected {
+		t.Error("expected connected=false after close")
+	}
+}

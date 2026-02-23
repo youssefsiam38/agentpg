@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -61,7 +62,16 @@ type StdioTransportConfig struct {
 // HTTPTransportConfig configures a Streamable HTTP MCP server connection.
 type HTTPTransportConfig struct {
 	// URL is the MCP server endpoint.
+	// When URLFunc is also set, URL is used only for initial tool discovery
+	// at startup; all subsequent tool calls route through URLFunc.
 	URL string
+
+	// URLFunc dynamically resolves the MCP server URL per tool execution.
+	// It receives the tool execution context which carries run variables
+	// (tenant_id, user_id, etc.) accessible via tool.GetVariable().
+	// When set, the MCPServer pools and reuses sessions per resolved URL.
+	// If nil, all tool calls use the static URL.
+	URLFunc func(ctx context.Context) (string, error)
 
 	// HTTPClient allows full control over the HTTP client used for requests.
 	// Users can configure TLS, timeouts, and inject auth via custom
