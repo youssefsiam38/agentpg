@@ -118,6 +118,12 @@ func (w *toolWorker[TTx]) executeTool(ctx context.Context, exec *driver.ToolExec
 		return fmt.Errorf("failed to update tool state: %w", err)
 	}
 
+	// Get session ID and iteration number for callbacks
+	sessionID, iterNum := w.getCallbackContext(ctx, exec)
+
+	// Fire tool start callback
+	w.client.fireToolStartCallback(exec, sessionID, iterNum)
+
 	// Handle agent-as-tool
 	if exec.IsAgentTool {
 		return w.executeAgentTool(ctx, exec)
@@ -126,7 +132,10 @@ func (w *toolWorker[TTx]) executeTool(ctx context.Context, exec *driver.ToolExec
 	// Execute regular tool
 	t := w.client.GetTool(exec.ToolName)
 	if t == nil {
-		return w.completeToolExecution(ctx, exec.ID, "", true, fmt.Sprintf("tool not found: %s", exec.ToolName))
+		errMsg := fmt.Sprintf("tool not found: %s", exec.ToolName)
+		err := w.completeToolExecution(ctx, exec.ID, "", true, errMsg)
+		w.client.fireToolCompleteCallback(exec, sessionID, iterNum, "", true, errMsg, time.Since(now))
+		return err
 	}
 
 	// Load run to get variables (metadata)
@@ -148,10 +157,29 @@ func (w *toolWorker[TTx]) executeTool(ctx context.Context, exec *driver.ToolExec
 
 	output, err := t.Execute(execCtx, exec.ToolInput)
 	if err != nil {
-		return w.handleToolError(ctx, exec, err)
+		return w.handleToolError(ctx, exec, err, sessionID, iterNum, now)
 	}
 
-	return w.completeToolExecution(ctx, exec.ID, output, false, "")
+	completeErr := w.completeToolExecution(ctx, exec.ID, output, false, "")
+	w.client.fireToolCompleteCallback(exec, sessionID, iterNum, output, false, "", time.Since(now))
+	return completeErr
+}
+
+// getCallbackContext retrieves the session ID and iteration number for callback events.
+func (w *toolWorker[TTx]) getCallbackContext(ctx context.Context, exec *driver.ToolExecution) (uuid.UUID, int) {
+	store := w.client.driver.Store()
+
+	var sessionID uuid.UUID
+	var iterNum int
+
+	if run, err := store.GetRun(ctx, exec.RunID); err == nil && run != nil {
+		sessionID = run.SessionID
+	}
+	if iter, err := store.GetIteration(ctx, exec.IterationID); err == nil && iter != nil {
+		iterNum = iter.IterationNumber
+	}
+
+	return sessionID, iterNum
 }
 
 func (w *toolWorker[TTx]) executeAgentTool(ctx context.Context, exec *driver.ToolExecution) error {
@@ -210,6 +238,9 @@ func (w *toolWorker[TTx]) executeAgentTool(ctx context.Context, exec *driver.Too
 		return fmt.Errorf("failed to update tool execution with child run: %w", err)
 	}
 
+	// Propagate parent callbacks to child run so callers see tool calls from the full hierarchy
+	w.client.propagateRunCallbacks(exec.RunID, childRun.ID)
+
 	return nil
 }
 
@@ -231,9 +262,13 @@ func (w *toolWorker[TTx]) completeToolExecution(ctx context.Context, execID uuid
 // handleToolError handles tool execution errors with retry logic.
 // It checks for special error types (Cancel, Discard, Snooze) and handles
 // regular errors with exponential backoff retries.
-func (w *toolWorker[TTx]) handleToolError(ctx context.Context, exec *driver.ToolExecution, err error) error {
+func (w *toolWorker[TTx]) handleToolError(ctx context.Context, exec *driver.ToolExecution, err error, sessionID uuid.UUID, iterNum int, startTime time.Time) error {
 	store := w.client.driver.Store()
 	log := w.client.log()
+
+	fireComplete := func(errMsg string) {
+		w.client.fireToolCompleteCallback(exec, sessionID, iterNum, "", true, errMsg, time.Since(startTime))
+	}
 
 	// Check for ToolCancelError - cancel immediately, no retry
 	var cancelErr *tool.ToolCancelError
@@ -243,6 +278,7 @@ func (w *toolWorker[TTx]) handleToolError(ctx context.Context, exec *driver.Tool
 			"tool_name", exec.ToolName,
 			"error", cancelErr.Error(),
 		)
+		fireComplete(cancelErr.Error())
 		return store.DiscardToolExecution(ctx, exec.ID, cancelErr.Error())
 	}
 
@@ -254,6 +290,7 @@ func (w *toolWorker[TTx]) handleToolError(ctx context.Context, exec *driver.Tool
 			"tool_name", exec.ToolName,
 			"error", discardErr.Error(),
 		)
+		fireComplete(discardErr.Error())
 		return store.DiscardToolExecution(ctx, exec.ID, discardErr.Error())
 	}
 
@@ -286,6 +323,7 @@ func (w *toolWorker[TTx]) handleToolError(ctx context.Context, exec *driver.Tool
 			"max_attempts", exec.MaxAttempts,
 			"error", err.Error(),
 		)
+		fireComplete(err.Error())
 		return w.completeToolExecution(ctx, exec.ID, err.Error(), true, err.Error())
 	}
 

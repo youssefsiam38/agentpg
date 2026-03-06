@@ -52,6 +52,10 @@ type Client[TTx any] struct {
 	runWaiters   map[uuid.UUID][]chan *Run
 	runWaitersMu sync.Mutex
 
+	// Tool call callbacks (in-memory only, per-run)
+	runCallbacks   map[uuid.UUID]*runCallbackEntry
+	runCallbacksMu sync.Mutex
+
 	// Leadership tracking
 	isLeader bool
 	leaderMu sync.RWMutex
@@ -101,8 +105,9 @@ func NewClient[TTx any](drv driver.Driver[TTx], config *ClientConfig) (*Client[T
 		config:     config,
 		anthropic:  anthropicClient,
 		instanceID: instanceID,
-		runWaiters: make(map[uuid.UUID][]chan *Run),
-		compactor:  comp,
+		runWaiters:   make(map[uuid.UUID][]chan *Run),
+		runCallbacks: make(map[uuid.UUID]*runCallbackEntry),
+		compactor:    comp,
 	}, nil
 }
 
@@ -539,6 +544,7 @@ func (c *Client[TTx]) Run(ctx context.Context, sessionID uuid.UUID, agentID uuid
 		return uuid.Nil, fmt.Errorf("failed to create run: %w", err)
 	}
 
+	c.registerRunCallbacks(run.ID, opts)
 	return run.ID, nil
 }
 
@@ -568,6 +574,7 @@ func (c *Client[TTx]) RunTx(ctx context.Context, tx TTx, sessionID uuid.UUID, ag
 		return uuid.Nil, fmt.Errorf("failed to create run: %w", err)
 	}
 
+	c.registerRunCallbacks(run.ID, opts)
 	return run.ID, nil
 }
 
@@ -709,6 +716,7 @@ func (c *Client[TTx]) RunFast(ctx context.Context, sessionID uuid.UUID, agentID 
 		return uuid.Nil, fmt.Errorf("failed to create streaming run: %w", err)
 	}
 
+	c.registerRunCallbacks(run.ID, opts)
 	return run.ID, nil
 }
 
@@ -739,6 +747,7 @@ func (c *Client[TTx]) RunFastTx(ctx context.Context, tx TTx, sessionID uuid.UUID
 		return uuid.Nil, fmt.Errorf("failed to create streaming run: %w", err)
 	}
 
+	c.registerRunCallbacks(run.ID, opts)
 	return run.ID, nil
 }
 
@@ -1281,6 +1290,189 @@ func (c *Client[TTx]) notifyRunWaiters(runID uuid.UUID, run *Run) {
 		default:
 		}
 	}
+
+	// Clean up callbacks for finalized runs
+	c.cleanupRunCallbacks(runID)
+}
+
+// runCallbackEntry holds the callbacks for a run.
+type runCallbackEntry struct {
+	onToolStart    func(ToolCallEvent)
+	onToolComplete func(ToolCallEvent)
+}
+
+// registerRunCallbacks stores callbacks for a run ID if opts has any callbacks set.
+func (c *Client[TTx]) registerRunCallbacks(runID uuid.UUID, opts *RunOptions) {
+	if opts == nil || (opts.OnToolStart == nil && opts.OnToolComplete == nil) {
+		return
+	}
+	c.runCallbacksMu.Lock()
+	c.runCallbacks[runID] = &runCallbackEntry{
+		onToolStart:    opts.OnToolStart,
+		onToolComplete: opts.OnToolComplete,
+	}
+	c.runCallbacksMu.Unlock()
+}
+
+// cleanupRunCallbacks removes callbacks for a run ID.
+func (c *Client[TTx]) cleanupRunCallbacks(runID uuid.UUID) {
+	c.runCallbacksMu.Lock()
+	delete(c.runCallbacks, runID)
+	c.runCallbacksMu.Unlock()
+}
+
+// propagateRunCallbacks copies parent run callbacks to a child run ID.
+func (c *Client[TTx]) propagateRunCallbacks(parentRunID, childRunID uuid.UUID) {
+	c.runCallbacksMu.Lock()
+	defer c.runCallbacksMu.Unlock()
+	if entry, ok := c.runCallbacks[parentRunID]; ok {
+		c.runCallbacks[childRunID] = entry
+	}
+}
+
+// fireToolStartCallback fires the OnToolStart callback for a tool execution.
+func (c *Client[TTx]) fireToolStartCallback(exec *driver.ToolExecution, sessionID uuid.UUID, iterationNumber int) {
+	c.runCallbacksMu.Lock()
+	entry := c.runCallbacks[exec.RunID]
+	c.runCallbacksMu.Unlock()
+
+	if entry == nil || entry.onToolStart == nil {
+		return
+	}
+
+	event := ToolCallEvent{
+		RunID:           exec.RunID,
+		SessionID:       sessionID,
+		ToolName:        exec.ToolName,
+		ToolInput:       exec.ToolInput,
+		IsAgentTool:     exec.IsAgentTool,
+		IterationNumber: iterationNumber,
+	}
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c.log().Error("panic in OnToolStart callback", "tool", exec.ToolName, "panic", r)
+			}
+		}()
+		entry.onToolStart(event)
+	}()
+}
+
+// fireToolCompleteCallback fires the OnToolComplete callback for a tool execution.
+func (c *Client[TTx]) fireToolCompleteCallback(exec *driver.ToolExecution, sessionID uuid.UUID, iterationNumber int, output string, isError bool, errorMsg string, duration time.Duration) {
+	c.runCallbacksMu.Lock()
+	entry := c.runCallbacks[exec.RunID]
+	c.runCallbacksMu.Unlock()
+
+	if entry == nil || entry.onToolComplete == nil {
+		return
+	}
+
+	event := ToolCallEvent{
+		RunID:           exec.RunID,
+		SessionID:       sessionID,
+		ToolName:        exec.ToolName,
+		ToolInput:       exec.ToolInput,
+		IsAgentTool:     exec.IsAgentTool,
+		IterationNumber: iterationNumber,
+		Output:          output,
+		IsError:         isError,
+		ErrorMessage:    errorMsg,
+		Duration:        duration,
+	}
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c.log().Error("panic in OnToolComplete callback", "tool", exec.ToolName, "panic", r)
+			}
+		}()
+		entry.onToolComplete(event)
+	}()
+}
+
+// convertToolExecution converts a driver.ToolExecution to a ToolCall.
+func convertToolExecution(exec *driver.ToolExecution, iterationNumber int) ToolCall {
+	var duration time.Duration
+	if exec.StartedAt != nil && exec.CompletedAt != nil {
+		duration = exec.CompletedAt.Sub(*exec.StartedAt)
+	}
+	return ToolCall{
+		Name:            exec.ToolName,
+		Input:           exec.ToolInput,
+		Output:          Deref(exec.ToolOutput),
+		IsError:         exec.IsError,
+		ErrorMessage:    Deref(exec.ErrorMessage),
+		IsAgentTool:     exec.IsAgentTool,
+		AgentID:         exec.AgentID,
+		ChildRunID:      exec.ChildRunID,
+		Duration:        duration,
+		IterationNumber: iterationNumber,
+		State:           ToolExecutionState(exec.State),
+		StartedAt:       exec.StartedAt,
+		CompletedAt:     exec.CompletedAt,
+	}
+}
+
+// GetRunToolCalls returns all tool calls for a run, ordered by creation time.
+func (c *Client[TTx]) GetRunToolCalls(ctx context.Context, runID uuid.UUID) ([]ToolCall, error) {
+	store := c.driver.Store()
+
+	executions, err := store.GetToolExecutionsByRun(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tool executions: %w", err)
+	}
+
+	if len(executions) == 0 {
+		return nil, nil
+	}
+
+	// Build iteration number map
+	iterations, err := store.GetIterationsByRun(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get iterations: %w", err)
+	}
+	iterMap := make(map[uuid.UUID]int, len(iterations))
+	for _, iter := range iterations {
+		iterMap[iter.ID] = iter.IterationNumber
+	}
+
+	result := make([]ToolCall, len(executions))
+	for i, exec := range executions {
+		result[i] = convertToolExecution(exec, iterMap[exec.IterationID])
+	}
+	return result, nil
+}
+
+// GetIterationToolCalls returns tool calls for a specific iteration.
+func (c *Client[TTx]) GetIterationToolCalls(ctx context.Context, iterationID uuid.UUID) ([]ToolCall, error) {
+	store := c.driver.Store()
+
+	executions, err := store.GetToolExecutionsByIteration(ctx, iterationID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tool executions: %w", err)
+	}
+
+	if len(executions) == 0 {
+		return nil, nil
+	}
+
+	// Get iteration number
+	iter, err := store.GetIteration(ctx, iterationID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get iteration: %w", err)
+	}
+	iterNum := 0
+	if iter != nil {
+		iterNum = iter.IterationNumber
+	}
+
+	result := make([]ToolCall, len(executions))
+	for i, exec := range executions {
+		result[i] = convertToolExecution(exec, iterNum)
+	}
+	return result, nil
 }
 
 func (c *Client[TTx]) buildResponse(ctx context.Context, run *driver.Run) (*Response, error) {
@@ -1331,6 +1523,26 @@ func (c *Client[TTx]) buildResponse(ctx context.Context, run *driver.Run) (*Resp
 		}
 	}
 
+	// Populate tool calls (best-effort — failure logs warning but doesn't fail the response)
+	var toolCalls []ToolCall
+	if executions, err := c.driver.Store().GetToolExecutionsByRun(ctx, run.ID); err != nil {
+		c.log().Warn("failed to get tool executions for response", "run_id", run.ID, "error", err)
+	} else if len(executions) > 0 {
+		iterations, iterErr := c.driver.Store().GetIterationsByRun(ctx, run.ID)
+		iterMap := make(map[uuid.UUID]int)
+		if iterErr != nil {
+			c.log().Warn("failed to get iterations for tool call mapping", "run_id", run.ID, "error", iterErr)
+		} else {
+			for _, iter := range iterations {
+				iterMap[iter.ID] = iter.IterationNumber
+			}
+		}
+		toolCalls = make([]ToolCall, len(executions))
+		for i, exec := range executions {
+			toolCalls[i] = convertToolExecution(exec, iterMap[exec.IterationID])
+		}
+	}
+
 	return &Response{
 		Text:       Deref(run.ResponseText),
 		StopReason: Deref(run.StopReason),
@@ -1343,6 +1555,7 @@ func (c *Client[TTx]) buildResponse(ctx context.Context, run *driver.Run) (*Resp
 		Message:        message,
 		IterationCount: run.IterationCount,
 		ToolIterations: run.ToolIterations,
+		ToolCalls:      toolCalls,
 	}, nil
 }
 

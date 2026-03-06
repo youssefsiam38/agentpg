@@ -655,17 +655,19 @@ projectManager, _ := client.CreateAgent(ctx, &agentpg.AgentDefinition{
 
 ## Run Options
 
-`RunOptions` provides per-run configuration: variables for tools and instruction overrides for the system prompt.
+`RunOptions` provides per-run configuration: variables for tools, instruction overrides for the system prompt, and real-time tool call callbacks.
 
 ```go
 type RunOptions struct {
-    Variables            map[string]any // Passed to tools via context
-    OverrideInstructions string         // Replaces agent's system prompt for this run
-    AppendInstructions   string         // Appended to agent's system prompt for this run
+    Variables            map[string]any      // Passed to tools via context
+    OverrideInstructions string              // Replaces agent's system prompt for this run
+    AppendInstructions   string              // Appended to agent's system prompt for this run
+    OnToolStart          func(ToolCallEvent) // Called when a tool starts executing
+    OnToolComplete       func(ToolCallEvent) // Called when a tool finishes (success or error)
 }
 ```
 
-If `OverrideInstructions` is set, it completely replaces the agent's system prompt. `AppendInstructions` is ignored if `OverrideInstructions` is set. Instruction overrides do NOT propagate to child runs in agent-as-tool hierarchies. Variables ARE propagated to child runs.
+If `OverrideInstructions` is set, it completely replaces the agent's system prompt. `AppendInstructions` is ignored if `OverrideInstructions` is set. Instruction overrides do NOT propagate to child runs in agent-as-tool hierarchies. Variables and callbacks ARE propagated to child runs.
 
 ### Passing Variables
 ```go
@@ -795,14 +797,74 @@ response, _ := client.RunFastSync(ctx, sessionID, agent.ID, "Help the user", &ag
 ### Response Structure
 ```go
 type Response struct {
-    Text           string   // Final text response
-    StopReason     string   // "end_turn", "max_tokens", "tool_use"
-    Usage          Usage    // Token statistics
+    Text           string      // Final text response
+    StopReason     string      // "end_turn", "max_tokens", "tool_use"
+    Usage          Usage       // Token statistics
     Message        *Message
-    IterationCount int      // Batch API calls made
-    ToolIterations int      // Iterations with tool use
+    IterationCount int         // Batch API calls made
+    ToolIterations int         // Iterations with tool use
+    ToolCalls      []ToolCall  // All tool calls made during this run
 }
 ```
+
+#### ToolCall
+```go
+type ToolCall struct {
+    Name            string
+    Input           json.RawMessage
+    Output          string
+    IsError         bool
+    ErrorMessage    string
+    IsAgentTool     bool
+    AgentID         *uuid.UUID
+    ChildRunID      *uuid.UUID
+    Duration        time.Duration
+    IterationNumber int
+    State           ToolExecutionState
+    StartedAt       *time.Time
+    CompletedAt     *time.Time
+}
+```
+
+`ToolCalls` is populated automatically when the response is built. It strips internal scheduling fields (attempt counts, snooze, claiming) and provides a clean view of all tool invocations.
+
+#### Querying Tool Calls
+```go
+// All tool calls for a run (same data as response.ToolCalls)
+toolCalls, err := client.GetRunToolCalls(ctx, runID)
+
+// Tool calls for a specific iteration
+toolCalls, err := client.GetIterationToolCalls(ctx, iterationID)
+```
+
+#### Real-Time Tool Call Callbacks
+```go
+response, err := client.RunFastSync(ctx, sessionID, agent.ID, "Hello!", &agentpg.RunOptions{
+    OnToolStart: func(event agentpg.ToolCallEvent) {
+        fmt.Printf("Tool started: %s\n", event.ToolName)
+    },
+    OnToolComplete: func(event agentpg.ToolCallEvent) {
+        fmt.Printf("Tool finished: %s (took %v)\n", event.ToolName, event.Duration)
+    },
+})
+```
+
+`ToolCallEvent` is passed to both callbacks:
+```go
+type ToolCallEvent struct {
+    RunID, SessionID uuid.UUID
+    ToolName         string
+    ToolInput        json.RawMessage
+    IsAgentTool      bool
+    IterationNumber  int
+    // Only populated for OnToolComplete:
+    Output, ErrorMessage string
+    IsError              bool
+    Duration             time.Duration
+}
+```
+
+**Important**: Callbacks are in-memory function values (not serializable). They only fire on the client instance that executes the tool. In a distributed setup with multiple workers, callbacks fire on whichever instance claims the tool execution. For agent-as-tool hierarchies, callbacks automatically propagate to child runs.
 
 ### Run States
 `pending`, `batch_submitting`, `batch_pending`, `batch_processing`, `pending_tools`, `awaiting_input`, `completed` (terminal), `cancelled` (terminal), `failed` (terminal)
@@ -1218,5 +1280,6 @@ See [Go documentation](https://pkg.go.dev/github.com/youssefsiam38/agentpg).
 - `CancelRun()` - Cancel a running agent (cascades to child runs)
 - `RegenerateRun()` - Re-create a terminal run with clean messages
 - `WaitForRun()`, `GetRun()`, `GetSession()` - Query state
+- `GetRunToolCalls()`, `GetIterationToolCalls()` - Query tool calls for a run or iteration
 - `Compact()`, `CompactWithConfig()`, `CompactIfNeeded()` - Manual compaction
 - `NeedsCompaction()`, `GetCompactionStats()` - Compaction queries

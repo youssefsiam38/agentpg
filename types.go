@@ -26,6 +26,43 @@ type Response struct {
 
 	// ToolIterations is the number of iterations that involved tool_use.
 	ToolIterations int
+
+	// ToolCalls contains all tool calls made during this run, in execution order.
+	// Populated from the database when the response is built.
+	ToolCalls []ToolCall
+}
+
+// ToolCall represents a single tool invocation within a run.
+// This is a clean API type that strips internal scheduling fields from the raw tool execution.
+type ToolCall struct {
+	Name            string             `json:"name"`
+	Input           json.RawMessage    `json:"input"`
+	Output          string             `json:"output"`
+	IsError         bool               `json:"is_error"`
+	ErrorMessage    string             `json:"error_message,omitempty"`
+	IsAgentTool     bool               `json:"is_agent_tool"`
+	AgentID         *uuid.UUID         `json:"agent_id,omitempty"`
+	ChildRunID      *uuid.UUID         `json:"child_run_id,omitempty"`
+	Duration        time.Duration      `json:"duration"`
+	IterationNumber int                `json:"iteration_number"`
+	State           ToolExecutionState `json:"state"`
+	StartedAt       *time.Time         `json:"started_at,omitempty"`
+	CompletedAt     *time.Time         `json:"completed_at,omitempty"`
+}
+
+// ToolCallEvent is passed to OnToolStart and OnToolComplete callbacks.
+type ToolCallEvent struct {
+	RunID           uuid.UUID       `json:"run_id"`
+	SessionID       uuid.UUID       `json:"session_id"`
+	ToolName        string          `json:"tool_name"`
+	ToolInput       json.RawMessage `json:"tool_input"`
+	IsAgentTool     bool            `json:"is_agent_tool"`
+	IterationNumber int             `json:"iteration_number"`
+	// Only populated for OnToolComplete:
+	Output       string        `json:"output,omitempty"`
+	IsError      bool          `json:"is_error,omitempty"`
+	ErrorMessage string        `json:"error_message,omitempty"`
+	Duration     time.Duration `json:"duration,omitempty"`
 }
 
 // Usage contains token usage statistics from Claude API.
@@ -175,6 +212,18 @@ type RunOptions struct {
 	// AppendInstructions is appended to the agent's system prompt for this run.
 	// Ignored if OverrideInstructions is set.
 	AppendInstructions string `json:"append_instructions,omitempty"`
+
+	// OnToolStart is called when a tool execution begins.
+	// Fires in a goroutine with panic recovery — must not block tool execution.
+	// Only fires on the instance that executes the tool (in-memory callback).
+	// For agent-as-tool, callbacks propagate to child runs automatically.
+	OnToolStart func(ToolCallEvent) `json:"-"`
+
+	// OnToolComplete is called when a tool execution finishes (success or error).
+	// Fires in a goroutine with panic recovery — must not block tool execution.
+	// Only fires on the instance that executes the tool (in-memory callback).
+	// For agent-as-tool, callbacks propagate to child runs automatically.
+	OnToolComplete func(ToolCallEvent) `json:"-"`
 }
 
 // Usage returns the cumulative token usage for this run.
