@@ -95,7 +95,7 @@ func (w *streamingWorker[TTx]) processRun(ctx context.Context, run *driver.Run) 
 
 	// For first iteration, create the user message with the prompt
 	if run.CurrentIteration == 0 && run.Prompt != "" {
-		_, err := store.CreateMessage(ctx, driver.CreateMessageParams{
+		if _, createErr := store.CreateMessage(ctx, driver.CreateMessageParams{
 			SessionID: run.SessionID,
 			RunID:     &run.ID,
 			Role:      driver.MessageRole(MessageRoleUser),
@@ -105,9 +105,8 @@ func (w *streamingWorker[TTx]) processRun(ctx context.Context, run *driver.Run) 
 					Text: run.Prompt,
 				},
 			},
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create user message: %w", err)
+		}); createErr != nil {
+			return fmt.Errorf("failed to create user message: %w", createErr)
 		}
 	}
 
@@ -521,7 +520,7 @@ func (w *streamingWorker[TTx]) buildTools(ctx context.Context, agent *AgentDefin
 
 // buildAllTools returns all registered tools (used when agent.Tools is nil).
 func (w *streamingWorker[TTx]) buildAllTools(ctx context.Context, agent *AgentDefinition) ([]anthropic.ToolUnionParam, error) {
-	var tools []anthropic.ToolUnionParam
+	tools := make([]anthropic.ToolUnionParam, 0, len(w.client.GetAllToolNames())+len(agent.AgentIDs))
 
 	w.client.tools.Range(func(_, value any) bool {
 		t := value.(tool.Tool)

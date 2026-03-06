@@ -69,8 +69,8 @@ func (s *Service[TTx]) GetIterationDetail(ctx context.Context, id uuid.UUID) (*I
 		}
 		// Look up agent name from ID
 		agentName := ""
-		if agent, err := s.store.GetAgent(ctx, run.AgentID); err == nil {
-			agentName = agent.Name
+		if a, aErr := s.store.GetAgent(ctx, run.AgentID); aErr == nil {
+			agentName = a.Name
 		}
 		detail.Run = &RunSummary{
 			ID:             run.ID,

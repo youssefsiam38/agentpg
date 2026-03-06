@@ -140,7 +140,8 @@ func main() {
 	}()
 
 	// Collect all tool names from all sources
-	allTools := []string{"current_time"} // local tool
+	allTools := make([]string, 0, 1+len(everythingServer.Tools())+len(fsServer.Tools()))
+	allTools = append(allTools, "current_time") // local tool
 	for _, t := range everythingServer.Tools() {
 		allTools = append(allTools, t.Name())
 	}

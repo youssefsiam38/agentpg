@@ -12,8 +12,6 @@ import (
 
 // Validation constants
 const (
-	// maxUserIDLength is the maximum length for session user IDs
-	maxUserIDLength = 256
 	// maxAgentNameLength is the maximum length for agent names
 	maxAgentNameLength = 128
 )
@@ -52,18 +50,6 @@ func parseOffset(r *http.Request, key string, defaultVal int) int {
 // parseUUID parses a UUID from a string.
 func parseUUID(s string) (uuid.UUID, error) {
 	return uuid.Parse(s)
-}
-
-// validateUserID validates a session user ID.
-// Returns the validated user ID or an empty string if invalid.
-func validateUserID(s string) string {
-	if len(s) == 0 || len(s) > maxUserIDLength {
-		return ""
-	}
-	if !userIDRegex.MatchString(s) {
-		return ""
-	}
-	return s
 }
 
 // validateAgentName validates an agent name.
@@ -964,8 +950,8 @@ func (rt *router[TTx]) handleChatCancel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := rt.client.CancelRun(r.Context(), runID); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to cancel run: %v", err), http.StatusInternalServerError)
+	if cancelErr := rt.client.CancelRun(r.Context(), runID); cancelErr != nil {
+		http.Error(w, fmt.Sprintf("Failed to cancel run: %v", cancelErr), http.StatusInternalServerError)
 		return
 	}
 

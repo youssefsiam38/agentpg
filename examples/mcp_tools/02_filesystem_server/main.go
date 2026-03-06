@@ -91,8 +91,9 @@ func main() {
 	}()
 
 	// Collect all discovered tool names for the agent
-	var toolNames []string
-	for _, t := range mcpServer.Tools() {
+	mcpTools := mcpServer.Tools()
+	toolNames := make([]string, 0, len(mcpTools))
+	for _, t := range mcpTools {
 		toolNames = append(toolNames, t.Name())
 	}
 

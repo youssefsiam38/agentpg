@@ -10,9 +10,9 @@ import (
 type contextKey string
 
 const (
-	runIDKey      contextKey = "agentpg_run_id"
-	sessionIDKey  contextKey = "agentpg_session_id"
-	variablesKey  contextKey = "agentpg_variables"
+	runIDKey     contextKey = "agentpg_run_id"
+	sessionIDKey contextKey = "agentpg_session_id"
+	variablesKey contextKey = "agentpg_variables"
 )
 
 // RunContext contains run-level information available to tools during execution.

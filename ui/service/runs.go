@@ -137,8 +137,8 @@ func (s *Service[TTx]) GetRunDetail(ctx context.Context, id uuid.UUID) (*RunDeta
 
 	// Look up agent name from ID
 	agentName := ""
-	if agent, err := s.store.GetAgent(ctx, run.AgentID); err == nil {
-		agentName = agent.Name
+	if a, aErr := s.store.GetAgent(ctx, run.AgentID); aErr == nil {
+		agentName = a.Name
 	}
 
 	detail := &RunDetail{

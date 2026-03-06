@@ -101,10 +101,10 @@ func NewClient[TTx any](drv driver.Driver[TTx], config *ClientConfig) (*Client[T
 	comp := compaction.New(drv.Store(), &anthropicClient, compactorConfig, compactorLogger)
 
 	return &Client[TTx]{
-		driver:     drv,
-		config:     config,
-		anthropic:  anthropicClient,
-		instanceID: instanceID,
+		driver:       drv,
+		config:       config,
+		anthropic:    anthropicClient,
+		instanceID:   instanceID,
 		runWaiters:   make(map[uuid.UUID][]chan *Run),
 		runCallbacks: make(map[uuid.UUID]*runCallbackEntry),
 		compactor:    comp,

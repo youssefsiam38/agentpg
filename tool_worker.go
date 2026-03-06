@@ -212,12 +212,12 @@ func (w *toolWorker[TTx]) executeAgentTool(ctx context.Context, exec *driver.Too
 		SessionID:             parentRun.SessionID,
 		AgentID:               agentID,
 		Prompt:                input.Task,
-		RunMode:               parentRun.RunMode,    // Inherit from parent
+		RunMode:               parentRun.RunMode, // Inherit from parent
 		ParentRunID:           &exec.RunID,
 		ParentToolExecutionID: &exec.ID,
 		Depth:                 parentRun.Depth + 1,
 		CreatedByInstanceID:   w.client.instanceID,
-		Metadata:              parentRun.Metadata,   // Propagate variables to child
+		Metadata:              parentRun.Metadata, // Propagate variables to child
 	})
 	if err != nil {
 		return w.completeToolExecution(ctx, exec.ID, "", true, fmt.Sprintf("failed to create child run: %v", err))
