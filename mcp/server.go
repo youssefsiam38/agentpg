@@ -27,8 +27,8 @@ type MCPServer struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
-	sessionPool sync.Map     // URL -> *mcpsdk.ClientSession (for URLFunc routing)
-	httpClient  *http.Client // Shared HTTP client (with header injection) for pooled sessions
+	sessionPool sync.Map      // URL -> *mcpsdk.ClientSession (for URLFunc routing)
+	httpClient  *http.Client  // Shared HTTP client (with header injection) for pooled sessions
 	registrar   ToolRegistrar // For lazy tool registration (set by RegisterServerLazy)
 }
 
